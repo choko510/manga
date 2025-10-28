@@ -648,6 +648,8 @@
         let preloadWorkers = 3; // プリロード用の同時処理数
         let activePreloadWorkers = 0; // アクティブなプリロードワーカー数
         
+        const ERROR_IMAGE_SRC = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIGZpbGw9IiNmMGYwZjAiLz48dGV4dCB4PSIyNCIgeT0iMjQiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxOCIgZmlsbD0iIzk5OSI+PC90ZXh0Pjwvc3ZnPg==';
+        
         // デバイス情報
         const isMobile = window.innerWidth <= 767;
         const isTablet = window.innerWidth > 767 && window.innerWidth <= 1279;
@@ -758,116 +760,115 @@
         // 画像の読み込み
         async function loadImage(img, pageElement) {
             const imageUrl = img.dataset.src;
-            
+
             console.log('画像読み込み開始:', imageUrl);
-            
-            // URLが空の場合はエラーとする
+
             if (!imageUrl || imageUrl.trim() === '') {
                 console.error('画像URLが空です');
                 pageElement.dataset.loaded = 'error';
                 return;
             }
-            
-            // キャッシュから取得
+
+            let placeholder = pageElement.querySelector('.image-placeholder');
+            if (!placeholder) {
+                placeholder = document.createElement('div');
+                placeholder.className = 'image-placeholder';
+                pageElement.insertBefore(placeholder, img);
+            }
+
+            const removePlaceholder = () => {
+                if (placeholder && placeholder.parentNode) {
+                    placeholder.parentNode.removeChild(placeholder);
+                }
+            };
+
+            const markAsLoaded = () => {
+                img.classList.add('loaded');
+                pageElement.dataset.loaded = 'true';
+                pageElement.dataset.lazy = 'loaded';
+                loadedImages.add(imageUrl);
+                removePlaceholder();
+                if (imageObserver && pageElement) {
+                    imageObserver.unobserve(pageElement);
+                }
+            };
+
+            const handleError = (error, attemptedUrl) => {
+                console.error('画像読み込みエラー:', error, 'URL:', attemptedUrl || imageUrl);
+                img.onerror = null;
+                img.onload = null;
+                img.src = ERROR_IMAGE_SRC;
+                img.classList.add('loaded');
+                pageElement.dataset.loaded = 'error';
+                pageElement.dataset.lazy = 'error';
+                removePlaceholder();
+                if (imageObserver && pageElement) {
+                    imageObserver.unobserve(pageElement);
+                }
+            };
+
             if (imageCache.has(imageUrl)) {
                 console.log('画像はキャッシュから読み込み:', imageUrl);
                 const cachedBlob = imageCache.get(imageUrl);
                 const objectUrl = URL.createObjectURL(cachedBlob);
+                img.onload = () => {
+                    markAsLoaded();
+                    URL.revokeObjectURL(objectUrl);
+                };
+                img.onerror = (error) => {
+                    URL.revokeObjectURL(objectUrl);
+                    handleError(error, objectUrl);
+                };
                 img.src = objectUrl;
-                img.classList.add('loaded');
-                pageElement.dataset.loaded = 'true';
+                if (img.complete) {
+                    img.onload();
+                }
                 return;
             }
-            
+
             if (loadedImages.has(imageUrl)) {
-                // 既に読み込まれている場合は即座に表示
                 console.log('画像は既に読み込み済み:', imageUrl);
+                img.onload = markAsLoaded;
+                img.onerror = (error) => handleError(error, imageUrl);
                 img.src = imageUrl;
-                img.classList.add('loaded');
-                pageElement.dataset.loaded = 'true';
+                if (img.complete) {
+                    img.onload();
+                }
                 return;
             }
-            
-            // プレースホルダーの表示
-            const placeholder = document.createElement('div');
-            placeholder.className = 'image-placeholder';
-            pageElement.insertBefore(placeholder, img);
-            
+
             try {
-                // 画像の最適化URLを生成
                 const optimizedUrl = getOptimizedImageUrl(imageUrl);
                 console.log('最適化URL:', optimizedUrl);
-                
-                // 画像の読み込み
+
                 const response = await fetch(optimizedUrl);
                 console.log('フェッチレスポンス:', response.status, response.statusText);
-                
+
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}, text: ${response.statusText}`);
                 }
-                
+
                 const blob = await response.blob();
                 console.log('ブログサイズ:', blob.size, 'タイプ:', blob.type);
-                
-                // blobが空の場合、エラーとする
+
                 if (blob.size === 0) {
                     throw new Error('Blob is empty');
                 }
-                
+
                 const objectUrl = URL.createObjectURL(blob);
-                
-                // 画像の設定
-                img.src = objectUrl;
                 img.onload = () => {
                     console.log('画像読み込み完了:', imageUrl);
-                    console.log('プレースホルダー削除前:', placeholder);
-                    img.classList.add('loaded');
-                    pageElement.dataset.loaded = 'true';
-                    pageElement.dataset.lazy = 'loaded';
-                    loadedImages.add(imageUrl);
-                    
-                    // プレースホルダーの削除
-                    if (placeholder.parentNode) {
-                        placeholder.parentNode.removeChild(placeholder);
-                        console.log('プレースホルダー削除後:', placeholder);
-                    }
-                    
-                    // キャッシュに保存
                     imageCache.set(imageUrl, blob);
-                    
-                    // Observerの監視を停止
-                    if (imageObserver && pageElement) {
-                        imageObserver.unobserve(pageElement);
-                    }
+                    markAsLoaded();
+                    URL.revokeObjectURL(objectUrl);
                 };
-                
                 img.onerror = (error) => {
-                    console.error('画像読み込みエラー:', error, 'URL:', objectUrl);
-                    // エラー処理
-                    pageElement.dataset.loaded = 'error';
-                    
-                    // プレースホルダーの削除
-                    if (placeholder.parentNode) {
-                        placeholder.parentNode.removeChild(placeholder);
-                    }
-                    
-                    // エラー画像の表示
-                    img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIGZpbGw9IiNmMGYwZjAiLz48dGV4dCB4PSIyNCIgeT0iMjQiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxOCIgZmlsbD0iIzk5OSI+PC90ZXh0Pjwvc3ZnPg==';
-                    
-                    // loadedクラスを追加してエラー画像を表示
-                    img.classList.add('loaded');
+                    URL.revokeObjectURL(objectUrl);
+                    handleError(error, objectUrl);
                 };
-                
+                img.src = objectUrl;
             } catch (error) {
-                console.error('画像読み込みエラー:', error);
-                pageElement.dataset.loaded = 'error';
-                if (placeholder.parentNode) {
-                    placeholder.parentNode.removeChild(placeholder);
-                }
-                
-                // エラー画像の表示
-                img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIGZpbGw9IiNmMGYwZjAiLz48dGV4dCB4PSIyNCIgeT0iMjQiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxOCIgZmlsbD0iIzk5OSI+PC90ZXh0Pjwvc3ZnPg==';
-                img.classList.add('loaded');
+                handleError(error, imageUrl);
             }
         }
 
