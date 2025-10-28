@@ -6,21 +6,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>タグ一覧 - UI再現サイト v2</title>
     <style>
-        /* --- 基本設定とリセット --- */
         :root {
-            --bg-main: #FFFFFF;
-            --bg-header: #F0F2F5;
-            --bg-card-placeholder: #E4E6E9;
-            --bg-button: #FFFFFF;
-            --text-primary: #333333;
-            --text-secondary: #555555;
-            --text-placeholder: #888888;
-            --icon-color: #555555;
-
-            --font-family-base: "Hiragino Sans", "ヒラギノ角ゴ ProN", "Hiragino Kaku Gothic ProN", "メイリオ", Meiryo, sans-serif;
-
+            --bg-main: #ffffff;
+            --bg-header: #f0f2f5;
+            --bg-card: #ffffff;
+            --bg-chip: rgba(148, 163, 184, 0.15);
+            --bg-chip-active: rgba(37, 99, 235, 0.12);
+            --text-primary: #1f2933;
+            --text-secondary: #52616b;
+            --text-placeholder: #9aa5b1;
+            --accent: #2563eb;
+            --accent-strong: #1d4ed8;
             --radius-pill: 9999px;
             --radius-card: 20px;
+            --shadow-card: 0 15px 35px rgba(15, 23, 42, 0.08);
+            --shadow-card-hover: 0 18px 40px rgba(15, 23, 42, 0.12);
+        }
+
+        body.dark-mode {
+            --bg-main: #0f172a;
+            --bg-header: rgba(15, 23, 42, 0.75);
+            --bg-card: rgba(30, 41, 59, 0.95);
+            --bg-chip: rgba(148, 163, 184, 0.2);
+            --bg-chip-active: rgba(96, 165, 250, 0.25);
+            --text-primary: #e2e8f0;
+            --text-secondary: #cbd5f5;
+            --text-placeholder: #94a3b8;
+            --accent: #60a5fa;
+            --accent-strong: #3b82f6;
+            --shadow-card: 0 15px 35px rgba(15, 23, 42, 0.4);
+            --shadow-card-hover: 0 18px 45px rgba(15, 23, 42, 0.55);
         }
 
         *,
@@ -31,31 +46,41 @@
 
         body {
             margin: 0;
-            font-family: var(--font-family-base);
-            background-color: var(--bg-main);
+            font-family: "Hiragino Sans", "ヒラギノ角ゴ ProN", "Hiragino Kaku Gothic ProN", "メイリオ", Meiryo, sans-serif;
+            background: var(--bg-main);
             color: var(--text-primary);
+            transition: background 0.3s ease, color 0.3s ease;
         }
 
         a {
-            text-decoration: none;
             color: inherit;
+            text-decoration: none;
         }
 
-        /* --- ヘッダー --- */
         .site-header {
-            background-color: var(--bg-header);
-            padding: 16px 32px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            padding: 20px 32px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            background: var(--bg-header);
+            backdrop-filter: blur(16px);
+        }
+
+        .header-top {
             display: flex;
             justify-content: space-between;
+            gap: 16px;
             align-items: center;
-            gap: 24px;
         }
 
         .main-nav {
             display: flex;
-            gap: 16px;
+            gap: 12px;
             overflow-x: auto;
-            -ms-overflow-style: none;
+            padding-bottom: 4px;
             scrollbar-width: none;
         }
 
@@ -64,445 +89,451 @@
         }
 
         .nav-button {
-            display: inline-block;
-            background-color: var(--bg-button);
-            padding: 10px 24px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 20px;
             border-radius: var(--radius-pill);
-            font-size: 16px;
-            font-weight: 500;
-            white-space: nowrap;
-            transition: background-color 0.2s ease;
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            font-weight: 600;
+            border: 1px solid transparent;
+            transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
         }
 
+        .nav-button.active,
         .nav-button:hover {
-            background-color: #f7f7f7;
-        }
-
-        .nav-button.active {
-            background-color: #e0e0e0;
+            background: var(--bg-chip-active);
+            color: var(--accent);
+            border-color: rgba(37, 99, 235, 0.15);
         }
 
         .search-container {
-            position: relative;
             display: flex;
             align-items: center;
-            min-width: 280px;
+            gap: 12px;
+            background: var(--bg-card);
+            padding: 10px 16px;
+            border-radius: var(--radius-pill);
+            box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.15);
         }
 
         .search-container input[type="search"] {
-            background-color: var(--bg-button);
             border: none;
-            border-radius: var(--radius-pill);
-            padding: 10px 48px 10px 24px;
+            outline: none;
+            background: transparent;
             font-size: 16px;
-            width: 100%;
+            flex: 1;
+            color: var(--text-primary);
         }
 
         .search-container input[type="search"]::placeholder {
             color: var(--text-placeholder);
         }
 
-        .search-icon {
-            position: absolute;
-            right: 16px;
-            width: 22px;
-            height: 22px;
-            color: var(--icon-color);
-            pointer-events: none;
+        .icon-button {
+            border: none;
+            border-radius: var(--radius-pill);
+            padding: 10px 14px;
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 18px;
+            transition: background 0.2s ease, color 0.2s ease;
         }
 
-        /* --- メインコンテンツ --- */
+        .icon-button:hover {
+            background: var(--bg-chip-active);
+            color: var(--accent);
+        }
+
         .content-area {
             padding: 32px;
-        }
-
-        .tags-header {
+            max-width: 1200px;
+            margin: 0 auto;
             display: flex;
-            justify-content: space-between;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .filter-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
             align-items: center;
-            margin-bottom: 24px;
-        }
-
-        .tags-title {
-            font-size: 24px;
-            font-weight: 600;
-            margin: 0;
-        }
-
-        .tags-count {
+            font-size: 14px;
             color: var(--text-secondary);
-            font-size: 16px;
+        }
+
+        .selected-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .tag-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: var(--radius-pill);
+            background: var(--bg-chip);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+
+        .tag-chip button {
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 12px;
+            cursor: pointer;
         }
 
         .tags-grid {
             display: grid;
             gap: 16px;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
         }
 
         .tag-card {
-            background-color: var(--bg-card-placeholder);
+            background: var(--bg-card);
             border-radius: var(--radius-card);
-            padding: 16px;
-            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
-            cursor: pointer;
+            padding: 18px;
+            box-shadow: var(--shadow-card);
+            transition: transform 0.25s ease, box-shadow 0.25s ease;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
         }
 
         .tag-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-card-hover);
         }
 
         .tag-name {
             font-size: 18px;
-            font-weight: 600;
-            margin: 0 0 8px 0;
-            word-break: break-word;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .tag-name small {
+            font-size: 13px;
+            color: var(--text-secondary);
         }
 
         .tag-count {
-            font-size: 14px;
+            font-size: 13px;
             color: var(--text-secondary);
-            margin: 0;
         }
 
-        .tag-search {
-            margin-bottom: 24px;
+        .tag-actions {
+            display: flex;
+            gap: 8px;
         }
 
-        .tag-search input {
-            width: 100%;
-            padding: 12px 16px;
-            border: 1px solid #ddd;
-            border-radius: var(--radius-card);
-            font-size: 16px;
+        .primary-button {
+            flex: 1;
+            border: none;
+            border-radius: 12px;
+            padding: 10px 12px;
+            font-size: 13px;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+            color: #fff;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .primary-button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 18px rgba(37, 99, 235, 0.3);
+        }
+
+        .ghost-button {
+            flex: 1;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            border-radius: 12px;
+            padding: 10px 12px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            background: transparent;
+            cursor: pointer;
+            transition: color 0.2s ease, border-color 0.2s ease;
+        }
+
+        .ghost-button:hover {
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .loading,
+        .error-message {
+            text-align: center;
+            padding: 24px;
+            color: var(--text-secondary);
         }
 
         .load-more-container {
             text-align: center;
-            margin-top: 24px;
+            padding: 24px 0;
         }
 
-        .load-more-button {
-            background-color: var(--bg-button);
-            border: 1px solid #ddd;
-            border-radius: var(--radius-pill);
-            padding: 10px 24px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: background-color 0.2s ease;
-        }
-
-        .load-more-button:hover {
-            background-color: #f7f7f7;
-        }
-
-        .loading-indicator {
-            text-align: center;
-            padding: 20px;
-            display: none;
-        }
-
-        /* --- レスポンシブデザイン --- */
-
-        /* タブレット (幅 1023px 以下) */
         @media (max-width: 1023px) {
-            .tags-grid {
-                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            }
-        }
-
-        /* スマートフォン (幅 767px 以下) */
-        @media (max-width: 767px) {
             .site-header {
-                padding: 12px 16px;
-                flex-wrap: wrap;
-            }
-
-            .main-nav {
-                width: 100%;
-                padding-bottom: 8px;
-            }
-
-            .search-container {
-                width: 100%;
-                order: -1;
-                margin-bottom: 12px;
-                min-width: 0;
+                padding: 16px 24px;
             }
 
             .content-area {
-                padding: 24px 16px;
+                padding: 24px;
+            }
+        }
+
+        @media (max-width: 767px) {
+            .site-header {
+                padding: 16px;
+            }
+
+            .header-top {
+                flex-direction: column;
+                align-items: stretch;
             }
 
             .tags-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .tags-header {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 8px;
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
             }
         }
     </style>
 </head>
 
 <body>
-
     <header class="site-header">
-        <nav class="main-nav">
-            <a href="/" class="nav-button">ホーム</a>
-            <a href="/tags" class="nav-button active">タグ</a>
-            <a href="#" class="nav-button">設定</a>
-            <a href="#" class="nav-button">マイページ</a>
-            <a href="#" class="nav-button">画像</a>
-            <a href="#" class="nav-button">音声</a>
-        </nav>
-        <div class="search-container">
-            <input type="search" id="tagSearchInput" placeholder="タグを検索">
-            <svg class="search-icon" id="tagSearchIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="cursor: pointer;">
-                <path
-                    d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z">
-                </path>
-            </svg>
+        <div class="header-top">
+            <nav class="main-nav">
+                <a href="/" class="nav-button">ホーム</a>
+                <a href="/tags" class="nav-button active">タグ</a>
+                <a href="/recommendations" class="nav-button">おすすめ</a>
+            </nav>
+            <div class="search-container">
+                <input type="search" id="tagSearchInput" placeholder="タグを検索 (複数語対応)" aria-label="タグ検索">
+                <button id="searchButton" class="primary-button" style="flex:0 0 auto;">検索</button>
+                <button id="themeToggle" class="icon-button" aria-label="ダークモード切替">🌙</button>
+            </div>
+        </div>
+        <div class="filter-summary">
+            <div>合計 <span id="tagsTotal">0</span> タグ</div>
+            <div id="hiddenTagsSummary">除外タグなし</div>
+            <div class="selected-tags" id="selectedTags"></div>
         </div>
     </header>
 
     <main class="content-area">
-        <div class="tags-header">
-            <h1 class="tags-title">タグ一覧</h1>
-            <div class="tags-count" id="tagsCount">0件のタグ</div>
-        </div>
-
-        <div class="tag-search">
-            <input type="text" id="tagFilterInput" placeholder="タグ名で絞り込み...">
-        </div>
-
-        <div id="loadingIndicator" class="loading-indicator">
-            読み込み中...
-        </div>
-
-        <div id="tagsGrid" class="tags-grid">
-            <!-- タグがここに動的に表示されます -->
-        </div>
-
-        <div id="loadMoreContainer" class="load-more-container" style="display: none;">
-            <button id="loadMoreButton" class="load-more-button">
-                もっと読み込む
-            </button>
-        </div>
+        <section>
+            <div class="tags-grid" id="tagsGrid"></div>
+            <div class="loading" id="loadingIndicator" style="display:none;">読み込み中...</div>
+            <div class="error-message" id="errorMessage" style="display:none;"></div>
+            <div class="load-more-container" id="loadMoreContainer" style="display:none;">
+                <button id="loadMoreButton" class="primary-button">さらに読み込む</button>
+            </div>
+        </section>
     </main>
 
+    <script src="/static/tracking.js" defer></script>
+    <script src="/static/app.js" defer></script>
     <script>
-        // グローバル変数
-        let currentOffset = 0;
-        let isLoading = false;
-        let currentSearchQuery = '';
-        let totalTags = 0;
+        const state = {
+            offset: 0,
+            isLoading: false,
+            total: 0,
+            search: '',
+            selectedTags: new Set(),
+        };
 
-        // DOM要素
-        const tagSearchInput = document.getElementById('tagSearchInput');
-        const tagSearchIcon = document.getElementById('tagSearchIcon');
-        const tagFilterInput = document.getElementById('tagFilterInput');
-        const tagsGrid = document.getElementById('tagsGrid');
-        const loadingIndicator = document.getElementById('loadingIndicator');
-        const loadMoreContainer = document.getElementById('loadMoreContainer');
-        const loadMoreButton = document.getElementById('loadMoreButton');
-        const tagsCount = document.getElementById('tagsCount');
-
-        // イベントリスナー
-        tagSearchIcon.addEventListener('click', performSearch);
-        tagSearchInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                performSearch();
-            }
-        });
-        
-        tagFilterInput.addEventListener('input', debounce(filterTags, 300));
-        loadMoreButton.addEventListener('click', loadMoreTags);
-
-        // 初期読み込み
         document.addEventListener('DOMContentLoaded', () => {
+            MangaApp.applyThemeToDocument(document);
+            MangaApp.ensureTranslations().catch(() => {});
+            setupEventHandlers();
+            updateHiddenTagsSummary();
             loadTags();
         });
 
-        // デバウンス関数
-        function debounce(func, wait) {
-            let timeout;
-            return function(...args) {
-                clearTimeout(timeout);
-                timeout = setTimeout(() => func.apply(this, args), wait);
-            };
-        }
-
-        // 検索実行関数
-        async function performSearch() {
-            const query = tagSearchInput.value.trim();
-            currentSearchQuery = query;
-            currentOffset = 0; // ページングをリセット
-            
-            showLoading(true);
-            tagsGrid.innerHTML = ''; // 既存の結果をクリア
-            loadMoreContainer.style.display = 'none';
-            
-            try {
-                const result = await fetchTags(currentSearchQuery, currentOffset);
-                totalTags = result.total;
-                displayTags(result.tags, result.has_more);
-                updateTagsCount();
-            } catch (error) {
-                console.error('検索エラー:', error);
-                tagsGrid.innerHTML = '<p>検索中にエラーが発生しました。</p>';
-            } finally {
-                showLoading(false);
-            }
-        }
-
-        // タグを読み込む
-        async function loadTags() {
-            showLoading(true);
-            
-            try {
-                const result = await fetchTags(currentSearchQuery, currentOffset);
-                totalTags = result.total;
-                displayTags(result.tags, result.has_more);
-                updateTagsCount();
-            } catch (error) {
-                console.error('タグ読み込みエラー:', error);
-                tagsGrid.innerHTML = '<p>タグの読み込み中にエラーが発生しました。</p>';
-            } finally {
-                showLoading(false);
-            }
-        }
-
-        // さらにタグを読み込む
-        async function loadMoreTags() {
-            if (isLoading) return;
-            
-            currentOffset += 100;
-            showLoading(true);
-            
-            try {
-                const result = await fetchTags(currentSearchQuery, currentOffset);
-                appendTags(result.tags, result.has_more);
-            } catch (error) {
-                console.error('追加読み込みエラー:', error);
-            } finally {
-                showLoading(false);
-            }
-        }
-
-        // タグAPI呼び出し
-        async function fetchTags(search = null, offset = 0, limit = 100) {
-            const params = new URLSearchParams();
-            params.append('limit', limit.toString());
-            params.append('offset', offset.toString());
-            
-            if (search) {
-                params.append('search', search);
-            }
-            
-            console.log(`Fetching tags with params: ${params.toString()}`);
-            const response = await fetch(`/api/tags?${params}`);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const result = await response.json();
-            console.log(`Received ${result.tags.length} tags, total: ${result.total}`);
-            return result;
-        }
-
-        // タグを表示
-        function displayTags(tags, hasMore) {
-            if (tags.length === 0) {
-                tagsGrid.innerHTML = '<p>タグが見つかりませんでした。</p>';
-                return;
-            }
-            
-            tags.forEach(tag => {
-                const card = createTagCard(tag);
-                tagsGrid.appendChild(card);
+        function setupEventHandlers() {
+            const themeToggle = document.getElementById('themeToggle');
+            updateThemeToggleIcon(themeToggle, MangaApp.getPreferredTheme());
+            themeToggle.addEventListener('click', () => {
+                const theme = MangaApp.toggleTheme();
+                updateThemeToggleIcon(themeToggle, theme);
             });
-            
-            if (hasMore) {
-                loadMoreContainer.style.display = 'block';
-            }
-        }
 
-        // 追加タグを表示
-        function appendTags(tags, hasMore) {
-            tags.forEach(tag => {
-                const card = createTagCard(tag);
-                tagsGrid.appendChild(card);
+            document.getElementById('searchButton').addEventListener('click', () => {
+                state.search = document.getElementById('tagSearchInput').value.trim();
+                state.offset = 0;
+                loadTags(true);
             });
-            
-            if (hasMore) {
-                loadMoreContainer.style.display = 'block';
-            } else {
-                loadMoreContainer.style.display = 'none';
-            }
-        }
-
-        // タグカードを作成
-        function createTagCard(tag) {
-            const card = document.createElement('div');
-            card.className = 'tag-card';
-            card.dataset.tagName = tag.tag.toLowerCase();
-            
-            const name = document.createElement('h3');
-            name.className = 'tag-name';
-            name.textContent = tag.tag;
-            
-            const count = document.createElement('p');
-            count.className = 'tag-count';
-            count.textContent = `${tag.count}件のコンテンツ`;
-            
-            card.appendChild(name);
-            card.appendChild(count);
-            
-            // クリックでタグ検索ページに移動
-            card.addEventListener('click', () => {
-                window.location.href = `/?tag=${encodeURIComponent(tag.tag)}`;
-            });
-            
-            return card;
-        }
-
-        // タグをフィルタリング
-        function filterTags() {
-            const filter = tagFilterInput.value.toLowerCase().trim();
-            const cards = document.querySelectorAll('.tag-card');
-            
-            cards.forEach(card => {
-                const tagName = card.dataset.tagName;
-                if (filter === '' || tagName.includes(filter)) {
-                    card.style.display = 'block';
-                } else {
-                    card.style.display = 'none';
+            document.getElementById('tagSearchInput').addEventListener('keypress', (event) => {
+                if (event.key === 'Enter') {
+                    state.search = document.getElementById('tagSearchInput').value.trim();
+                    state.offset = 0;
+                    loadTags(true);
                 }
             });
+            document.getElementById('loadMoreButton').addEventListener('click', () => loadTags());
+            document.addEventListener('manga:hidden-tags-change', () => {
+                updateHiddenTagsSummary();
+                state.offset = 0;
+                loadTags(true);
+            });
         }
 
-        // タグ数を更新
-        function updateTagsCount() {
-            const visibleCards = document.querySelectorAll('.tag-card:not([style*="display: none"])');
-            const count = currentSearchQuery ? 
-                `${visibleCards.length} / ${totalTags}件のタグ` : 
-                `${totalTags}件のタグ`;
-            tagsCount.textContent = count;
+        function updateThemeToggleIcon(button, theme) {
+            button.textContent = theme === 'dark' ? '☀️' : '🌙';
         }
 
-        // ローディング表示の切り替え
-        function showLoading(show) {
-            isLoading = show;
-            loadingIndicator.style.display = show ? 'block' : 'none';
-            if (show) {
-                loadMoreContainer.style.display = 'none';
+        function updateHiddenTagsSummary() {
+            const summary = document.getElementById('hiddenTagsSummary');
+            const hidden = MangaApp.getHiddenTags();
+            summary.textContent = hidden.length ? `除外タグ: ${hidden.join(', ')}` : '除外タグなし';
+        }
+
+        async function loadTags(reset = false) {
+            if (state.isLoading) return;
+            state.isLoading = true;
+            toggleLoading(true);
+            if (reset) {
+                document.getElementById('tagsGrid').innerHTML = '';
+                state.selectedTags.clear();
+                renderSelectedTags();
+            }
+
+            try {
+                const params = new URLSearchParams();
+                params.append('limit', '100');
+                params.append('offset', state.offset.toString());
+                if (state.search) {
+                    params.append('search', state.search);
+                }
+                const response = await fetch(`/api/tags?${params}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error ${response.status}`);
+                }
+                const data = await response.json();
+                state.total = data.total || 0;
+                document.getElementById('tagsTotal').textContent = state.total;
+                renderTags(data.tags || [], reset);
+                state.offset += 100;
+                document.getElementById('loadMoreContainer').style.display = data.has_more ? 'block' : 'none';
+            } catch (error) {
+                console.error('タグ読み込みエラー', error);
+                showError('タグの読み込み中にエラーが発生しました。');
+            } finally {
+                state.isLoading = false;
+                toggleLoading(false);
             }
         }
-    </script>
 
+        function renderTags(tags, reset) {
+            const grid = document.getElementById('tagsGrid');
+            if (reset) {
+                grid.innerHTML = '';
+            }
+            const fragment = document.createDocumentFragment();
+            tags.forEach((tagInfo) => {
+                const card = document.createElement('article');
+                card.className = 'tag-card';
+                const tagName = tagInfo.tag || '';
+                const jpName = MangaApp.translateTag(tagName);
+
+                const title = document.createElement('h3');
+                title.className = 'tag-name';
+                title.textContent = jpName;
+                const original = document.createElement('small');
+                original.textContent = tagName;
+                title.appendChild(original);
+
+                const count = document.createElement('div');
+                count.className = 'tag-count';
+                count.textContent = `${tagInfo.count.toLocaleString()} 件`;
+
+                const actions = document.createElement('div');
+                actions.className = 'tag-actions';
+
+                const addButton = document.createElement('button');
+                addButton.className = 'primary-button';
+                addButton.textContent = '検索に追加';
+                addButton.addEventListener('click', () => {
+                    state.selectedTags.add(tagName);
+                    renderSelectedTags();
+                });
+
+                const hideButton = document.createElement('button');
+                hideButton.className = 'ghost-button';
+                hideButton.textContent = MangaApp.isTagHidden(tagName) ? '除外解除' : '除外する';
+                hideButton.addEventListener('click', () => {
+                    const hidden = new Set(MangaApp.getHiddenTags());
+                    const normalized = tagName.toLowerCase();
+                    if (hidden.has(normalized)) {
+                        hidden.delete(normalized);
+                    } else {
+                        hidden.add(normalized);
+                    }
+                    MangaApp.saveHiddenTags(Array.from(hidden));
+                    hideButton.textContent = hidden.has(normalized) ? '除外解除' : '除外する';
+                });
+
+                actions.appendChild(addButton);
+                actions.appendChild(hideButton);
+
+                card.appendChild(title);
+                card.appendChild(count);
+                card.appendChild(actions);
+
+                fragment.appendChild(card);
+            });
+            grid.appendChild(fragment);
+            document.getElementById('errorMessage').style.display = 'none';
+        }
+
+        function renderSelectedTags() {
+            const container = document.getElementById('selectedTags');
+            container.innerHTML = '';
+            if (!state.selectedTags.size) {
+                return;
+            }
+            state.selectedTags.forEach((tag) => {
+                const chip = document.createElement('span');
+                chip.className = 'tag-chip';
+                chip.textContent = MangaApp.translateTag(tag);
+                chip.title = tag;
+                const removeButton = document.createElement('button');
+                removeButton.textContent = '✕';
+                removeButton.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    state.selectedTags.delete(tag);
+                    renderSelectedTags();
+                });
+                chip.appendChild(removeButton);
+                chip.addEventListener('click', () => {
+                    const tags = Array.from(state.selectedTags).join(',');
+                    window.location.href = `/?tag=${encodeURIComponent(tags)}`;
+                });
+                container.appendChild(chip);
+            });
+        }
+
+        function toggleLoading(show) {
+            document.getElementById('loadingIndicator').style.display = show ? 'block' : 'none';
+        }
+
+        function showError(message) {
+            const error = document.getElementById('errorMessage');
+            error.textContent = message;
+            error.style.display = 'block';
+        }
+    </script>
 </body>
 
 </html>

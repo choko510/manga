@@ -5,15 +5,23 @@ import aiohttp
 import asyncio
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, Text, select
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import Column, Integer, String, Text, select
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import declarative_base
 import re
 import shlex
 import json
+import time
 from datetime import datetime, timedelta
 from lib import ImageUriResolver
 import logging
@@ -36,11 +44,10 @@ DB_FILE = "sa.db"
 TRACKING_DB_FILE = "tracking.db"
 
 # メインデータベース（ギャラリー用）
-engine = create_engine(
-    f"sqlite:///db/{DB_FILE}",
+engine: AsyncEngine = create_async_engine(
+    f"sqlite+aiosqlite:///db/{DB_FILE}",
     echo=False,
     connect_args={
-        "check_same_thread": False,
         "timeout": 20,
         "isolation_level": None,  # autocommit mode
     },
@@ -49,11 +56,10 @@ engine = create_engine(
 )
 
 # トラッキング用データベース
-tracking_engine = create_engine(
-    f"sqlite:///db/{TRACKING_DB_FILE}",
+tracking_engine: AsyncEngine = create_async_engine(
+    f"sqlite+aiosqlite:///db/{TRACKING_DB_FILE}",
     echo=False,
     connect_args={
-        "check_same_thread": False,
         "timeout": 20,
         "isolation_level": None,  # autocommit mode
     },
@@ -61,14 +67,15 @@ tracking_engine = create_engine(
     pool_recycle=3600,
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False)
-TrackingSessionLocal = sessionmaker(autocommit=False, autoflush=False)
+SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
+TrackingSessionLocal = async_sessionmaker(bind=tracking_engine, expire_on_commit=False)
 
-def get_db_session():
-    return SessionLocal(bind=engine)
+def get_db_session() -> AsyncSession:
+    return SessionLocal()
 
-def get_tracking_db_session():
-    return TrackingSessionLocal(bind=tracking_engine)
+
+def get_tracking_db_session() -> AsyncSession:
+    return TrackingSessionLocal()
 
 # =========================
 # モデル
@@ -185,7 +192,7 @@ class MultipartDownloadError(Exception):
 # DB 初期化
 # =========================
 
-def init_database():
+async def init_database():
     """
     - 通常テーブル作成
     - SQLite PRAGMA 最適化
@@ -197,15 +204,15 @@ def init_database():
     import os
     import shutil
 
-    global engine
+    global engine, SessionLocal
 
     # 接続確認
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
     except Exception as e:
         logger.warning(f"データベース再作成: {e}")
-        engine.dispose()
+        await engine.dispose()
         # バックアップして削除
         if os.path.exists(f"db/{DB_FILE}"):
             try:
@@ -223,36 +230,37 @@ def init_database():
                 os.remove(f"db/{DB_FILE}")
             except Exception:
                 pass
-        engine = create_engine(
-            f"sqlite:///db/{DB_FILE}",
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///db/{DB_FILE}",
             echo=False,
             connect_args={
-                "check_same_thread": False,
                 "timeout": 20,
                 "isolation_level": None,
             },
             pool_pre_ping=True,
             pool_recycle=3600,
         )
+        SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
-    Base.metadata.create_all(bind=engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
-    with engine.connect() as conn:
+    async with engine.begin() as conn:
         # PRAGMA
-        conn.execute(text("PRAGMA journal_mode=WAL"))
-        conn.execute(text("PRAGMA synchronous=NORMAL"))
-        conn.execute(text("PRAGMA cache_size=10000"))
-        conn.execute(text("PRAGMA temp_store=MEMORY"))
-        conn.execute(text("PRAGMA foreign_keys=ON"))
-        conn.execute(text("PRAGMA mmap_size=268435456"))  # 256MB
+        await conn.execute(text("PRAGMA journal_mode=WAL"))
+        await conn.execute(text("PRAGMA synchronous=NORMAL"))
+        await conn.execute(text("PRAGMA cache_size=10000"))
+        await conn.execute(text("PRAGMA temp_store=MEMORY"))
+        await conn.execute(text("PRAGMA foreign_keys=ON"))
+        await conn.execute(text("PRAGMA mmap_size=268435456"))  # 256MB
 
         # 重要インデックス
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_created ON galleries(created_at DESC, gallery_id DESC)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_type_created_id ON galleries(manga_type, created_at DESC, gallery_id DESC)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_characters ON galleries(characters)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_created ON galleries(created_at DESC, gallery_id DESC)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_type_created_id ON galleries(manga_type, created_at DESC, gallery_id DESC)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_characters ON galleries(characters)"))
 
         # 正規化タグテーブル
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TABLE IF NOT EXISTS gallery_tags (
                 gallery_id INTEGER NOT NULL,
@@ -263,12 +271,12 @@ def init_database():
             """
         ))
         # 交差（AND）検索向けの強インデックス
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_tags_tag_gallery ON gallery_tags(tag, gallery_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_tags_gallery_tag ON gallery_tags(gallery_id, tag)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_tags_tag ON gallery_tags(tag)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_tags_tag_gallery ON gallery_tags(tag, gallery_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_tags_gallery_tag ON gallery_tags(gallery_id, tag)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_tags_tag ON gallery_tags(tag)"))
 
         # FTS5
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS galleries_fts USING fts5(
                 japanese_title,
@@ -282,7 +290,7 @@ def init_database():
         ))
 
         # FTS 同期トリガ
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TRIGGER IF NOT EXISTS galleries_ai AFTER INSERT ON galleries BEGIN
                 INSERT INTO galleries_fts(rowid, japanese_title, tags, characters)
@@ -290,14 +298,14 @@ def init_database():
             END;
             """
         ))
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TRIGGER IF NOT EXISTS galleries_ad AFTER DELETE ON galleries BEGIN
                 DELETE FROM galleries_fts WHERE rowid = old.gallery_id;
             END;
             """
         ))
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TRIGGER IF NOT EXISTS galleries_au AFTER UPDATE ON galleries BEGIN
                 UPDATE galleries_fts
@@ -310,7 +318,7 @@ def init_database():
         ))
 
         # gallery_tags 同期トリガ（galleries.tags JSON -> gallery_tags）
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TRIGGER IF NOT EXISTS gallery_tags_ai AFTER INSERT ON galleries BEGIN
                 INSERT OR IGNORE INTO gallery_tags(gallery_id, tag)
@@ -320,14 +328,14 @@ def init_database():
             END;
             """
         ))
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TRIGGER IF NOT EXISTS gallery_tags_ad AFTER DELETE ON galleries BEGIN
                 DELETE FROM gallery_tags WHERE gallery_id = OLD.gallery_id;
             END;
             """
         ))
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TRIGGER IF NOT EXISTS gallery_tags_au AFTER UPDATE OF tags ON galleries BEGIN
                 DELETE FROM gallery_tags WHERE gallery_id = NEW.gallery_id;
@@ -340,7 +348,7 @@ def init_database():
         ))
 
         # ---- 集約テーブル: tag_stats（タグ毎の件数を高速に返す）----
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TABLE IF NOT EXISTS tag_stats (
                 tag TEXT PRIMARY KEY,
@@ -348,10 +356,10 @@ def init_database():
             )
             """
         ))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tag_stats_count_tag ON tag_stats(count DESC, tag ASC)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tag_stats_count_tag ON tag_stats(count DESC, tag ASC)"))
 
         # gallery_tags 変更に追随するトリガ（増減）
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TRIGGER IF NOT EXISTS tag_stats_ins AFTER INSERT ON gallery_tags BEGIN
                 INSERT INTO tag_stats(tag, count) VALUES (NEW.tag, 1)
@@ -359,7 +367,7 @@ def init_database():
             END;
             """
         ))
-        conn.execute(text(
+        await conn.execute(text(
             """
             CREATE TRIGGER IF NOT EXISTS tag_stats_del AFTER DELETE ON gallery_tags BEGIN
                 UPDATE tag_stats SET count = MAX(count - 1, 0) WHERE tag = OLD.tag;
@@ -368,14 +376,16 @@ def init_database():
         ))
 
         # FTS REBUILD 必要時のみ実施
-        need_rebuild = conn.execute(text("SELECT COUNT(*) = 0 FROM galleries_fts")).scalar()
+        rebuild_result = await conn.execute(text("SELECT COUNT(*) = 0 FROM galleries_fts"))
+        need_rebuild = rebuild_result.scalar()
         if need_rebuild:
-            conn.execute(text("INSERT INTO galleries_fts(galleries_fts) VALUES('rebuild')"))
+            await conn.execute(text("INSERT INTO galleries_fts(galleries_fts) VALUES('rebuild')"))
 
         # gallery_tags 初期同期
-        need_tag_sync = conn.execute(text("SELECT COUNT(*) = 0 FROM gallery_tags")).scalar()
+        tag_sync_result = await conn.execute(text("SELECT COUNT(*) = 0 FROM gallery_tags"))
+        need_tag_sync = tag_sync_result.scalar()
         if need_tag_sync:
-            conn.execute(text(
+            await conn.execute(text(
                 """
                 INSERT OR IGNORE INTO gallery_tags(gallery_id, tag)
                 SELECT g.gallery_id, LOWER(TRIM(value))
@@ -386,9 +396,10 @@ def init_database():
             ))
 
         # tag_stats 初期バックフィル（空の時のみ）
-        need_tag_stats_backfill = conn.execute(text("SELECT COUNT(*) = 0 FROM tag_stats")).scalar()
+        tag_stats_result = await conn.execute(text("SELECT COUNT(*) = 0 FROM tag_stats"))
+        need_tag_stats_backfill = tag_stats_result.scalar()
         if need_tag_stats_backfill:
-            conn.execute(text(
+            await conn.execute(text(
                 """
                 INSERT INTO tag_stats(tag, count)
                 SELECT tag, COUNT(*) FROM gallery_tags GROUP BY tag
@@ -396,20 +407,20 @@ def init_database():
             ))
 
         # 統計最適化
-        conn.execute(text("ANALYZE"))
-        conn.execute(text("PRAGMA optimize"))
+        await conn.execute(text("ANALYZE"))
+        await conn.execute(text("PRAGMA optimize"))
 
-def init_tracking_database():
+async def init_tracking_database():
     import os
     import shutil
 
-    global tracking_engine
+    global tracking_engine, TrackingSessionLocal
     try:
-        with tracking_engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        async with tracking_engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
     except Exception as e:
         logger.warning(f"トラッキングDB再作成: {e}")
-        tracking_engine.dispose()
+        await tracking_engine.dispose()
         if os.path.exists(f"db/{TRACKING_DB_FILE}"):
             try:
                 shutil.copy2(f"db/{TRACKING_DB_FILE}", f"db/{TRACKING_DB_FILE}.corrupt_backup")
@@ -426,33 +437,34 @@ def init_tracking_database():
                 os.remove(f"db/{TRACKING_DB_FILE}")
             except Exception:
                 pass
-        tracking_engine = create_engine(
-            f"sqlite:///db/{TRACKING_DB_FILE}",
+        tracking_engine = create_async_engine(
+            f"sqlite+aiosqlite:///db/{TRACKING_DB_FILE}",
             echo=False,
             connect_args={
-                "check_same_thread": False,
                 "timeout": 20,
                 "isolation_level": None,
             },
             pool_pre_ping=True,
             pool_recycle=3600,
         )
+        TrackingSessionLocal = async_sessionmaker(bind=tracking_engine, expire_on_commit=False)
 
-    TrackingBase.metadata.create_all(bind=tracking_engine)
+    async with tracking_engine.begin() as conn:
+        await conn.run_sync(TrackingBase.metadata.create_all)
 
-    with tracking_engine.connect() as conn:
-        conn.execute(text("PRAGMA journal_mode=WAL"))
-        conn.execute(text("PRAGMA synchronous=NORMAL"))
-        conn.execute(text("PRAGMA cache_size=10000"))
-        conn.execute(text("PRAGMA temp_store=MEMORY"))
-        conn.execute(text("PRAGMA foreign_keys=ON"))
+    async with tracking_engine.begin() as conn:
+        await conn.execute(text("PRAGMA journal_mode=WAL"))
+        await conn.execute(text("PRAGMA synchronous=NORMAL"))
+        await conn.execute(text("PRAGMA cache_size=10000"))
+        await conn.execute(text("PRAGMA temp_store=MEMORY"))
+        await conn.execute(text("PRAGMA foreign_keys=ON"))
 
         # インデックス
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_sessions_fingerprint ON user_sessions(fingerprint_hash)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_page_views_session_id ON page_views(session_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_events_session_id ON user_events(session_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_events_page_view_id ON user_events(page_view_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_events_type ON user_events(event_type)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_sessions_fingerprint ON user_sessions(fingerprint_hash)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_page_views_session_id ON page_views(session_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_events_session_id ON user_events(session_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_events_page_view_id ON user_events(page_view_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_events_type ON user_events(event_type)"))
 
 # =========================
 # FTS ユーティリティ
@@ -484,47 +496,92 @@ def _build_fts_query(title: Optional[str] = None, character: Optional[str] = Non
         clauses.append(_terms("characters", character))
     return " AND ".join(clauses) if clauses else ""
 
-@lru_cache(maxsize=512)
-def _parse_tag_terms(tag_query: Optional[str]) -> Tuple[str, ...]:
+_KNOWN_TAGS_CACHE: Set[str] = set()
+_KNOWN_TAGS_FETCHED_AT: float = 0.0
+
+
+async def _get_known_tag_set(db_session: AsyncSession) -> Set[str]:
+    global _KNOWN_TAGS_CACHE, _KNOWN_TAGS_FETCHED_AT
+    now = time.time()
+    if _KNOWN_TAGS_CACHE and now - _KNOWN_TAGS_FETCHED_AT < 300:
+        return _KNOWN_TAGS_CACHE
+
+    try:
+        result = await db_session.execute(text("SELECT tag FROM tag_stats"))
+        rows = result.fetchall()
+    except Exception as exc:
+        logger.warning("タグ一覧の取得に失敗しました: %s", exc)
+        return _KNOWN_TAGS_CACHE
+
+    tags: Set[str] = set()
+    for row in rows:
+        tag_value = row[0] if isinstance(row, (list, tuple)) else row.tag if hasattr(row, "tag") else None
+        if not tag_value:
+            continue
+        normalized = str(tag_value).strip().lower()
+        if normalized:
+            tags.add(normalized)
+
+    _KNOWN_TAGS_CACHE = tags
+    _KNOWN_TAGS_FETCHED_AT = now
+    return _KNOWN_TAGS_CACHE
+
+
+def _parse_tag_terms(tag_query: Optional[str], known_tags: Optional[Set[str]] = None) -> Tuple[str, ...]:
     if not tag_query:
         return tuple()
     raw = tag_query.strip()
     if not raw:
         return tuple()
 
-    separators_present = any(sep in raw for sep in [",", ";", "\n"])
+    raw = raw.replace("\u3000", " ")
+    separators = [",", ";", "\n"]
+    separators_present = any(sep in raw for sep in separators)
+
+    def _split(text_value: str) -> List[str]:
+        try:
+            return [token.strip() for token in shlex.split(text_value) if token.strip()]
+        except ValueError:
+            return [part.strip() for part in text_value.split() if part.strip()]
+
     candidates: List[str]
     if separators_present:
         normalized = raw
-        for sep in [",", ";", "\n"]:
+        for sep in separators:
             normalized = normalized.replace(sep, " ")
-        try:
-            candidates = shlex.split(normalized)
-        except ValueError:
-            candidates = [part for part in normalized.split() if part]
+        candidates = _split(normalized)
     else:
-        try:
-            tokens = shlex.split(raw)
-        except ValueError:
-            candidates = [raw]
-        else:
-            if len(tokens) > 1 and any(q in raw for q in ('"', "'")):
-                candidates = tokens
-            elif len(tokens) > 1:
-                candidates = [raw]  # スペース区切りはフレーズとみなす
-            else:
-                candidates = tokens
+        candidates = _split(raw)
 
+    if not candidates:
+        return tuple()
+
+    lowered = [candidate.lower() for candidate in candidates]
+
+    if known_tags and not separators_present and len(lowered) > 1:
+        resolved: List[str] = []
+        idx = 0
+        total = len(lowered)
+        while idx < total:
+            match = None
+            for end in range(total, idx, -1):
+                candidate = " ".join(lowered[idx:end])
+                if candidate in known_tags:
+                    match = candidate
+                    idx = end
+                    break
+            if match is None:
+                match = lowered[idx]
+                idx += 1
+            resolved.append(match)
+        lowered = resolved
+
+    seen: Set[str] = set()
     unique_terms: List[str] = []
-    seen = set()
-    for cand in candidates:
-        term = cand.strip()
-        if not term:
-            continue
-        normalized = term.lower()
-        if normalized not in seen:
-            unique_terms.append(normalized)
-            seen.add(normalized)
+    for term in lowered:
+        if term and term not in seen:
+            unique_terms.append(term)
+            seen.add(term)
     return tuple(unique_terms)
 
 _GALLERY_FIELD_NAMES: Tuple[str, ...] = (
@@ -560,18 +617,37 @@ def _build_tag_exists_clause(alias: str, tag_terms: Tuple[str, ...]) -> Tuple[Li
         params[key] = term
     return where_list, params
 
-def search_galleries_fast(
-    db_session,
+
+def _build_tag_not_exists_clause(alias: str, tag_terms: Tuple[str, ...]) -> Tuple[List[str], Dict[str, Any]]:
+    """指定タグを含むギャラリーを除外する WHERE 句を生成する。"""
+    where_list: List[str] = []
+    params: Dict[str, Any] = {}
+    for idx, term in enumerate(tag_terms):
+        key = f"exclude_tag_{idx}"
+        where_list.append(
+            f"NOT EXISTS (SELECT 1 FROM gallery_tags gt WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
+        )
+        params[key] = term
+    return where_list, params
+
+async def search_galleries_fast(
+    db_session: AsyncSession,
     title: str = None,
     tag: str = None,
     character: str = None,
     limit: int = 50,
     after_id: int | None = None,
+    exclude_tag: str | None = None,
+    min_pages: int | None = None,
+    max_pages: int | None = None,
+    exclude_gallery_ids: Optional[Tuple[int, ...]] = None,
 ) -> List[Dict[str, Any]]:
-    tag_terms = _parse_tag_terms(tag)
+    known_tags = await _get_known_tag_set(db_session)
+    tag_terms = _parse_tag_terms(tag, known_tags)
+    exclude_tag_terms = _parse_tag_terms(exclude_tag, known_tags)
     fts = _build_fts_query(title, character)
 
-    def run_query(use_fts: bool) -> List[Dict[str, Any]]:
+    async def run_query(use_fts: bool) -> List[Dict[str, Any]]:
         params: Dict[str, object] = {"limit": limit}
         joins: List[str] = []
         where_clauses: List[str] = []
@@ -602,6 +678,31 @@ def search_galleries_fast(
             where_clauses.extend(exists_clauses)
             params.update(exists_params)
 
+        if exclude_tag_terms:
+            not_exists_clauses, not_exists_params = _build_tag_not_exists_clause("g", exclude_tag_terms)
+            where_clauses.extend(not_exists_clauses)
+            params.update(not_exists_params)
+
+        if exclude_gallery_ids:
+            placeholders = []
+            for idx, gallery_id in enumerate(exclude_gallery_ids):
+                key = f"exclude_gallery_{idx}"
+                placeholders.append(f":{key}")
+                params[key] = gallery_id
+            if placeholders:
+                where_clauses.append(f"g.gallery_id NOT IN ({', '.join(placeholders)})")
+
+        if min_pages is not None or max_pages is not None:
+            min_val = max(min_pages or 0, 0)
+            max_val = max_pages if max_pages is not None else 10_000
+            if max_val < min_val:
+                max_val = min_val
+            params["min_pages"] = min_val
+            params["max_pages"] = max_val
+            where_clauses.append(
+                "json_array_length(CASE WHEN json_valid(g.files) THEN g.files ELSE '[]' END) BETWEEN :min_pages AND :max_pages"
+            )
+
         # SQL 組み立て
         sql_segments = ["SELECT g.*", "FROM galleries AS g"]
         if joins:
@@ -612,38 +713,38 @@ def search_galleries_fast(
         sql_segments.append("LIMIT :limit")
         sql = "\n".join(sql_segments)
 
-        result = db_session.execute(text(sql), params)
+        result = await db_session.execute(text(sql), params)
         return [_serialize_gallery(row) for row in result.mappings()]
 
     # FTS 優先、失敗時は LIKE へ
     if fts:
         try:
-            results = run_query(True)
+            results = await run_query(True)
             if results:
                 return results
         except Exception:
             pass
     try:
-        return run_query(False)
+        return await run_query(False)
     except Exception:
-        return search_galleries(
+        return await search_galleries(
             db_session,
             title=title,
             tag=tag,
             character=character,
             limit=limit,
-            offset=0,
+            exclude_tag=exclude_tag,
         )
 
-
 # 低速フォールバック（互換維持）
-def search_galleries(
-    db_session,
+async def search_galleries(
+    db_session: AsyncSession,
     title: str = None,
     tag: str = None,
     character: str = None,
     limit: int = None,
     offset: int = None,
+    exclude_tag: str = None,
 ) -> List[Dict[str, Any]]:
     stmt = select(
         Gallery.gallery_id,
@@ -660,6 +761,8 @@ def search_galleries(
     if tag:
         # JSON 文字列に対する LIKE は遅いが、フォールバックとして残す
         stmt = stmt.where(Gallery.tags.like(f'%"{tag}"%'))
+    if exclude_tag:
+        stmt = stmt.where(~Gallery.tags.like(f'%"{exclude_tag}"%'))
     if character:
         stmt = stmt.where(Gallery.characters.like(f'%"{character}"%'))
 
@@ -669,12 +772,301 @@ def search_galleries(
     if limit:
         stmt = stmt.limit(limit)
 
-    result = db_session.execute(stmt)
+    result = await db_session.execute(stmt)
     return [_serialize_gallery(row) for row in result.mappings()]
 
-# =========================
-# 画像 URL 生成
-# =========================
+
+SESSION_TAG_LOOKBACK_DAYS = 30
+SESSION_TAG_MAX_PAGE_VIEWS = 200
+SESSION_TAG_MIN_RECENCY_WEIGHT = 0.2
+
+
+def _extract_gallery_id_from_page_url(page_url: Optional[str]) -> Optional[int]:
+    if not page_url:
+        return None
+    try:
+        parsed = urlparse(page_url)
+    except Exception:
+        return None
+
+    query = parse_qs(parsed.query)
+    for key in ("id", "gallery_id"):
+        values = query.get(key)
+        if values:
+            try:
+                return int(values[0])
+            except (TypeError, ValueError):
+                continue
+
+    path = parsed.path or ""
+    match = re.search(r"/(?:viewer|gallery)/(\d+)", path)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_tag_value(tag_value: Any) -> Optional[str]:
+    if isinstance(tag_value, str):
+        normalized = tag_value.strip().lower()
+        return normalized or None
+    return None
+
+
+async def build_session_tag_profile(
+    db_session: AsyncSession,
+    session_id: str,
+    lookback_days: int = SESSION_TAG_LOOKBACK_DAYS,
+    max_page_views: int = SESSION_TAG_MAX_PAGE_VIEWS,
+) -> Dict[str, float]:
+    if not session_id:
+        return {}
+
+    try:
+        async with get_tracking_db_session() as tracking_db:
+            stmt = (
+                select(PageView)
+                .where(PageView.session_id == session_id)
+                .order_by(PageView.id.desc())
+                .limit(max_page_views)
+            )
+            result = await tracking_db.execute(stmt)
+            page_views = result.scalars().all()
+    except Exception as exc:
+        logger.error("セッションプロファイル取得エラー: %s", exc)
+        return {}
+
+    if not page_views:
+        return {}
+
+    now = datetime.now()
+    gallery_scores: Dict[int, float] = {}
+    lookback_seconds = max(lookback_days, 1) * 86400
+
+    for view in page_views:
+        gallery_id = _extract_gallery_id_from_page_url(getattr(view, "page_url", None))
+        if not gallery_id:
+            continue
+
+        duration_seconds: Optional[float] = None
+        if isinstance(view.time_on_page, (int, float)):
+            duration_seconds = max(float(view.time_on_page), 0.0)
+        elif getattr(view, "view_start", None) and getattr(view, "view_end", None):
+            try:
+                start = datetime.fromisoformat(view.view_start)
+                end = datetime.fromisoformat(view.view_end)
+                duration_seconds = max((end - start).total_seconds(), 0.0)
+            except ValueError:
+                duration_seconds = None
+
+        duration_weight = 1.0
+        if duration_seconds and duration_seconds > 0:
+            duration_weight += min(duration_seconds / 120.0, 3.0)
+
+        recency_weight = 1.0
+        if getattr(view, "view_start", None):
+            try:
+                view_time = datetime.fromisoformat(view.view_start)
+                age_seconds = max((now - view_time).total_seconds(), 0.0)
+                if lookback_seconds > 0:
+                    recency_weight = 1.0 - min(age_seconds / lookback_seconds, 1.0)
+                    recency_weight = max(recency_weight, SESSION_TAG_MIN_RECENCY_WEIGHT)
+            except ValueError:
+                recency_weight = 1.0
+
+        weight = duration_weight * recency_weight
+        gallery_scores[gallery_id] = gallery_scores.get(gallery_id, 0.0) + weight
+
+    if not gallery_scores:
+        return {}
+
+    gallery_ids = list(gallery_scores.keys())
+    try:
+        stmt = select(Gallery.gallery_id, Gallery.tags).where(Gallery.gallery_id.in_(gallery_ids))
+        result = await db_session.execute(stmt)
+        gallery_rows = result.all()
+    except Exception as exc:
+        logger.error("ギャラリータグ取得エラー: %s", exc)
+        return {}
+
+    tag_weights: Dict[str, float] = {}
+    for row in gallery_rows:
+        raw_tags = row.tags if hasattr(row, 'tags') else row[1]
+        try:
+            tags_data = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+        except (TypeError, json.JSONDecodeError):
+            tags_data = []
+
+        if not isinstance(tags_data, list):
+            continue
+
+        gallery_weight = gallery_scores.get(row[0] if isinstance(row, tuple) else row.gallery_id, 0.0)
+        if gallery_weight <= 0:
+            continue
+
+        for tag_value in tags_data:
+            normalized = _normalize_tag_value(tag_value)
+            if not normalized:
+                continue
+            tag_weights[normalized] = tag_weights.get(normalized, 0.0) + gallery_weight
+
+    if not tag_weights:
+        return {}
+
+    max_weight = max(tag_weights.values())
+    if max_weight <= 0:
+        return {}
+    return {tag: weight / max_weight for tag, weight in tag_weights.items() if weight > 0}
+
+async def get_recommended_galleries(
+    db_session: AsyncSession,
+    gallery_id: Optional[int] = None,
+    limit: int = 8,
+    exclude_tag: Optional[str] = None,
+    session_tag_weights: Optional[Mapping[str, float]] = None,
+) -> List[Dict[str, Any]]:
+    target_tags: Tuple[str, ...] = tuple()
+    exclude_ids: List[int] = []
+
+    if gallery_id is not None:
+        stmt = select(Gallery).where(Gallery.gallery_id == gallery_id)
+        result = await db_session.execute(stmt)
+        gallery = result.scalars().first()
+        if gallery:
+            exclude_ids.append(gallery.gallery_id)
+            try:
+                raw_tags = json.loads(gallery.tags) if gallery.tags else []
+            except (TypeError, json.JSONDecodeError):
+                raw_tags = []
+            normalized = []
+            for tag in raw_tags or []:
+                if isinstance(tag, str):
+                    normalized.append(tag.strip().lower())
+            target_tags = tuple(normalized[:10])
+
+    known_tags = await _get_known_tag_set(db_session)
+    exclude_terms = _parse_tag_terms(exclude_tag, known_tags)
+
+    params: Dict[str, Any] = {"limit": limit}
+    where_clauses = ["g.manga_type = 'doujinshi'"]
+    joins: List[str] = []
+    order_clause = "ORDER BY g.created_at DESC, g.gallery_id DESC"
+
+    if target_tags:
+        joins.append("JOIN gallery_tags gt ON gt.gallery_id = g.gallery_id")
+        tag_placeholders = []
+        for idx, tag_value in enumerate(target_tags):
+            key = f"rec_tag_{idx}"
+            params[key] = tag_value
+            tag_placeholders.append(f":{key}")
+        where_clauses.append(f"gt.tag IN ({', '.join(tag_placeholders)})")
+        order_clause = "ORDER BY COUNT(DISTINCT gt.tag) DESC, g.created_at DESC, g.gallery_id DESC"
+
+    if exclude_terms:
+        not_exists, not_params = _build_tag_not_exists_clause("g", exclude_terms)
+        where_clauses.extend(not_exists)
+        params.update(not_params)
+
+    if exclude_ids:
+        placeholders = []
+        for idx, gid in enumerate(exclude_ids):
+            key = f"exclude_id_{idx}"
+            params[key] = gid
+            placeholders.append(f":{key}")
+        if placeholders:
+            where_clauses.append(f"g.gallery_id NOT IN ({', '.join(placeholders)})")
+
+    select_clause = "SELECT g.*"
+    from_clause = "FROM galleries AS g"
+    if joins:
+        from_clause += " " + " ".join(joins)
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+
+    group_sql = ""
+    if target_tags:
+        group_sql = "GROUP BY g.gallery_id"
+
+    sql = "\n".join([select_clause, from_clause, where_sql, group_sql, order_clause, "LIMIT :limit"])
+
+    result = await db_session.execute(text(sql), params)
+    galleries = [_serialize_gallery(row) for row in result.mappings()]
+
+    if len(galleries) < limit:
+        remaining = limit - len(galleries)
+        fallback_params: Dict[str, Any] = {"limit": remaining}
+        fallback_clauses = ["g.manga_type = 'doujinshi'"]
+        if exclude_terms:
+            not_exists, not_params = _build_tag_not_exists_clause("g", exclude_terms)
+            fallback_clauses.extend(not_exists)
+            fallback_params.update(not_params)
+        if exclude_ids:
+            placeholders = []
+            for idx, gid in enumerate(exclude_ids):
+                key = f"fallback_exclude_{idx}"
+                fallback_params[key] = gid
+                placeholders.append(f":{key}")
+            if placeholders:
+                fallback_clauses.append(f"g.gallery_id NOT IN ({', '.join(placeholders)})")
+
+        fallback_where = "WHERE " + " AND ".join(fallback_clauses)
+        fallback_sql = "\n".join([
+            "SELECT g.*",
+            "FROM galleries AS g",
+            fallback_where,
+            "ORDER BY g.created_at DESC, g.gallery_id DESC",
+            "LIMIT :limit",
+        ])
+        fallback_rows = await db_session.execute(text(fallback_sql), fallback_params)
+        fallback_list = [_serialize_gallery(row) for row in fallback_rows.mappings()]
+        existing_ids = {g["gallery_id"] for g in galleries}
+        for item in fallback_list:
+            if item["gallery_id"] not in existing_ids:
+                galleries.append(item)
+                existing_ids.add(item["gallery_id"])
+            if len(galleries) >= limit:
+                break
+
+    if session_tag_weights:
+        normalized_weights = {
+            key.strip().lower(): value
+            for key, value in session_tag_weights.items()
+            if isinstance(key, str) and key.strip()
+        }
+        if normalized_weights:
+            for idx, item in enumerate(galleries):
+                item["_base_order"] = idx
+                score = 0.0
+                raw_tags = item.get("tags")
+                try:
+                    tags_list = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+                except (TypeError, json.JSONDecodeError):
+                    tags_list = []
+                if isinstance(tags_list, list):
+                    for tag_value in tags_list:
+                        normalized = _normalize_tag_value(tag_value)
+                        if normalized:
+                            score += normalized_weights.get(normalized, 0.0)
+                item["_personal_score"] = score
+
+            galleries.sort(
+                key=lambda item: (
+                    -item.get("_personal_score", 0.0),
+                    item.get("_base_order", 0),
+                )
+            )
+
+            for item in galleries:
+                score = item.pop("_personal_score", None)
+                item.pop("_base_order", None)
+                if score:
+                    item["personal_score"] = round(float(score), 4)
+
+    return galleries
 
 def _derive_filename(url: str) -> str:
     trimmed = url.split("?", 1)[0].rstrip("/")
@@ -731,9 +1123,12 @@ class MultipartDownloadRequest(BaseModel):
 class SearchRequest(BaseModel):
     title: Optional[str] = None
     tag: Optional[str] = None
+    exclude_tag: Optional[str] = None
     character: Optional[str] = None
     limit: int = 50
     after_id: Optional[int] = None
+    min_pages: Optional[int] = None
+    max_pages: Optional[int] = None
 
 class SessionRequest(BaseModel):
     session_id: str
@@ -777,27 +1172,37 @@ async def read_index():
 async def read_viewer():
     return _serve_cached_html("template/viewer.html")
 
+@app.get("/recommendations", response_class=HTMLResponse)
+async def read_recommendations():
+    return _serve_cached_html("template/recommendations.html")
+
 @app.post("/search")
 async def search_galleries_endpoint(request: SearchRequest):
     try:
-        with get_db_session() as db:
-            results = search_galleries_fast(
+        async with get_db_session() as db:
+            results = await search_galleries_fast(
                 db,
                 title=request.title,
                 tag=request.tag,
+                exclude_tag=request.exclude_tag,
                 character=request.character,
                 limit=request.limit,
                 after_id=request.after_id,
+                min_pages=request.min_pages,
+                max_pages=request.max_pages,
             )
 
             for result in results:
                 try:
                     files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
+                    files_list = files_data if isinstance(files_data, list) else []
                     gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
                     result["image_urls"] = geturl(gallery_info)
+                    result["page_count"] = len(files_list)
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
                     result["image_urls"] = []
+                    result["page_count"] = 0
                 if "files" in result:
                     del result["files"]
 
@@ -805,33 +1210,85 @@ async def search_galleries_endpoint(request: SearchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
 
+@app.get("/api/recommendations")
+async def api_recommendations(
+    gallery_id: Optional[int] = None,
+    limit: int = 8,
+    exclude_tag: Optional[str] = None,
+    session_id: Optional[str] = None,
+):
+    try:
+        async with get_db_session() as db:
+            session_tag_weights: Optional[Dict[str, float]] = None
+            if session_id:
+                try:
+                    session_tag_weights = await build_session_tag_profile(db, session_id)
+                except Exception as exc:
+                    logger.error("おすすめ個人化プロファイル作成エラー: %s", exc)
+                    session_tag_weights = None
+            results = await get_recommended_galleries(
+                db,
+                gallery_id=gallery_id,
+                limit=limit,
+                exclude_tag=exclude_tag,
+                session_tag_weights=session_tag_weights,
+            )
+            payload: List[Dict[str, Any]] = []
+            for result in results:
+                try:
+                    files_data = json.loads(result.get("files")) if isinstance(result.get("files"), str) else result.get("files")
+                except (json.JSONDecodeError, TypeError):
+                    files_data = []
+                files_list = files_data if isinstance(files_data, list) else []
+                gallery_info = {"gallery_id": result["gallery_id"], "files": files_list}
+                image_urls = geturl(gallery_info)
+                payload.append(
+                    {
+                        **{k: v for k, v in result.items() if k != "files"},
+                        "image_urls": image_urls,
+                        "page_count": len(files_list),
+                    }
+                )
+            return {"results": payload, "count": len(payload)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"おすすめ取得エラー: {str(e)}")
+
 @app.get("/search")
 async def search_galleries_get(
     title: Optional[str] = None,
     tag: Optional[str] = None,
+    exclude_tag: Optional[str] = None,
     character: Optional[str] = None,
     limit: int = 50,
     after_id: Optional[int] = None,
+    min_pages: Optional[int] = None,
+    max_pages: Optional[int] = None,
 ):
     try:
-        with get_db_session() as db:
-            results = search_galleries_fast(
+        async with get_db_session() as db:
+            results = await search_galleries_fast(
                 db,
                 title=title,
                 tag=tag,
+                exclude_tag=exclude_tag,
                 character=character,
                 limit=limit,
                 after_id=after_id,
+                min_pages=min_pages,
+                max_pages=max_pages,
             )
 
             for result in results:
                 try:
                     files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
+                    files_list = files_data if isinstance(files_data, list) else []
                     gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
                     result["image_urls"] = geturl(gallery_info)
+                    result["page_count"] = len(files_list)
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
                     result["image_urls"] = []
+                    result["page_count"] = 0
                 if "files" in result:
                     del result["files"]
 
@@ -1034,17 +1491,21 @@ async def download_multipart(request: MultipartDownloadRequest):
 @app.get("/gallery/{gallery_id}")
 async def get_gallery(gallery_id: int):
     try:
-        with get_db_session() as db:
-            gallery = db.query(Gallery).filter(Gallery.gallery_id == gallery_id).first()
+        async with get_db_session() as db:
+            stmt = select(Gallery).where(Gallery.gallery_id == gallery_id)
+            result = await db.execute(stmt)
+            gallery = result.scalars().first()
             if not gallery:
                 raise HTTPException(status_code=404, detail="ギャラリーが見つかりません")
             try:
                 files_data = json.loads(gallery.files) if isinstance(gallery.files, str) else gallery.files
-                gallery_info = {"gallery_id": gallery.gallery_id, "files": files_data}
+                files_list = files_data if isinstance(files_data, list) else []
+                gallery_info = {"gallery_id": gallery.gallery_id, "files": files_list}
                 image_urls = geturl(gallery_info)
             except (json.JSONDecodeError, TypeError) as e:
                 logger.error(f"files 解析エラー: {e}, gallery_id: {gallery.gallery_id}")
                 image_urls = []
+                files_list = []
             return {
                 "gallery_id": gallery.gallery_id,
                 "japanese_title": gallery.japanese_title,
@@ -1053,6 +1514,7 @@ async def get_gallery(gallery_id: int):
                 "image_urls": image_urls,
                 "manga_type": gallery.manga_type,
                 "created_at": gallery.created_at,
+                "page_count": len(files_list),
             }
     except HTTPException:
         raise
@@ -1065,7 +1527,7 @@ async def get_gallery(gallery_id: int):
 @app.get("/api/tags")
 async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = None):
     try:
-        with get_db_session() as db:
+        async with get_db_session() as db:
             params: Dict[str, Any] = {"limit": limit, "offset": offset}
             if search:
                 params["search"] = f"%{search.lower()}%"
@@ -1081,8 +1543,10 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
                 )
                 total_sql = "SELECT COUNT(*) FROM tag_stats"
 
-            total_count = db.execute(text(total_sql), params).scalar()
-            rows = db.execute(text(query), params).fetchall()
+            total_result = await db.execute(text(total_sql), params)
+            total_count = total_result.scalar()
+            rows_result = await db.execute(text(query), params)
+            rows = rows_result.fetchall()
             tags = [{"tag": r.tag, "count": r.count} for r in rows]
             return {"tags": tags, "total": total_count, "has_more": (offset + limit) < (total_count or 0)}
     except Exception as e:
@@ -1098,8 +1562,10 @@ async def read_tags():
 @app.post("/api/tracking/session")
 async def update_session(request: SessionRequest):
     try:
-        with get_tracking_db_session() as db:
-            existing_session = db.query(UserSession).filter(UserSession.session_id == request.session_id).first()
+        async with get_tracking_db_session() as db:
+            stmt = select(UserSession).where(UserSession.session_id == request.session_id)
+            result = await db.execute(stmt)
+            existing_session = result.scalars().first()
             now_iso = datetime.now().isoformat()
             if existing_session:
                 existing_session.last_activity = now_iso
@@ -1107,7 +1573,7 @@ async def update_session(request: SessionRequest):
                     existing_session.user_agent = request.user_agent
                 if request.ip_address:
                     existing_session.ip_address = request.ip_address
-                db.commit()
+                await db.commit()
                 return {"status": "updated", "session_id": existing_session.session_id}
             else:
                 new_session = UserSession(
@@ -1119,7 +1585,7 @@ async def update_session(request: SessionRequest):
                     last_activity=now_iso,
                 )
                 db.add(new_session)
-                db.commit()
+                await db.commit()
                 return {"status": "created", "session_id": new_session.session_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"セッション更新エラー: {str(e)}")
@@ -1127,8 +1593,10 @@ async def update_session(request: SessionRequest):
 @app.post("/api/tracking/page-view")
 async def record_page_view(request: PageViewRequest):
     try:
-        with get_tracking_db_session() as db:
-            session = db.query(UserSession).filter(UserSession.session_id == request.session_id).first()
+        async with get_tracking_db_session() as db:
+            stmt = select(UserSession).where(UserSession.session_id == request.session_id)
+            result = await db.execute(stmt)
+            session = result.scalars().first()
             if not session:
                 raise HTTPException(status_code=404, detail="セッションが見つかりません")
             new_page_view = PageView(
@@ -1142,7 +1610,7 @@ async def record_page_view(request: PageViewRequest):
                 scroll_depth_max=request.scroll_depth_max,
             )
             db.add(new_page_view)
-            db.commit()
+            await db.commit()
             return {"status": "created", "page_view_id": new_page_view.id, "session_id": request.session_id}
     except HTTPException:
         raise
@@ -1152,9 +1620,15 @@ async def record_page_view(request: PageViewRequest):
 @app.post("/api/tracking/events")
 async def record_events(request: BatchEventsRequest):
     try:
-        with get_tracking_db_session() as db:
-            session_ids = set(event.session_id for event in request.events)
-            sessions = db.query(UserSession).filter(UserSession.session_id.in_(session_ids)).all()
+        async with get_tracking_db_session() as db:
+            session_ids = {event.session_id for event in request.events}
+            sessions: List[UserSession]
+            if session_ids:
+                stmt = select(UserSession).where(UserSession.session_id.in_(session_ids))
+                result = await db.execute(stmt)
+                sessions = result.scalars().all()
+            else:
+                sessions = []
             session_dict = {s.session_id: s for s in sessions}
             valid_events = [event for event in request.events if event.session_id in session_dict]
             if not valid_events:
@@ -1176,7 +1650,7 @@ async def record_events(request: BatchEventsRequest):
                 )
                 new_events.append(new_event)
             db.add_all(new_events)
-            db.commit()
+            await db.commit()
             return {"status": "created", "count": len(new_events), "session_id": valid_events[0].session_id if valid_events else None}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"イベント記録エラー: {str(e)}")
@@ -1184,8 +1658,10 @@ async def record_events(request: BatchEventsRequest):
 @app.post("/api/tracking/single-event")
 async def record_single_event(request: EventRequest):
     try:
-        with get_tracking_db_session() as db:
-            session = db.query(UserSession).filter(UserSession.session_id == request.session_id).first()
+        async with get_tracking_db_session() as db:
+            stmt = select(UserSession).where(UserSession.session_id == request.session_id)
+            result = await db.execute(stmt)
+            session = result.scalars().first()
             if not session:
                 raise HTTPException(status_code=404, detail="セッションが見つかりません")
             new_event = UserEvent(
@@ -1201,7 +1677,7 @@ async def record_single_event(request: EventRequest):
                 timestamp=request.timestamp or datetime.now().isoformat(),
             )
             db.add(new_event)
-            db.commit()
+            await db.commit()
             return {"status": "created", "event_id": new_event.id, "session_id": request.session_id}
     except HTTPException:
         raise
@@ -1234,9 +1710,9 @@ async def startup_event():
     global global_session, scheduler_task
 
     # DB 初期化
-    init_database()
+    await init_database()
     logger.info("メインDB初期化完了")
-    init_tracking_database()
+    await init_tracking_database()
     logger.info("トラッキングDB初期化完了")
 
     # ImageUriResolver 初期化

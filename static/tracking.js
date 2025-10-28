@@ -14,6 +14,7 @@ let lastScrollTime = Date.now();
 let eventQueue = [];
 let isTrackingEnabled = true;
 let privacyConsent = null; // プライバシー同意状態
+let trackingInitialized = false;
 let config = {
     apiEndpoint: '/api/tracking',
     batchInterval: 10000, // 10秒ごとにバッチ送信
@@ -55,6 +56,15 @@ function anonymizeData(data) {
     return anonymized;
 }
 
+function notifySessionReady() {
+    if (!sessionId) {
+        return;
+    }
+    document.dispatchEvent(new CustomEvent('tracking:session-ready', {
+        detail: { sessionId }
+    }));
+}
+
 // Fingerprint.jsの読み込みと初期化
 async function initializeFingerprint() {
     try {
@@ -78,10 +88,11 @@ async function initializeFingerprint() {
         
         // セッションIDの生成または取得
         sessionId = getSessionId();
-        
+
         // セッション情報をサーバーに送信
         updateSession();
-        
+        notifySessionReady();
+
         return true;
     } catch (error) {
         console.error('フィンガープリント初期化エラー:', error);
@@ -89,6 +100,7 @@ async function initializeFingerprint() {
         fingerprintHash = 'fallback_' + Math.random().toString(36).substr(2, 9);
         sessionId = getSessionId();
         updateSession();
+        notifySessionReady();
         return false;
     }
 }
@@ -490,7 +502,16 @@ window.Tracking = {
     recordSingleEvent
 };
 
-// DOMの読み込み完了後に初期化
-if (document.readyState === 'loading') {
+function startTrackingOnce() {
+    if (trackingInitialized) {
+        return;
+    }
+    trackingInitialized = true;
     initializeTracking();
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startTrackingOnce, { once: true });
+} else {
+    startTrackingOnce();
 }
