@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>タグ一覧 - UI再現サイト v2</title>
+    <style>
+        /* --- 基本設定とリセット --- */
+        :root {
+            --bg-main: #FFFFFF;
+            --bg-header: #F0F2F5;
+            --bg-card-placeholder: #E4E6E9;
+            --bg-button: #FFFFFF;
+            --text-primary: #333333;
+            --text-secondary: #555555;
+            --text-placeholder: #888888;
+            --icon-color: #555555;
+
+            --font-family-base: "Hiragino Sans", "ヒラギノ角ゴ ProN", "Hiragino Kaku Gothic ProN", "メイリオ", Meiryo, sans-serif;
+
+            --radius-pill: 9999px;
+            --radius-card: 20px;
+        }
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: var(--font-family-base);
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+        }
+
+        a {
+            text-decoration: none;
+            color: inherit;
+        }
+
+        /* --- ヘッダー --- */
+        .site-header {
+            background-color: var(--bg-header);
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .main-nav {
+            display: flex;
+            gap: 16px;
+            overflow-x: auto;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        .main-nav::-webkit-scrollbar {
+            display: none;
+        }
+
+        .nav-button {
+            display: inline-block;
+            background-color: var(--bg-button);
+            padding: 10px 24px;
+            border-radius: var(--radius-pill);
+            font-size: 16px;
+            font-weight: 500;
+            white-space: nowrap;
+            transition: background-color 0.2s ease;
+        }
+
+        .nav-button:hover {
+            background-color: #f7f7f7;
+        }
+
+        .nav-button.active {
+            background-color: #e0e0e0;
+        }
+
+        .search-container {
+            position: relative;
+            display: flex;
+            align-items: center;
+            min-width: 280px;
+        }
+
+        .search-container input[type="search"] {
+            background-color: var(--bg-button);
+            border: none;
+            border-radius: var(--radius-pill);
+            padding: 10px 48px 10px 24px;
+            font-size: 16px;
+            width: 100%;
+        }
+
+        .search-container input[type="search"]::placeholder {
+            color: var(--text-placeholder);
+        }
+
+        .search-icon {
+            position: absolute;
+            right: 16px;
+            width: 22px;
+            height: 22px;
+            color: var(--icon-color);
+            pointer-events: none;
+        }
+
+        /* --- メインコンテンツ --- */
+        .content-area {
+            padding: 32px;
+        }
+
+        .tags-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .tags-title {
+            font-size: 24px;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .tags-count {
+            color: var(--text-secondary);
+            font-size: 16px;
+        }
+
+        .tags-grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        }
+
+        .tag-card {
+            background-color: var(--bg-card-placeholder);
+            border-radius: var(--radius-card);
+            padding: 16px;
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+            cursor: pointer;
+        }
+
+        .tag-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        .tag-name {
+            font-size: 18px;
+            font-weight: 600;
+            margin: 0 0 8px 0;
+            word-break: break-word;
+        }
+
+        .tag-count {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .tag-search {
+            margin-bottom: 24px;
+        }
+
+        .tag-search input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid #ddd;
+            border-radius: var(--radius-card);
+            font-size: 16px;
+        }
+
+        .load-more-container {
+            text-align: center;
+            margin-top: 24px;
+        }
+
+        .load-more-button {
+            background-color: var(--bg-button);
+            border: 1px solid #ddd;
+            border-radius: var(--radius-pill);
+            padding: 10px 24px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+
+        .load-more-button:hover {
+            background-color: #f7f7f7;
+        }
+
+        .loading-indicator {
+            text-align: center;
+            padding: 20px;
+            display: none;
+        }
+
+        /* --- レスポンシブデザイン --- */
+
+        /* タブレット (幅 1023px 以下) */
+        @media (max-width: 1023px) {
+            .tags-grid {
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            }
+        }
+
+        /* スマートフォン (幅 767px 以下) */
+        @media (max-width: 767px) {
+            .site-header {
+                padding: 12px 16px;
+                flex-wrap: wrap;
+            }
+
+            .main-nav {
+                width: 100%;
+                padding-bottom: 8px;
+            }
+
+            .search-container {
+                width: 100%;
+                order: -1;
+                margin-bottom: 12px;
+                min-width: 0;
+            }
+
+            .content-area {
+                padding: 24px 16px;
+            }
+
+            .tags-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .tags-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header class="site-header">
+        <nav class="main-nav">
+            <a href="/" class="nav-button">ホーム</a>
+            <a href="/tags" class="nav-button active">タグ</a>
+            <a href="#" class="nav-button">設定</a>
+            <a href="#" class="nav-button">マイページ</a>
+            <a href="#" class="nav-button">画像</a>
+            <a href="#" class="nav-button">音声</a>
+        </nav>
+        <div class="search-container">
+            <input type="search" id="tagSearchInput" placeholder="タグを検索">
+            <svg class="search-icon" id="tagSearchIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="cursor: pointer;">
+                <path
+                    d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z">
+                </path>
+            </svg>
+        </div>
+    </header>
+
+    <main class="content-area">
+        <div class="tags-header">
+            <h1 class="tags-title">タグ一覧</h1>
+            <div class="tags-count" id="tagsCount">0件のタグ</div>
+        </div>
+
+        <div class="tag-search">
+            <input type="text" id="tagFilterInput" placeholder="タグ名で絞り込み...">
+        </div>
+
+        <div id="loadingIndicator" class="loading-indicator">
+            読み込み中...
+        </div>
+
+        <div id="tagsGrid" class="tags-grid">
+            <!-- タグがここに動的に表示されます -->
+        </div>
+
+        <div id="loadMoreContainer" class="load-more-container" style="display: none;">
+            <button id="loadMoreButton" class="load-more-button">
+                もっと読み込む
+            </button>
+        </div>
+    </main>
+
+    <script>
+        // グローバル変数
+        let currentOffset = 0;
+        let isLoading = false;
+        let currentSearchQuery = '';
+        let totalTags = 0;
+
+        // DOM要素
+        const tagSearchInput = document.getElementById('tagSearchInput');
+        const tagSearchIcon = document.getElementById('tagSearchIcon');
+        const tagFilterInput = document.getElementById('tagFilterInput');
+        const tagsGrid = document.getElementById('tagsGrid');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const loadMoreContainer = document.getElementById('loadMoreContainer');
+        const loadMoreButton = document.getElementById('loadMoreButton');
+        const tagsCount = document.getElementById('tagsCount');
+
+        // イベントリスナー
+        tagSearchIcon.addEventListener('click', performSearch);
+        tagSearchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+        
+        tagFilterInput.addEventListener('input', debounce(filterTags, 300));
+        loadMoreButton.addEventListener('click', loadMoreTags);
+
+        // 初期読み込み
+        document.addEventListener('DOMContentLoaded', () => {
+            loadTags();
+        });
+
+        // デバウンス関数
+        function debounce(func, wait) {
+            let timeout;
+            return function(...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        }
+
+        // 検索実行関数
+        async function performSearch() {
+            const query = tagSearchInput.value.trim();
+            currentSearchQuery = query;
+            currentOffset = 0; // ページングをリセット
+            
+            showLoading(true);
+            tagsGrid.innerHTML = ''; // 既存の結果をクリア
+            loadMoreContainer.style.display = 'none';
+            
+            try {
+                const result = await fetchTags(currentSearchQuery, currentOffset);
+                totalTags = result.total;
+                displayTags(result.tags, result.has_more);
+                updateTagsCount();
+            } catch (error) {
+                console.error('検索エラー:', error);
+                tagsGrid.innerHTML = '<p>検索中にエラーが発生しました。</p>';
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // タグを読み込む
+        async function loadTags() {
+            showLoading(true);
+            
+            try {
+                const result = await fetchTags(currentSearchQuery, currentOffset);
+                totalTags = result.total;
+                displayTags(result.tags, result.has_more);
+                updateTagsCount();
+            } catch (error) {
+                console.error('タグ読み込みエラー:', error);
+                tagsGrid.innerHTML = '<p>タグの読み込み中にエラーが発生しました。</p>';
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // さらにタグを読み込む
+        async function loadMoreTags() {
+            if (isLoading) return;
+            
+            currentOffset += 100;
+            showLoading(true);
+            
+            try {
+                const result = await fetchTags(currentSearchQuery, currentOffset);
+                appendTags(result.tags, result.has_more);
+            } catch (error) {
+                console.error('追加読み込みエラー:', error);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // タグAPI呼び出し
+        async function fetchTags(search = null, offset = 0, limit = 100) {
+            const params = new URLSearchParams();
+            params.append('limit', limit.toString());
+            params.append('offset', offset.toString());
+            
+            if (search) {
+                params.append('search', search);
+            }
+            
+            console.log(`Fetching tags with params: ${params.toString()}`);
+            const response = await fetch(`/api/tags?${params}`);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const result = await response.json();
+            console.log(`Received ${result.tags.length} tags, total: ${result.total}`);
+            return result;
+        }
+
+        // タグを表示
+        function displayTags(tags, hasMore) {
+            if (tags.length === 0) {
+                tagsGrid.innerHTML = '<p>タグが見つかりませんでした。</p>';
+                return;
+            }
+            
+            tags.forEach(tag => {
+                const card = createTagCard(tag);
+                tagsGrid.appendChild(card);
+            });
+            
+            if (hasMore) {
+                loadMoreContainer.style.display = 'block';
+            }
+        }
+
+        // 追加タグを表示
+        function appendTags(tags, hasMore) {
+            tags.forEach(tag => {
+                const card = createTagCard(tag);
+                tagsGrid.appendChild(card);
+            });
+            
+            if (hasMore) {
+                loadMoreContainer.style.display = 'block';
+            } else {
+                loadMoreContainer.style.display = 'none';
+            }
+        }
+
+        // タグカードを作成
+        function createTagCard(tag) {
+            const card = document.createElement('div');
+            card.className = 'tag-card';
+            card.dataset.tagName = tag.tag.toLowerCase();
+            
+            const name = document.createElement('h3');
+            name.className = 'tag-name';
+            name.textContent = tag.tag;
+            
+            const count = document.createElement('p');
+            count.className = 'tag-count';
+            count.textContent = `${tag.count}件のコンテンツ`;
+            
+            card.appendChild(name);
+            card.appendChild(count);
+            
+            // クリックでタグ検索ページに移動
+            card.addEventListener('click', () => {
+                window.location.href = `/?tag=${encodeURIComponent(tag.tag)}`;
+            });
+            
+            return card;
+        }
+
+        // タグをフィルタリング
+        function filterTags() {
+            const filter = tagFilterInput.value.toLowerCase().trim();
+            const cards = document.querySelectorAll('.tag-card');
+            
+            cards.forEach(card => {
+                const tagName = card.dataset.tagName;
+                if (filter === '' || tagName.includes(filter)) {
+                    card.style.display = 'block';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        }
+
+        // タグ数を更新
+        function updateTagsCount() {
+            const visibleCards = document.querySelectorAll('.tag-card:not([style*="display: none"])');
+            const count = currentSearchQuery ? 
+                `${visibleCards.length} / ${totalTags}件のタグ` : 
+                `${totalTags}件のタグ`;
+            tagsCount.textContent = count;
+        }
+
+        // ローディング表示の切り替え
+        function showLoading(show) {
+            isLoading = show;
+            loadingIndicator.style.display = show ? 'block' : 'none';
+            if (show) {
+                loadMoreContainer.style.display = 'none';
+            }
+        }
+    </script>
+
+</body>
+
+</html>

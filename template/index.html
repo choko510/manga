@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UI再現サイト v2</title>
+    <style>
+        /* --- 基本設定とリセット --- */
+        :root {
+            --bg-main: #FFFFFF;
+            --bg-header: #F0F2F5;
+            --bg-card-placeholder: #E4E6E9;
+            --bg-button: #FFFFFF;
+            --text-primary: #333333;
+            --text-secondary: #555555;
+            --text-placeholder: #888888;
+            --icon-color: #555555;
+
+            --font-family-base: "Hiragino Sans", "ヒラギノ角ゴ ProN", "Hiragino Kaku Gothic ProN", "メイリオ", Meiryo, sans-serif;
+
+            --radius-pill: 9999px;
+            --radius-card: 20px;
+            /* 少し大きめの角丸に調整 */
+        }
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: var(--font-family-base);
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+        }
+
+        a {
+            text-decoration: none;
+            color: inherit;
+        }
+
+        /* --- ヘッダー --- */
+        .site-header {
+            background-color: var(--bg-header);
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .main-nav {
+            display: flex;
+            gap: 16px;
+            overflow-x: auto;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        .main-nav::-webkit-scrollbar {
+            display: none;
+        }
+
+        .nav-button {
+            display: inline-block;
+            background-color: var(--bg-button);
+            padding: 10px 24px;
+            border-radius: var(--radius-pill);
+            font-size: 16px;
+            font-weight: 500;
+            white-space: nowrap;
+            transition: background-color 0.2s ease;
+        }
+
+        .nav-button:hover {
+            background-color: #f7f7f7;
+        }
+
+        .search-container {
+            position: relative;
+            display: flex;
+            align-items: center;
+            min-width: 280px;
+        }
+
+        .search-container input[type="search"] {
+            background-color: var(--bg-button);
+            border: none;
+            border-radius: var(--radius-pill);
+            padding: 10px 48px 10px 24px;
+            /* アイコン用の右パディングを確保 */
+            font-size: 16px;
+            width: 100%;
+        }
+
+        .search-container input[type="search"]::placeholder {
+            color: var(--text-placeholder);
+        }
+
+        .search-icon {
+            position: absolute;
+            right: 16px;
+            width: 22px;
+            height: 22px;
+            color: var(--icon-color);
+            pointer-events: none;
+            /* アイコンが入力の邪魔をしないように */
+        }
+
+
+        /* --- メインコンテンツ --- */
+        .content-area {
+            padding: 32px;
+        }
+
+        .card-grid {
+            display: grid;
+            gap: 24px;
+            /* デフォルトはデスクトップの5カラム */
+            grid-template-columns: repeat(5, 1fr);
+        }
+
+        .card {
+            display: block;
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+        }
+
+        .card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        .card-thumbnail {
+            width: 100%;
+            aspect-ratio: 3 / 4;
+            background-color: var(--bg-card-placeholder);
+            border-radius: var(--radius-card);
+        }
+
+        .card-info {
+            margin-top: 12px;
+        }
+
+        .card-title {
+            font-size: 1rem;
+            /* 16px */
+            font-weight: 600;
+            margin: 0 0 4px 0;
+        }
+
+        .card-tags {
+            font-size: 0.875rem;
+            /* 14px */
+            color: var(--text-secondary);
+            margin: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        
+        .tag-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .tag-label {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .tag-item {
+            background-color: #f0f2f5;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        /* --- レスポンシブデザイン --- */
+
+        /* タブレット (幅 1023px 以下) */
+        @media (max-width: 1023px) {
+            .card-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        /* スマートフォン (幅 767px 以下) */
+        @media (max-width: 767px) {
+            .site-header {
+                padding: 12px 16px;
+                flex-wrap: wrap;
+            }
+
+            .main-nav {
+                width: 100%;
+                padding-bottom: 8px;
+            }
+
+            .search-container {
+                width: 100%;
+                order: -1;
+                margin-bottom: 12px;
+                min-width: 0;
+            }
+
+            .content-area {
+                padding: 24px 16px;
+            }
+
+            .card-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header class="site-header">
+        <nav class="main-nav">
+            <a href="/" class="nav-button">ホーム</a>
+            <a href="/tags" class="nav-button">タグ</a>
+            <a href="#" class="nav-button">設定</a>
+            <a href="#" class="nav-button">マイページ</a>
+            <a href="#" class="nav-button">画像</a>
+            <a href="#" class="nav-button">音声</a>
+        </nav>
+        <div class="search-container">
+            <input type="search" id="searchInput" placeholder="検索">
+            <svg class="search-icon" id="searchIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="cursor: pointer;">
+                <path
+                    d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z">
+                </path>
+            </svg>
+        </div>
+    </header>
+
+    <main class="content-area">
+        <div id="loadingIndicator" style="text-align: center; padding: 20px; display: none;">
+            読み込み中...
+        </div>
+        <div id="cardGrid" class="card-grid">
+            <!-- 検索結果がここに動的に表示されます -->
+        </div>
+        <div id="loadMoreContainer" style="text-align: center; margin-top: 20px; display: none;">
+            <button id="loadMoreButton" style="padding: 10px 20px; background-color: #f0f2f5; border: none; border-radius: 5px; cursor: pointer;">
+                もっと読み込む
+            </button>
+        </div>
+    </main>
+
+    <!-- トラッキングスクリプト -->
+    <script src="static/tracking.js"></script>
+    
+    <script>
+        // グローバル変数
+        let currentAfterId = null;
+        let isLoading = false;
+        let currentSearchQuery = '';
+        let searchCache = new Map(); // 検索結果のキャッシュ
+        let ongoingRequests = new Map(); // 進行中のリクエストの追跡
+
+        // DOM要素
+        const searchInput = document.getElementById('searchInput');
+        const searchIcon = document.getElementById('searchIcon');
+        const cardGrid = document.getElementById('cardGrid');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const loadMoreContainer = document.getElementById('loadMoreContainer');
+        const loadMoreButton = document.getElementById('loadMoreButton');
+
+        // イベントリスナー
+        searchIcon.addEventListener('click', performSearch);
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+        loadMoreButton.addEventListener('click', loadMoreResults);
+
+        // 初期読み込み
+        document.addEventListener('DOMContentLoaded', () => {
+            // URLパラメータからタグを取得
+            const urlParams = new URLSearchParams(window.location.search);
+            const tagParam = urlParams.get('tag');
+            
+            if (tagParam) {
+                searchInput.value = tagParam;
+                currentSearchQuery = tagParam;
+            }
+            
+            performSearch();
+        });
+
+        // 検索実行関数
+        async function performSearch() {
+            const query = searchInput.value.trim();
+            currentSearchQuery = query;
+            currentAfterId = null; // ページングをリセット
+            
+            showLoading(true);
+            cardGrid.innerHTML = ''; // 既存の結果をクリア
+            loadMoreContainer.style.display = 'none';
+            
+            try {
+                const results = await searchGalleries(query, currentAfterId);
+                displayResults(results.results, results.has_more);
+            } catch (error) {
+                console.error('検索エラー:', error);
+                cardGrid.innerHTML = '<p>検索中にエラーが発生しました。</p>';
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // さらに結果を読み込む
+        async function loadMoreResults() {
+            if (isLoading || !currentAfterId) return;
+            
+            showLoading(true);
+            
+            try {
+                const results = await searchGalleries(currentSearchQuery, currentAfterId);
+                appendResults(results.results, results.has_more);
+            } catch (error) {
+                console.error('追加読み込みエラー:', error);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // 検索API呼び出し
+        async function searchGalleries(query, afterId = null, limit = 20) {
+            // キャッシュキーの生成
+            const cacheKey = `${query}_${afterId}_${limit}`;
+            
+            // キャッシュから取得
+            if (searchCache.has(cacheKey)) {
+                return searchCache.get(cacheKey);
+            }
+            
+            // 進行中のリクエストがある場合はそれを返す
+            if (ongoingRequests.has(cacheKey)) {
+                return ongoingRequests.get(cacheKey);
+            }
+            
+            const params = new URLSearchParams();
+            params.append('limit', limit.toString());
+           
+            if (query) {
+                // タグとして検索
+                params.append('tag', query);
+            }
+           
+            if (afterId) {
+                params.append('after_id', afterId.toString());
+            }
+           
+            console.log(`Searching with params: ${params.toString()}`);
+            const requestPromise = (async () => {
+                try {
+                    const response = await fetch(`/search?${params}`);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const data = await response.json();
+                    
+                    // キャッシュに保存（メモリ使用量を考慮してサイズ制限）
+                    if (searchCache.size >= 50) {
+                        const firstKey = searchCache.keys().next().value;
+                        searchCache.delete(firstKey);
+                    }
+                    searchCache.set(cacheKey, data);
+                    
+                    return data;
+                } finally {
+                    // リクエスト完了後に進行中リストから削除
+                    ongoingRequests.delete(cacheKey);
+                }
+            })();
+            
+            // 進行中のリクエストとして保存
+            ongoingRequests.set(cacheKey, requestPromise);
+            
+            return requestPromise;
+        }
+
+        // 検索結果を表示
+        function displayResults(results, hasMore) {
+            if (results.length === 0) {
+                cardGrid.innerHTML = '<p>検索結果が見つかりませんでした。</p>';
+                return;
+            }
+            
+            results.forEach(gallery => {
+                const card = createGalleryCard(gallery);
+                cardGrid.appendChild(card);
+            });
+            
+            if (hasMore && results.length > 0) {
+                currentAfterId = results[results.length - 1].gallery_id;
+                loadMoreContainer.style.display = 'block';
+            }
+        }
+
+        // 追加結果を表示
+        function appendResults(results, hasMore) {
+            results.forEach(gallery => {
+                const card = createGalleryCard(gallery);
+                cardGrid.appendChild(card);
+            });
+            
+            if (hasMore && results.length > 0) {
+                currentAfterId = results[results.length - 1].gallery_id;
+            } else {
+                loadMoreContainer.style.display = 'none';
+            }
+        }
+
+        // ギャラリーカードを作成
+        function createGalleryCard(gallery) {
+            const card = document.createElement('a');
+            card.href = `/viewer?id=${gallery.gallery_id}`;
+            card.className = 'card';
+            // プリロード用の属性
+            card.setAttribute('data-gallery-id', gallery.gallery_id);
+            card.setAttribute('data-first-image-url', gallery.image_urls && gallery.image_urls.length > 0 ? gallery.image_urls[0] : '');
+            
+            const thumbnail = document.createElement('div');
+            thumbnail.className = 'card-thumbnail';
+            // プレースホルダーを追加
+            thumbnail.innerHTML = '<div class="image-placeholder"></div>';
+            thumbnail.style.backgroundSize = 'cover';
+            thumbnail.style.backgroundPosition = 'center';
+            
+            // 最初の画像URLを取得して表示
+            if (gallery.image_urls) {
+                let imageUrls = [];
+                
+                // gallery.image_urlsがJSON文字列かどうかを確認
+                if (typeof gallery.image_urls === 'string' && gallery.image_urls.startsWith('[') && gallery.image_urls.endsWith(']')) {
+                    try {
+                        imageUrls = JSON.parse(gallery.image_urls);
+                    } catch (e) {
+                        console.error('画像URLの解析エラー:', e);
+                        // JSON.parseに失敗した場合は、文字列をカンマ区切りで配列に変換するなどのフォールバック処理
+                        imageUrls = gallery.image_urls.split(',');
+                    }
+                } else if (Array.isArray(gallery.image_urls)) {
+                    imageUrls = gallery.image_urls;
+                } else {
+                    // それ以外の場合は、文字列をカンマ区切りで配列に変換するなどの処理
+                    imageUrls = gallery.image_urls.toString().split(',');
+                }
+                
+                if (imageUrls && imageUrls.length > 0) {
+                    // proxy経由で画像を遅延読み込み
+                    const img = document.createElement('img');
+                    img.src = `/proxy/${imageUrls[0].trim()}`;
+                    img.style.display = 'none'; // 背景画像として使用するため非表示
+                    img.onload = function() {
+                        thumbnail.style.backgroundImage = `url(${this.src})`;
+                        // プレースホルダーを削除
+                        const placeholder = thumbnail.querySelector('.image-placeholder');
+                        if (placeholder) {
+                            thumbnail.removeChild(placeholder);
+                        }
+                    };
+                    img.onerror = function() {
+                        // エラー時はプレースホルダーを維持
+                        console.error('画像読み込みエラー:', this.src);
+                    };
+                    thumbnail.appendChild(img);
+                }
+            }
+            
+            const info = document.createElement('div');
+            info.className = 'card-info';
+            
+            const title = document.createElement('h3');
+            title.className = 'card-title';
+            title.textContent = gallery.japanese_title || '無題';
+            
+            const tags = document.createElement('p');
+            tags.className = 'card-tags';
+            
+            // タグとキャラクター情報を表示
+            tags.innerHTML = ''; // 一度クリア
+            
+            if (gallery.tags) {
+                try {
+                    const tagArray = JSON.parse(gallery.tags);
+                    if (Array.isArray(tagArray) && tagArray.length > 0) {
+                        const tagGroup = document.createElement('div');
+                        tagGroup.className = 'tag-group';
+                        
+                        const tagLabel = document.createElement('span');
+                        tagLabel.className = 'tag-label';
+                        tagLabel.textContent = 'タグ:';
+                        tagGroup.appendChild(tagLabel);
+                        
+                        tagArray.slice(0, 3).forEach(tag => {
+                            const tagItem = document.createElement('span');
+                            tagItem.className = 'tag-item';
+                            tagItem.textContent = tag;
+                            tagGroup.appendChild(tagItem);
+                        });
+                        
+                        tags.appendChild(tagGroup);
+                    }
+                } catch (e) {
+                    // パースに失敗した場合はテキストとして表示
+                    const tagGroup = document.createElement('div');
+                    tagGroup.className = 'tag-group';
+                    
+                    const tagLabel = document.createElement('span');
+                    tagLabel.className = 'tag-label';
+                    tagLabel.textContent = 'タグ:';
+                    tagGroup.appendChild(tagLabel);
+                    
+                    const tagItem = document.createElement('span');
+                    tagItem.className = 'tag-item';
+                    tagItem.textContent = gallery.tags;
+                    tagGroup.appendChild(tagItem);
+                    
+                    tags.appendChild(tagGroup);
+                }
+            }
+            
+            if (gallery.characters) {
+                try {
+                    const characterArray = JSON.parse(gallery.characters);
+                    if (Array.isArray(characterArray) && characterArray.length > 0) {
+                        const characterGroup = document.createElement('div');
+                        characterGroup.className = 'tag-group';
+                        
+                        const characterLabel = document.createElement('span');
+                        characterLabel.className = 'tag-label';
+                        characterLabel.textContent = 'キャラ:';
+                        characterGroup.appendChild(characterLabel);
+                        
+                        characterArray.slice(0, 3).forEach(character => {
+                            const characterItem = document.createElement('span');
+                            characterItem.className = 'tag-item';
+                            characterItem.textContent = character;
+                            characterGroup.appendChild(characterItem);
+                        });
+                        
+                        tags.appendChild(characterGroup);
+                    }
+                } catch (e) {
+                    // パースに失敗した場合はテキストとして表示
+                    const characterGroup = document.createElement('div');
+                    characterGroup.className = 'tag-group';
+                    
+                    const characterLabel = document.createElement('span');
+                    characterLabel.className = 'tag-label';
+                    characterLabel.textContent = 'キャラ:';
+                    characterGroup.appendChild(characterLabel);
+                    
+                    const characterItem = document.createElement('span');
+                    characterItem.className = 'tag-item';
+                    characterItem.textContent = gallery.characters;
+                    characterGroup.appendChild(characterItem);
+                    
+                    tags.appendChild(characterGroup);
+                }
+            }
+            
+            // タグ情報がない場合
+            if (!gallery.tags && !gallery.characters) {
+                tags.textContent = 'タグ情報なし';
+            }
+            
+            info.appendChild(title);
+            info.appendChild(tags);
+            
+            card.appendChild(thumbnail);
+            card.appendChild(info);
+            
+            return card;
+        }
+
+        // 画像のプリロード
+        function preloadImage(src) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = resolve;
+                img.onerror = reject;
+                img.src = src;
+            });
+        }
+
+        // Intersection Observerによる遅延読み込みの設定
+        function setupLazyLoading() {
+            if ('IntersectionObserver' in window) {
+                const cardObserver = new IntersectionObserver((entries) => {
+                    entries.forEach(entry => {
+                        if (entry.isIntersecting) {
+                            const card = entry.target;
+                            const firstImageUrl = card.getAttribute('data-first-image-url');
+                            if (firstImageUrl) {
+                                preloadImage(`/proxy/${firstImageUrl.trim()}`)
+                                    .then(() => console.log('Preloaded image for card:', card.getAttribute('data-gallery-id')))
+                                    .catch(err => console.error('Failed to preload image:', err));
+                                // プリロードが完了したら属性を削除
+                                card.removeAttribute('data-first-image-url');
+                            }
+                            cardObserver.unobserve(card);
+                        }
+                    });
+                }, { threshold: 0.1, rootMargin: '50px' }); // 50px手前から監視
+
+                // すべてのカードを監視
+                document.querySelectorAll('.card').forEach(card => {
+                    cardObserver.observe(card);
+                });
+            }
+        }
+
+        // 検索結果を表示
+        function displayResults(results, hasMore) {
+            if (results.length === 0) {
+                cardGrid.innerHTML = '<p>検索結果が見つかりませんでした。</p>';
+                return;
+            }
+            
+            results.forEach(gallery => {
+                const card = createGalleryCard(gallery);
+                cardGrid.appendChild(card);
+            });
+
+            // 遅延読み込みを設定
+            setupLazyLoading();
+            
+            if (hasMore && results.length > 0) {
+                currentAfterId = results[results.length - 1].gallery_id;
+                loadMoreContainer.style.display = 'block';
+            }
+        }
+
+        // 追加結果を表示
+        function appendResults(results, hasMore) {
+            results.forEach(gallery => {
+                const card = createGalleryCard(gallery);
+                cardGrid.appendChild(card);
+            });
+
+            // 遅延読み込みを設定
+            setupLazyLoading();
+            
+            if (hasMore && results.length > 0) {
+                currentAfterId = results[results.length - 1].gallery_id;
+            } else {
+                loadMoreContainer.style.display = 'none';
+            }
+        }
+
+        // ローディング表示の切り替え
+        function showLoading(show) {
+            isLoading = show;
+            loadingIndicator.style.display = show ? 'block' : 'none';
+            if (show) {
+                loadMoreContainer.style.display = 'none';
+            }
+        }
+    </script>
+
+</body>
+
+</html>
