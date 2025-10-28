@@ -634,6 +634,7 @@
     <script>
         // グローバル変数
         let currentGalleryId = null;
+        let lastRecommendationSessionId = null;
         let galleryData = null;
         let imageUrls = [];
         let currentPageIndex = 0;
@@ -668,6 +669,13 @@
         const recommendationSection = document.getElementById('recommendationSection');
         const recommendationGrid = document.getElementById('recommendationGrid');
 
+        function getTrackingSessionId() {
+            if (window.Tracking && typeof window.Tracking.getSessionId === 'function') {
+                return window.Tracking.getSessionId();
+            }
+            return null;
+        }
+
         // 初期化
         document.addEventListener('DOMContentLoaded', () => {
             MangaApp.applyThemeToDocument(document);
@@ -691,6 +699,16 @@
             // URLからgallery_idを取得
             const urlParams = new URLSearchParams(window.location.search);
             currentGalleryId = urlParams.get('id');
+
+            document.addEventListener('tracking:session-ready', (event) => {
+                const sessionId = event && event.detail ? event.detail.sessionId : null;
+                if (!sessionId || sessionId === lastRecommendationSessionId) {
+                    return;
+                }
+                if (currentGalleryId) {
+                    loadRecommendations(Number(currentGalleryId));
+                }
+            });
 
             // 画像遅延読み込みの初期化
             initImageLazyLoading();
@@ -1372,15 +1390,21 @@
                 if (hidden.length) {
                     params.append('exclude_tag', hidden.join(','));
                 }
+                const sessionId = getTrackingSessionId();
+                if (sessionId) {
+                    params.append('session_id', sessionId);
+                }
                 const response = await fetch(`/api/recommendations?${params.toString()}`);
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
                 }
                 const data = await response.json();
                 renderRecommendations(data.results || []);
+                lastRecommendationSessionId = sessionId || null;
             } catch (error) {
                 console.error('おすすめ読み込みエラー', error);
                 recommendationSection.style.display = 'none';
+                lastRecommendationSessionId = null;
             }
         }
 

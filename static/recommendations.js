@@ -1,10 +1,17 @@
 (function () {
+    let grid;
+    let loading;
+    let errorMessage;
+    let summaryCount;
+    let hiddenSummary;
+    let lastSessionIdUsed = null;
+
     document.addEventListener('DOMContentLoaded', () => {
-        const grid = document.getElementById('recommendationGrid');
-        const loading = document.getElementById('loadingIndicator');
-        const errorMessage = document.getElementById('errorMessage');
-        const summaryCount = document.getElementById('summaryCount');
-        const hiddenSummary = document.getElementById('hiddenTagsSummary');
+        grid = document.getElementById('recommendationGrid');
+        loading = document.getElementById('loadingIndicator');
+        errorMessage = document.getElementById('errorMessage');
+        summaryCount = document.getElementById('summaryCount');
+        hiddenSummary = document.getElementById('hiddenTagsSummary');
         const themeToggle = document.getElementById('themeToggle');
         const refreshButton = document.getElementById('refreshButton');
 
@@ -19,6 +26,17 @@
         refreshButton.addEventListener('click', () => loadRecommendations(grid, loading, errorMessage, summaryCount, hiddenSummary));
         document.addEventListener('manga:hidden-tags-change', () => {
             updateHiddenSummary(hiddenSummary);
+            loadRecommendations(grid, loading, errorMessage, summaryCount, hiddenSummary);
+        });
+
+        document.addEventListener('tracking:session-ready', (event) => {
+            const sessionId = event && event.detail ? event.detail.sessionId : null;
+            if (!sessionId || sessionId === lastSessionIdUsed) {
+                return;
+            }
+            if (!grid) {
+                return;
+            }
             loadRecommendations(grid, loading, errorMessage, summaryCount, hiddenSummary);
         });
 
@@ -37,6 +55,13 @@
         element.textContent = hidden.length ? `除外タグ: ${hidden.join(', ')}` : '除外タグなし';
     }
 
+    function getTrackingSessionId() {
+        if (window.Tracking && typeof window.Tracking.getSessionId === 'function') {
+            return window.Tracking.getSessionId();
+        }
+        return null;
+    }
+
     async function loadRecommendations(grid, loading, errorMessage, summaryCount, hiddenSummary) {
         showLoading(loading, true);
         errorMessage.style.display = 'none';
@@ -47,6 +72,10 @@
             if (hidden.length) {
                 params.append('exclude_tag', hidden.join(','));
             }
+            const sessionId = getTrackingSessionId();
+            if (sessionId) {
+                params.append('session_id', sessionId);
+            }
             const response = await fetch(`/api/recommendations?${params.toString()}`);
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
@@ -54,12 +83,14 @@
             const data = await response.json();
             renderRecommendations(grid, data.results || []);
             summaryCount.textContent = `${(data.results || []).length} 件を表示中`;
+            lastSessionIdUsed = sessionId || null;
         } catch (error) {
             console.error('おすすめ取得エラー', error);
             errorMessage.textContent = 'おすすめを取得できませんでした。時間をおいて再度お試しください。';
             errorMessage.style.display = 'block';
             grid.innerHTML = '';
             summaryCount.textContent = '0 件を表示中';
+            lastSessionIdUsed = null;
         } finally {
             showLoading(loading, false);
         }

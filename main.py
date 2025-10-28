@@ -6,6 +6,7 @@ import asyncio
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, Text, select
@@ -720,11 +721,159 @@ def search_galleries(
     return [_serialize_gallery(row) for row in result.mappings()]
 
 
+SESSION_TAG_LOOKBACK_DAYS = 30
+SESSION_TAG_MAX_PAGE_VIEWS = 200
+SESSION_TAG_MIN_RECENCY_WEIGHT = 0.2
+
+
+def _extract_gallery_id_from_page_url(page_url: Optional[str]) -> Optional[int]:
+    if not page_url:
+        return None
+    try:
+        parsed = urlparse(page_url)
+    except Exception:
+        return None
+
+    query = parse_qs(parsed.query)
+    for key in ("id", "gallery_id"):
+        values = query.get(key)
+        if values:
+            try:
+                return int(values[0])
+            except (TypeError, ValueError):
+                continue
+
+    path = parsed.path or ""
+    match = re.search(r"/(?:viewer|gallery)/(\d+)", path)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_tag_value(tag_value: Any) -> Optional[str]:
+    if isinstance(tag_value, str):
+        normalized = tag_value.strip().lower()
+        return normalized or None
+    return None
+
+
+def build_session_tag_profile(
+    db_session,
+    session_id: str,
+    lookback_days: int = SESSION_TAG_LOOKBACK_DAYS,
+    max_page_views: int = SESSION_TAG_MAX_PAGE_VIEWS,
+) -> Dict[str, float]:
+    if not session_id:
+        return {}
+
+    try:
+        with get_tracking_db_session() as tracking_db:
+            query = (
+                tracking_db.query(PageView)
+                .filter(PageView.session_id == session_id)
+                .order_by(PageView.id.desc())
+                .limit(max_page_views)
+            )
+            page_views = list(query)
+    except Exception as exc:
+        logger.error("セッションプロファイル取得エラー: %s", exc)
+        return {}
+
+    if not page_views:
+        return {}
+
+    now = datetime.now()
+    gallery_scores: Dict[int, float] = {}
+    lookback_seconds = max(lookback_days, 1) * 86400
+
+    for view in page_views:
+        gallery_id = _extract_gallery_id_from_page_url(getattr(view, "page_url", None))
+        if not gallery_id:
+            continue
+
+        duration_seconds: Optional[float] = None
+        if isinstance(view.time_on_page, (int, float)):
+            duration_seconds = max(float(view.time_on_page), 0.0)
+        elif getattr(view, "view_start", None) and getattr(view, "view_end", None):
+            try:
+                start = datetime.fromisoformat(view.view_start)
+                end = datetime.fromisoformat(view.view_end)
+                duration_seconds = max((end - start).total_seconds(), 0.0)
+            except ValueError:
+                duration_seconds = None
+
+        duration_weight = 1.0
+        if duration_seconds and duration_seconds > 0:
+            duration_weight += min(duration_seconds / 120.0, 3.0)
+
+        recency_weight = 1.0
+        if getattr(view, "view_start", None):
+            try:
+                view_time = datetime.fromisoformat(view.view_start)
+                age_seconds = max((now - view_time).total_seconds(), 0.0)
+                if lookback_seconds > 0:
+                    recency_weight = 1.0 - min(age_seconds / lookback_seconds, 1.0)
+                    recency_weight = max(recency_weight, SESSION_TAG_MIN_RECENCY_WEIGHT)
+            except ValueError:
+                recency_weight = 1.0
+
+        weight = duration_weight * recency_weight
+        gallery_scores[gallery_id] = gallery_scores.get(gallery_id, 0.0) + weight
+
+    if not gallery_scores:
+        return {}
+
+    gallery_ids = list(gallery_scores.keys())
+    try:
+        gallery_rows = (
+            db_session.query(Gallery.gallery_id, Gallery.tags)
+            .filter(Gallery.gallery_id.in_(gallery_ids))
+            .all()
+        )
+    except Exception as exc:
+        logger.error("ギャラリータグ取得エラー: %s", exc)
+        return {}
+
+    tag_weights: Dict[str, float] = {}
+    for row in gallery_rows:
+        raw_tags = row.tags
+        try:
+            tags_data = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+        except (TypeError, json.JSONDecodeError):
+            tags_data = []
+
+        if not isinstance(tags_data, list):
+            continue
+
+        gallery_weight = gallery_scores.get(row.gallery_id, 0.0)
+        if gallery_weight <= 0:
+            continue
+
+        for tag_value in tags_data:
+            normalized = _normalize_tag_value(tag_value)
+            if not normalized:
+                continue
+            tag_weights[normalized] = tag_weights.get(normalized, 0.0) + gallery_weight
+
+    if not tag_weights:
+        return {}
+
+    max_weight = max(tag_weights.values())
+    if max_weight <= 0:
+        return {}
+
+    return {tag: weight / max_weight for tag, weight in tag_weights.items() if weight > 0}
+
+
 def get_recommended_galleries(
     db_session,
     gallery_id: Optional[int] = None,
     limit: int = 8,
     exclude_tag: Optional[str] = None,
+    session_tag_weights: Optional[Mapping[str, float]] = None,
 ) -> List[Dict[str, Any]]:
     target_tags: Tuple[str, ...] = tuple()
     exclude_ids: List[int] = []
@@ -833,6 +982,41 @@ def get_recommended_galleries(
                 existing_ids.add(item["gallery_id"])
             if len(galleries) >= limit:
                 break
+
+    if session_tag_weights:
+        normalized_weights = {
+            key.strip().lower(): value
+            for key, value in session_tag_weights.items()
+            if isinstance(key, str) and key.strip()
+        }
+        if normalized_weights:
+            for idx, item in enumerate(galleries):
+                item["_base_order"] = idx
+                score = 0.0
+                raw_tags = item.get("tags")
+                try:
+                    tags_list = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+                except (TypeError, json.JSONDecodeError):
+                    tags_list = []
+                if isinstance(tags_list, list):
+                    for tag_value in tags_list:
+                        normalized = _normalize_tag_value(tag_value)
+                        if normalized:
+                            score += normalized_weights.get(normalized, 0.0)
+                item["_personal_score"] = score
+
+            galleries.sort(
+                key=lambda item: (
+                    -item.get("_personal_score", 0.0),
+                    item.get("_base_order", 0),
+                )
+            )
+
+            for item in galleries:
+                score = item.pop("_personal_score", None)
+                item.pop("_base_order", None)
+                if score:
+                    item["personal_score"] = round(float(score), 4)
 
     return galleries
 
@@ -987,14 +1171,23 @@ async def api_recommendations(
     gallery_id: Optional[int] = None,
     limit: int = 8,
     exclude_tag: Optional[str] = None,
+    session_id: Optional[str] = None,
 ):
     try:
         with get_db_session() as db:
+            session_tag_weights: Optional[Dict[str, float]] = None
+            if session_id:
+                try:
+                    session_tag_weights = build_session_tag_profile(db, session_id)
+                except Exception as exc:
+                    logger.error("おすすめ個人化プロファイル作成エラー: %s", exc)
+                    session_tag_weights = None
             results = get_recommended_galleries(
                 db,
                 gallery_id=gallery_id,
                 limit=limit,
                 exclude_tag=exclude_tag,
+                session_tag_weights=session_tag_weights,
             )
             payload: List[Dict[str, Any]] = []
             for result in results:
