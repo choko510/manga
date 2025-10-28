@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>おすすめ - UI再現サイト v2</title>
+    <style>
+        :root {
+            --bg-main: #ffffff;
+            --bg-header: #f0f2f5;
+            --bg-card: #ffffff;
+            --bg-card-placeholder: #e4e6e9;
+            --bg-button: #ffffff;
+            --text-primary: #1f2933;
+            --text-secondary: #52616b;
+            --text-placeholder: #9aa5b1;
+            --accent: #2563eb;
+            --accent-soft: rgba(37, 99, 235, 0.1);
+            --radius-pill: 9999px;
+            --radius-card: 20px;
+        }
+
+        body.dark-mode {
+            --bg-main: #0f172a;
+            --bg-header: rgba(15, 23, 42, 0.75);
+            --bg-card: rgba(30, 41, 59, 0.9);
+            --bg-card-placeholder: #1f2937;
+            --bg-button: rgba(30, 41, 59, 0.9);
+            --text-primary: #e2e8f0;
+            --text-secondary: #cbd5f5;
+            --text-placeholder: #94a3b8;
+            --accent: #60a5fa;
+            --accent-soft: rgba(96, 165, 250, 0.2);
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Hiragino Sans", "ヒラギノ角ゴ ProN", "Hiragino Kaku Gothic ProN", "メイリオ", Meiryo, sans-serif;
+            background: var(--bg-main);
+            color: var(--text-primary);
+            transition: background 0.3s ease, color 0.3s ease;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .site-header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            padding: 20px 32px;
+            background: var(--bg-header);
+            backdrop-filter: blur(16px);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .main-nav {
+            display: flex;
+            gap: 12px;
+            overflow-x: auto;
+            padding-bottom: 4px;
+        }
+
+        .nav-button {
+            padding: 10px 20px;
+            border-radius: var(--radius-pill);
+            background: var(--bg-button);
+            color: var(--text-secondary);
+            font-weight: 600;
+            border: 1px solid transparent;
+            transition: background 0.2s ease, color 0.2s ease;
+        }
+
+        .nav-button.active,
+        .nav-button:hover {
+            background: var(--accent-soft);
+            color: var(--accent);
+            border-color: rgba(37, 99, 235, 0.2);
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .icon-button {
+            border: none;
+            border-radius: var(--radius-pill);
+            padding: 8px 12px;
+            background: var(--bg-button);
+            color: var(--text-secondary);
+            font-size: 18px;
+            cursor: pointer;
+            transition: background 0.2s ease, color 0.2s ease;
+        }
+
+        .icon-button:hover {
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+
+        .refresh-button {
+            border: none;
+            border-radius: var(--radius-pill);
+            padding: 10px 18px;
+            font-size: 14px;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--accent) 0%, #4f46e5 100%);
+            color: #fff;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .refresh-button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 22px rgba(37, 99, 235, 0.25);
+        }
+
+        .content-area {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 32px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .summary-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .card-grid {
+            display: grid;
+            gap: 24px;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        }
+
+        .card {
+            display: block;
+            background: var(--bg-card);
+            border-radius: var(--radius-card);
+            overflow: hidden;
+            box-shadow: 0 15px 35px rgba(15, 23, 42, 0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            position: relative;
+        }
+
+        .card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 20px 40px rgba(15, 23, 42, 0.18);
+        }
+
+        .card-thumbnail {
+            aspect-ratio: 3 / 4;
+            background: var(--bg-card-placeholder);
+            position: relative;
+        }
+
+        .card-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .like-button {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            border: none;
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            background: rgba(15, 23, 42, 0.4);
+            color: #fff;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .like-button.active {
+            background: #ef4444;
+        }
+
+        .card-info {
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .card-title {
+            font-size: 1rem;
+            margin: 0;
+        }
+
+        .card-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .card-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .tag-chip {
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: rgba(148, 163, 184, 0.2);
+        }
+
+        .loading {
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        @media (max-width: 1023px) {
+            .site-header {
+                padding: 16px 24px;
+            }
+
+            .content-area {
+                padding: 24px;
+            }
+        }
+
+        @media (max-width: 767px) {
+            .site-header {
+                padding: 16px;
+            }
+
+            .header-top {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .card-grid {
+                grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="site-header">
+        <div class="header-top">
+            <nav class="main-nav">
+                <a href="/" class="nav-button">ホーム</a>
+                <a href="/tags" class="nav-button">タグ</a>
+                <a href="/recommendations" class="nav-button active">おすすめ</a>
+            </nav>
+            <div class="header-actions">
+                <button id="refreshButton" class="refresh-button">おすすめを更新</button>
+                <button id="themeToggle" class="icon-button" aria-label="ダークモード切替">🌙</button>
+            </div>
+        </div>
+        <div class="summary-bar">
+            <span id="summaryCount">0 件を表示中</span>
+            <span id="hiddenTagsSummary">除外タグなし</span>
+        </div>
+    </header>
+
+    <main class="content-area">
+        <section>
+            <div class="card-grid" id="recommendationGrid"></div>
+            <div class="loading" id="loadingIndicator" style="display:none;">読み込み中...</div>
+            <div class="loading" id="errorMessage" style="display:none; color:#ef4444;"></div>
+        </section>
+    </main>
+
+    <script src="/static/tracking.js" defer></script>
+    <script src="/static/app.js"></script>
+    <script src="/static/recommendations.js" defer></script>
+</body>
+
+</html>

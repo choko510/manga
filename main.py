@@ -511,7 +511,7 @@ def _parse_tag_terms(tag_query: Optional[str]) -> Tuple[str, ...]:
             if len(tokens) > 1 and any(q in raw for q in ('"', "'")):
                 candidates = tokens
             elif len(tokens) > 1:
-                candidates = [raw]  # スペース区切りはフレーズとみなす
+                candidates = tokens
             else:
                 candidates = tokens
 
@@ -560,6 +560,19 @@ def _build_tag_exists_clause(alias: str, tag_terms: Tuple[str, ...]) -> Tuple[Li
         params[key] = term
     return where_list, params
 
+
+def _build_tag_not_exists_clause(alias: str, tag_terms: Tuple[str, ...]) -> Tuple[List[str], Dict[str, Any]]:
+    """指定タグを含むギャラリーを除外する WHERE 句を生成する。"""
+    where_list: List[str] = []
+    params: Dict[str, Any] = {}
+    for idx, term in enumerate(tag_terms):
+        key = f"exclude_tag_{idx}"
+        where_list.append(
+            f"NOT EXISTS (SELECT 1 FROM gallery_tags gt WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
+        )
+        params[key] = term
+    return where_list, params
+
 def search_galleries_fast(
     db_session,
     title: str = None,
@@ -567,8 +580,13 @@ def search_galleries_fast(
     character: str = None,
     limit: int = 50,
     after_id: int | None = None,
+    exclude_tag: str | None = None,
+    min_pages: int | None = None,
+    max_pages: int | None = None,
+    exclude_gallery_ids: Optional[Tuple[int, ...]] = None,
 ) -> List[Dict[str, Any]]:
     tag_terms = _parse_tag_terms(tag)
+    exclude_tag_terms = _parse_tag_terms(exclude_tag)
     fts = _build_fts_query(title, character)
 
     def run_query(use_fts: bool) -> List[Dict[str, Any]]:
@@ -602,6 +620,31 @@ def search_galleries_fast(
             where_clauses.extend(exists_clauses)
             params.update(exists_params)
 
+        if exclude_tag_terms:
+            not_exists_clauses, not_exists_params = _build_tag_not_exists_clause("g", exclude_tag_terms)
+            where_clauses.extend(not_exists_clauses)
+            params.update(not_exists_params)
+
+        if exclude_gallery_ids:
+            placeholders = []
+            for idx, gallery_id in enumerate(exclude_gallery_ids):
+                key = f"exclude_gallery_{idx}"
+                placeholders.append(f":{key}")
+                params[key] = gallery_id
+            if placeholders:
+                where_clauses.append(f"g.gallery_id NOT IN ({', '.join(placeholders)})")
+
+        if min_pages is not None or max_pages is not None:
+            min_val = max(min_pages or 0, 0)
+            max_val = max_pages if max_pages is not None else 10_000
+            if max_val < min_val:
+                max_val = min_val
+            params["min_pages"] = min_val
+            params["max_pages"] = max_val
+            where_clauses.append(
+                "json_array_length(CASE WHEN json_valid(g.files) THEN g.files ELSE '[]' END) BETWEEN :min_pages AND :max_pages"
+            )
+
         # SQL 組み立て
         sql_segments = ["SELECT g.*", "FROM galleries AS g"]
         if joins:
@@ -633,6 +676,7 @@ def search_galleries_fast(
             character=character,
             limit=limit,
             offset=0,
+            exclude_tag=exclude_tag,
         )
 
 
@@ -644,6 +688,7 @@ def search_galleries(
     character: str = None,
     limit: int = None,
     offset: int = None,
+    exclude_tag: str = None,
 ) -> List[Dict[str, Any]]:
     stmt = select(
         Gallery.gallery_id,
@@ -660,6 +705,8 @@ def search_galleries(
     if tag:
         # JSON 文字列に対する LIKE は遅いが、フォールバックとして残す
         stmt = stmt.where(Gallery.tags.like(f'%"{tag}"%'))
+    if exclude_tag:
+        stmt = stmt.where(~Gallery.tags.like(f'%"{exclude_tag}"%'))
     if character:
         stmt = stmt.where(Gallery.characters.like(f'%"{character}"%'))
 
@@ -671,6 +718,123 @@ def search_galleries(
 
     result = db_session.execute(stmt)
     return [_serialize_gallery(row) for row in result.mappings()]
+
+
+def get_recommended_galleries(
+    db_session,
+    gallery_id: Optional[int] = None,
+    limit: int = 8,
+    exclude_tag: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    target_tags: Tuple[str, ...] = tuple()
+    exclude_ids: List[int] = []
+
+    if gallery_id is not None:
+        gallery = (
+            db_session.query(Gallery)
+            .filter(Gallery.gallery_id == gallery_id)
+            .first()
+        )
+        if gallery:
+            exclude_ids.append(gallery.gallery_id)
+            try:
+                raw_tags = json.loads(gallery.tags) if gallery.tags else []
+            except (TypeError, json.JSONDecodeError):
+                raw_tags = []
+            normalized = []
+            for tag in raw_tags or []:
+                if isinstance(tag, str):
+                    normalized.append(tag.strip().lower())
+            target_tags = tuple(normalized[:10])  # 上位10件まで
+
+    exclude_terms = _parse_tag_terms(exclude_tag)
+
+    params: Dict[str, Any] = {"limit": limit}
+    where_clauses = ["g.manga_type = 'doujinshi'"]
+    joins = []
+    order_clause = "ORDER BY g.created_at DESC, g.gallery_id DESC"
+
+    if target_tags:
+        joins.append("JOIN gallery_tags gt ON gt.gallery_id = g.gallery_id")
+        tag_placeholders = []
+        for idx, tag_value in enumerate(target_tags):
+            key = f"rec_tag_{idx}"
+            params[key] = tag_value
+            tag_placeholders.append(f":{key}")
+        where_clauses.append(f"gt.tag IN ({', '.join(tag_placeholders)})")
+        order_clause = (
+            "ORDER BY COUNT(DISTINCT gt.tag) DESC, g.created_at DESC, g.gallery_id DESC"
+        )
+
+    if exclude_terms:
+        not_exists, not_params = _build_tag_not_exists_clause("g", exclude_terms)
+        where_clauses.extend(not_exists)
+        params.update(not_params)
+
+    if exclude_ids:
+        placeholders = []
+        for idx, gid in enumerate(exclude_ids):
+            key = f"rec_exclude_{idx}"
+            params[key] = gid
+            placeholders.append(f":{key}")
+        where_clauses.append(f"g.gallery_id NOT IN ({', '.join(placeholders)})")
+
+    select_clause = "SELECT g.*"
+    from_clause = "FROM galleries AS g"
+    if joins:
+        from_clause += " " + " ".join(joins)
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+
+    group_sql = ""
+    if target_tags:
+        group_sql = "GROUP BY g.gallery_id"
+
+    sql = "\n".join([select_clause, from_clause, where_sql, group_sql, order_clause, "LIMIT :limit"])
+
+    result = db_session.execute(text(sql), params)
+    galleries = [_serialize_gallery(row) for row in result.mappings()]
+
+    if len(galleries) < limit:
+        # Fallback: 最近の作品を追加で補完
+        remaining = limit - len(galleries)
+        fallback_params: Dict[str, Any] = {"limit": remaining}
+        fallback_clauses = ["g.manga_type = 'doujinshi'"]
+        if exclude_terms:
+            not_exists, not_params = _build_tag_not_exists_clause("g", exclude_terms)
+            fallback_clauses.extend(not_exists)
+            fallback_params.update(not_params)
+        if exclude_ids:
+            placeholders = []
+            for idx, gid in enumerate(exclude_ids):
+                key = f"fallback_exclude_{idx}"
+                fallback_params[key] = gid
+                placeholders.append(f":{key}")
+            fallback_clauses.append(f"g.gallery_id NOT IN ({', '.join(placeholders)})")
+
+        fallback_where = "WHERE " + " AND ".join(fallback_clauses)
+        fallback_sql = "\n".join(
+            [
+                "SELECT g.*",
+                "FROM galleries AS g",
+                fallback_where,
+                "ORDER BY g.created_at DESC, g.gallery_id DESC",
+                "LIMIT :limit",
+            ]
+        )
+        fallback_rows = db_session.execute(text(fallback_sql), fallback_params)
+        fallback_list = [_serialize_gallery(row) for row in fallback_rows.mappings()]
+        existing_ids = {g["gallery_id"] for g in galleries}
+        for item in fallback_list:
+            if item["gallery_id"] not in existing_ids:
+                galleries.append(item)
+                existing_ids.add(item["gallery_id"])
+            if len(galleries) >= limit:
+                break
+
+    return galleries
 
 # =========================
 # 画像 URL 生成
@@ -731,9 +895,12 @@ class MultipartDownloadRequest(BaseModel):
 class SearchRequest(BaseModel):
     title: Optional[str] = None
     tag: Optional[str] = None
+    exclude_tag: Optional[str] = None
     character: Optional[str] = None
     limit: int = 50
     after_id: Optional[int] = None
+    min_pages: Optional[int] = None
+    max_pages: Optional[int] = None
 
 class SessionRequest(BaseModel):
     session_id: str
@@ -777,6 +944,10 @@ async def read_index():
 async def read_viewer():
     return _serve_cached_html("template/viewer.html")
 
+@app.get("/recommendations", response_class=HTMLResponse)
+async def read_recommendations():
+    return _serve_cached_html("template/recommendations.html")
+
 @app.post("/search")
 async def search_galleries_endpoint(request: SearchRequest):
     try:
@@ -785,19 +956,25 @@ async def search_galleries_endpoint(request: SearchRequest):
                 db,
                 title=request.title,
                 tag=request.tag,
+                exclude_tag=request.exclude_tag,
                 character=request.character,
                 limit=request.limit,
                 after_id=request.after_id,
+                min_pages=request.min_pages,
+                max_pages=request.max_pages,
             )
 
             for result in results:
                 try:
                     files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
+                    files_list = files_data if isinstance(files_data, list) else []
                     gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
                     result["image_urls"] = geturl(gallery_info)
+                    result["page_count"] = len(files_list)
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
                     result["image_urls"] = []
+                    result["page_count"] = 0
                 if "files" in result:
                     del result["files"]
 
@@ -805,13 +982,50 @@ async def search_galleries_endpoint(request: SearchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
 
+@app.get("/api/recommendations")
+async def api_recommendations(
+    gallery_id: Optional[int] = None,
+    limit: int = 8,
+    exclude_tag: Optional[str] = None,
+):
+    try:
+        with get_db_session() as db:
+            results = get_recommended_galleries(
+                db,
+                gallery_id=gallery_id,
+                limit=limit,
+                exclude_tag=exclude_tag,
+            )
+            payload: List[Dict[str, Any]] = []
+            for result in results:
+                try:
+                    files_data = json.loads(result.get("files")) if isinstance(result.get("files"), str) else result.get("files")
+                except (json.JSONDecodeError, TypeError):
+                    files_data = []
+                files_list = files_data if isinstance(files_data, list) else []
+                gallery_info = {"gallery_id": result["gallery_id"], "files": files_list}
+                image_urls = geturl(gallery_info)
+                payload.append(
+                    {
+                        **{k: v for k, v in result.items() if k != "files"},
+                        "image_urls": image_urls,
+                        "page_count": len(files_list),
+                    }
+                )
+            return {"results": payload, "count": len(payload)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"おすすめ取得エラー: {str(e)}")
+
 @app.get("/search")
 async def search_galleries_get(
     title: Optional[str] = None,
     tag: Optional[str] = None,
+    exclude_tag: Optional[str] = None,
     character: Optional[str] = None,
     limit: int = 50,
     after_id: Optional[int] = None,
+    min_pages: Optional[int] = None,
+    max_pages: Optional[int] = None,
 ):
     try:
         with get_db_session() as db:
@@ -819,19 +1033,25 @@ async def search_galleries_get(
                 db,
                 title=title,
                 tag=tag,
+                exclude_tag=exclude_tag,
                 character=character,
                 limit=limit,
                 after_id=after_id,
+                min_pages=min_pages,
+                max_pages=max_pages,
             )
 
             for result in results:
                 try:
                     files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
+                    files_list = files_data if isinstance(files_data, list) else []
                     gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
                     result["image_urls"] = geturl(gallery_info)
+                    result["page_count"] = len(files_list)
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
                     result["image_urls"] = []
+                    result["page_count"] = 0
                 if "files" in result:
                     del result["files"]
 
@@ -1040,11 +1260,13 @@ async def get_gallery(gallery_id: int):
                 raise HTTPException(status_code=404, detail="ギャラリーが見つかりません")
             try:
                 files_data = json.loads(gallery.files) if isinstance(gallery.files, str) else gallery.files
-                gallery_info = {"gallery_id": gallery.gallery_id, "files": files_data}
+                files_list = files_data if isinstance(files_data, list) else []
+                gallery_info = {"gallery_id": gallery.gallery_id, "files": files_list}
                 image_urls = geturl(gallery_info)
             except (json.JSONDecodeError, TypeError) as e:
                 logger.error(f"files 解析エラー: {e}, gallery_id: {gallery.gallery_id}")
                 image_urls = []
+                files_list = []
             return {
                 "gallery_id": gallery.gallery_id,
                 "japanese_title": gallery.japanese_title,
@@ -1053,6 +1275,7 @@ async def get_gallery(gallery_id: int):
                 "image_urls": image_urls,
                 "manga_type": gallery.manga_type,
                 "created_at": gallery.created_at,
+                "page_count": len(files_list),
             }
     except HTTPException:
         raise

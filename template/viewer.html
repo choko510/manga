@@ -28,6 +28,15 @@
             --image-quality: 80;
         }
 
+        body.dark-mode {
+            --bg-main: #0f172a;
+            --bg-header: rgba(15, 23, 42, 0.75);
+            --bg-button: rgba(30, 41, 59, 0.9);
+            --text-primary: #e2e8f0;
+            --text-secondary: #cbd5f5;
+            --icon-color: #e2e8f0;
+        }
+
         *,
         *::before,
         *::after {
@@ -81,6 +90,28 @@
             background-color: #f7f7f7;
         }
 
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .icon-button {
+            border: none;
+            border-radius: var(--radius-pill);
+            padding: 8px 12px;
+            font-size: 18px;
+            background-color: var(--bg-button);
+            color: var(--icon-color);
+            cursor: pointer;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }
+
+        .icon-button:hover {
+            background-color: rgba(37, 99, 235, 0.15);
+            color: #2563eb;
+        }
+
         /* --- メインコンテンツ --- */
         .content-area {
             padding: var(--content-padding);
@@ -99,6 +130,37 @@
             font-size: 1.5rem;
             font-weight: 600;
             margin: 0 0 16px 0;
+        }
+
+        .viewer-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .viewer-like-button {
+            border: none;
+            border-radius: var(--radius-pill);
+            padding: 8px 18px;
+            font-size: 14px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            color: #fff;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .viewer-like-button.active {
+            background: linear-gradient(135deg, #f97316 0%, #f97316 100%);
+        }
+
+        .viewer-like-button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 20px rgba(239, 68, 68, 0.25);
         }
 
         .manga-tags {
@@ -122,10 +184,14 @@
         }
 
         .tag-item {
-            background-color: #f0f2f5;
+            background-color: rgba(148, 163, 184, 0.25);
             padding: 2px 6px;
             border-radius: 4px;
             font-size: 0.8rem;
+        }
+
+        .tag-item a {
+            color: inherit;
         }
 
         /* --- ビューアー --- */
@@ -135,6 +201,54 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+        }
+
+        .recommendation-section {
+            width: 100%;
+            max-width: 960px;
+            margin: 40px auto 0;
+            background: var(--bg-button);
+            border-radius: var(--radius-card);
+            padding: 24px;
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+        }
+
+        .recommendation-section h3 {
+            margin: 0;
+            font-size: 1.25rem;
+        }
+
+        .recommendation-grid {
+            margin-top: 20px;
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        }
+
+        .recommendation-card {
+            display: block;
+            background: rgba(148, 163, 184, 0.18);
+            border-radius: 16px;
+            overflow: hidden;
+            color: inherit;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .recommendation-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+        }
+
+        .recommendation-card img {
+            width: 100%;
+            aspect-ratio: 3 / 4;
+            object-fit: cover;
+            display: block;
+        }
+
+        .recommendation-card .card-body {
+            padding: 12px;
+            font-size: 13px;
         }
 
         .manga-page {
@@ -436,7 +550,9 @@
     <header class="site-header">
         <a href="/" class="back-button">← ホームに戻る</a>
         <h1 class="header-title" id="mangaTitle">漫画ビューアー</h1>
-        <div></div> <!-- スペーサー -->
+        <div class="header-actions">
+            <button id="themeToggle" class="icon-button" aria-label="ダークモード切替">🌙</button>
+        </div>
     </header>
 
     <main class="content-area">
@@ -450,13 +566,20 @@
         
         <div id="viewerContent" style="display: none; width: 100%;">
             <div class="manga-info">
-                <h2 class="manga-title" id="mangaTitleInfo"></h2>
+                <div class="viewer-actions">
+                    <h2 class="manga-title" id="mangaTitleInfo"></h2>
+                    <button id="viewerLikeButton" class="viewer-like-button" type="button">🤍 いいね</button>
+                </div>
                 <div class="manga-tags" id="mangaTagsInfo"></div>
             </div>
-            
+
             <div class="viewer-container" id="mangaPagesContainer">
                 <!-- 画像がここに動的に追加されます -->
             </div>
+            <section class="recommendation-section" id="recommendationSection" style="display:none;">
+                <h3>おすすめの作品</h3>
+                <div class="recommendation-grid" id="recommendationGrid"></div>
+            </section>
         </div>
     </main>
 
@@ -505,8 +628,9 @@
     </div>
 
     <!-- トラッキングスクリプト -->
-    <script src="static/tracking.js"></script>
-    
+    <script src="/static/tracking.js" defer></script>
+    <script src="/static/app.js"></script>
+
     <script>
         // グローバル変数
         let currentGalleryId = null;
@@ -539,26 +663,48 @@
         const pageIndicator = document.getElementById('pageIndicator');
         const currentPageSpan = document.getElementById('currentPage');
         const totalPagesSpan = document.getElementById('totalPages');
+        const themeToggle = document.getElementById('themeToggle');
+        const viewerLikeButton = document.getElementById('viewerLikeButton');
+        const recommendationSection = document.getElementById('recommendationSection');
+        const recommendationGrid = document.getElementById('recommendationGrid');
 
         // 初期化
         document.addEventListener('DOMContentLoaded', () => {
+            MangaApp.applyThemeToDocument(document);
+            MangaApp.ensureTranslations().catch(() => {});
+            updateThemeToggleIcon(MangaApp.getPreferredTheme());
+            if (themeToggle) {
+                themeToggle.addEventListener('click', () => {
+                    const theme = MangaApp.toggleTheme();
+                    updateThemeToggleIcon(theme);
+                });
+            }
+
+            if (viewerLikeButton) {
+                viewerLikeButton.addEventListener('click', () => {
+                    if (!currentGalleryId) return;
+                    const toggled = MangaApp.toggleLike(Number(currentGalleryId));
+                    updateLikeButton(toggled);
+                });
+            }
+
             // URLからgallery_idを取得
             const urlParams = new URLSearchParams(window.location.search);
             currentGalleryId = urlParams.get('id');
-            
+
             // 画像遅延読み込みの初期化
             initImageLazyLoading();
-            
+
             // モバイルナビゲーションの初期化
             if (isMobile) {
                 initMobileNavigation();
             }
-            
+
             // ページインジケーターの初期化
             if (isMobile) {
                 pageIndicator.style.display = 'block';
             }
-            
+
             if (currentGalleryId) {
                 loadGalleryData(currentGalleryId);
             } else {
@@ -1005,7 +1151,15 @@
                 updateGalleryInfo();
                 displayAllPages();
                 showContent(true);
-                
+                updateLikeButton(MangaApp.isLiked(Number(galleryData.gallery_id)));
+                MangaApp.addHistoryEntry({
+                    gallery_id: Number(galleryData.gallery_id),
+                    japanese_title: galleryData.japanese_title,
+                    image_urls: imageUrls,
+                    page_count: imageUrls.length,
+                });
+                loadRecommendations(Number(galleryData.gallery_id));
+
             } catch (error) {
                 console.error('ギャラリーデータの読み込みエラー:', error);
                 showError('データの読み込み中にエラーが発生しました。');
@@ -1037,14 +1191,19 @@
                         tagLabel.className = 'tag-label';
                         tagLabel.textContent = 'タグ:';
                         tagGroup.appendChild(tagLabel);
-                        
+
                         tagArray.forEach(tag => {
+                            if (!tag) return;
                             const tagItem = document.createElement('span');
                             tagItem.className = 'tag-item';
-                            tagItem.textContent = tag;
+                            const tagLink = document.createElement('a');
+                            tagLink.href = `/?tag=${encodeURIComponent(tag)}`;
+                            tagLink.textContent = MangaApp.translateTag(tag);
+                            tagLink.title = tag;
+                            tagItem.appendChild(tagLink);
                             tagGroup.appendChild(tagItem);
                         });
-                        
+
                         mangaTagsInfo.appendChild(tagGroup);
                     }
                 } catch (e) {
@@ -1059,9 +1218,13 @@
                     
                     const tagItem = document.createElement('span');
                     tagItem.className = 'tag-item';
-                    tagItem.textContent = galleryData.tags;
+                    const tagLink = document.createElement('a');
+                    tagLink.href = `/?tag=${encodeURIComponent(galleryData.tags)}`;
+                    tagLink.textContent = MangaApp.translateTag(galleryData.tags);
+                    tagLink.title = galleryData.tags;
+                    tagItem.appendChild(tagLink);
                     tagGroup.appendChild(tagItem);
-                    
+
                     mangaTagsInfo.appendChild(tagGroup);
                 }
             }
@@ -1182,6 +1345,71 @@
             errorContainer.textContent = message;
             errorContainer.style.display = 'block';
             showLoading(false);
+        }
+
+        function updateThemeToggleIcon(theme) {
+            if (!themeToggle) return;
+            themeToggle.textContent = theme === 'dark' ? '☀️' : '🌙';
+        }
+
+        function updateLikeButton(isLiked) {
+            if (!viewerLikeButton) return;
+            viewerLikeButton.classList.toggle('active', isLiked);
+            viewerLikeButton.textContent = isLiked ? '❤️ いいね済み' : '🤍 いいね';
+        }
+
+        async function loadRecommendations(galleryId) {
+            if (!recommendationSection || !recommendationGrid) return;
+            if (!galleryId) {
+                recommendationSection.style.display = 'none';
+                return;
+            }
+            try {
+                const params = new URLSearchParams();
+                params.append('gallery_id', String(galleryId));
+                params.append('limit', '6');
+                const hidden = MangaApp.getHiddenTags();
+                if (hidden.length) {
+                    params.append('exclude_tag', hidden.join(','));
+                }
+                const response = await fetch(`/api/recommendations?${params.toString()}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                renderRecommendations(data.results || []);
+            } catch (error) {
+                console.error('おすすめ読み込みエラー', error);
+                recommendationSection.style.display = 'none';
+            }
+        }
+
+        function renderRecommendations(items) {
+            if (!recommendationSection || !recommendationGrid) return;
+            if (!items.length) {
+                recommendationSection.style.display = 'none';
+                return;
+            }
+            recommendationSection.style.display = 'block';
+            recommendationGrid.innerHTML = '';
+            const fragment = document.createDocumentFragment();
+            items.slice(0, 6).forEach((item) => {
+                const card = document.createElement('a');
+                card.href = `/viewer?id=${item.gallery_id}`;
+                card.className = 'recommendation-card';
+                const img = document.createElement('img');
+                const firstImage = Array.isArray(item.image_urls) && item.image_urls.length > 0 ? item.image_urls[0] : '';
+                if (firstImage) {
+                    img.src = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
+                }
+                const body = document.createElement('div');
+                body.className = 'card-body';
+                body.textContent = item.japanese_title || '無題';
+                card.appendChild(img);
+                card.appendChild(body);
+                fragment.appendChild(card);
+            });
+            recommendationGrid.appendChild(fragment);
         }
 
     </script>
