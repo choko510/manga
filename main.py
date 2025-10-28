@@ -5,7 +5,7 @@ import aiohttp
 import asyncio
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from sqlalchemy import text
 import re
 import shlex
 import json
+import time
 from datetime import datetime, timedelta
 from lib import ImageUriResolver
 import logging
@@ -485,47 +486,91 @@ def _build_fts_query(title: Optional[str] = None, character: Optional[str] = Non
         clauses.append(_terms("characters", character))
     return " AND ".join(clauses) if clauses else ""
 
-@lru_cache(maxsize=512)
-def _parse_tag_terms(tag_query: Optional[str]) -> Tuple[str, ...]:
+_KNOWN_TAGS_CACHE: Set[str] = set()
+_KNOWN_TAGS_FETCHED_AT: float = 0.0
+
+
+def _get_known_tag_set(db_session) -> Set[str]:
+    global _KNOWN_TAGS_CACHE, _KNOWN_TAGS_FETCHED_AT
+    now = time.time()
+    if _KNOWN_TAGS_CACHE and now - _KNOWN_TAGS_FETCHED_AT < 300:
+        return _KNOWN_TAGS_CACHE
+
+    try:
+        rows = db_session.execute(text("SELECT tag FROM tag_stats")).fetchall()
+    except Exception as exc:
+        logger.warning("タグ一覧の取得に失敗しました: %s", exc)
+        return _KNOWN_TAGS_CACHE
+
+    tags: Set[str] = set()
+    for row in rows:
+        tag_value = row[0] if isinstance(row, (list, tuple)) else row.tag if hasattr(row, "tag") else None
+        if not tag_value:
+            continue
+        normalized = str(tag_value).strip().lower()
+        if normalized:
+            tags.add(normalized)
+
+    _KNOWN_TAGS_CACHE = tags
+    _KNOWN_TAGS_FETCHED_AT = now
+    return _KNOWN_TAGS_CACHE
+
+
+def _parse_tag_terms(tag_query: Optional[str], known_tags: Optional[Set[str]] = None) -> Tuple[str, ...]:
     if not tag_query:
         return tuple()
     raw = tag_query.strip()
     if not raw:
         return tuple()
 
-    separators_present = any(sep in raw for sep in [",", ";", "\n"])
+    raw = raw.replace("\u3000", " ")
+    separators = [",", ";", "\n"]
+    separators_present = any(sep in raw for sep in separators)
+
+    def _split(text_value: str) -> List[str]:
+        try:
+            return [token.strip() for token in shlex.split(text_value) if token.strip()]
+        except ValueError:
+            return [part.strip() for part in text_value.split() if part.strip()]
+
     candidates: List[str]
     if separators_present:
         normalized = raw
-        for sep in [",", ";", "\n"]:
+        for sep in separators:
             normalized = normalized.replace(sep, " ")
-        try:
-            candidates = shlex.split(normalized)
-        except ValueError:
-            candidates = [part for part in normalized.split() if part]
+        candidates = _split(normalized)
     else:
-        try:
-            tokens = shlex.split(raw)
-        except ValueError:
-            candidates = [raw]
-        else:
-            if len(tokens) > 1 and any(q in raw for q in ('"', "'")):
-                candidates = tokens
-            elif len(tokens) > 1:
-                candidates = tokens
-            else:
-                candidates = tokens
+        candidates = _split(raw)
 
+    if not candidates:
+        return tuple()
+
+    lowered = [candidate.lower() for candidate in candidates]
+
+    if known_tags and not separators_present and len(lowered) > 1:
+        resolved: List[str] = []
+        idx = 0
+        total = len(lowered)
+        while idx < total:
+            match = None
+            for end in range(total, idx, -1):
+                candidate = " ".join(lowered[idx:end])
+                if candidate in known_tags:
+                    match = candidate
+                    idx = end
+                    break
+            if match is None:
+                match = lowered[idx]
+                idx += 1
+            resolved.append(match)
+        lowered = resolved
+
+    seen: Set[str] = set()
     unique_terms: List[str] = []
-    seen = set()
-    for cand in candidates:
-        term = cand.strip()
-        if not term:
-            continue
-        normalized = term.lower()
-        if normalized not in seen:
-            unique_terms.append(normalized)
-            seen.add(normalized)
+    for term in lowered:
+        if term and term not in seen:
+            unique_terms.append(term)
+            seen.add(term)
     return tuple(unique_terms)
 
 _GALLERY_FIELD_NAMES: Tuple[str, ...] = (
@@ -586,8 +631,9 @@ def search_galleries_fast(
     max_pages: int | None = None,
     exclude_gallery_ids: Optional[Tuple[int, ...]] = None,
 ) -> List[Dict[str, Any]]:
-    tag_terms = _parse_tag_terms(tag)
-    exclude_tag_terms = _parse_tag_terms(exclude_tag)
+    known_tags = _get_known_tag_set(db_session)
+    tag_terms = _parse_tag_terms(tag, known_tags)
+    exclude_tag_terms = _parse_tag_terms(exclude_tag, known_tags)
     fts = _build_fts_query(title, character)
 
     def run_query(use_fts: bool) -> List[Dict[str, Any]]:
@@ -896,7 +942,8 @@ def get_recommended_galleries(
                     normalized.append(tag.strip().lower())
             target_tags = tuple(normalized[:10])  # 上位10件まで
 
-    exclude_terms = _parse_tag_terms(exclude_tag)
+    known_tags = _get_known_tag_set(db_session)
+    exclude_terms = _parse_tag_terms(exclude_tag, known_tags)
 
     params: Dict[str, Any] = {"limit": limit}
     where_clauses = ["g.manga_type = 'doujinshi'"]

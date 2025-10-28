@@ -517,7 +517,7 @@
                 });
                 chip.appendChild(removeButton);
                 chip.addEventListener('click', () => {
-                    const tags = Array.from(state.selectedTags).join(' ');
+                    const tags = Array.from(state.selectedTags).join(',');
                     window.location.href = `/?tag=${encodeURIComponent(tags)}`;
                 });
                 container.appendChild(chip);
