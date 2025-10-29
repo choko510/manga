@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
 from pydantic import BaseModel
-from sqlalchemy import Column, Integer, String, Text, select
+from sqlalchemy import Column, Computed, Integer, String, Text, select
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -92,6 +92,14 @@ class Gallery(Base):
     files = Column(Text)
     manga_type = Column(String)
     created_at = Column(String) # ISO8601 文字列想定
+    page_count = Column(
+        Integer,
+        Computed("json_array_length(CASE WHEN json_valid(files) THEN files ELSE '[]' END)", persisted=True),
+    )
+    created_at_unix = Column(
+        Integer,
+        Computed("CAST(strftime('%s', created_at) AS INTEGER)", persisted=True),
+    )
 
     def __repr__(self):
         return f"<Gallery(id={self.gallery_id}, title='{self.japanese_title}')>"
@@ -249,10 +257,10 @@ async def init_database():
         # PRAGMA
         await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.execute(text("PRAGMA synchronous=NORMAL"))
-        await conn.execute(text("PRAGMA cache_size=10000"))
+        await conn.execute(text("PRAGMA cache_size=20000"))
         await conn.execute(text("PRAGMA temp_store=MEMORY"))
         await conn.execute(text("PRAGMA foreign_keys=ON"))
-        await conn.execute(text("PRAGMA mmap_size=268435456"))  # 256MB
+        await conn.execute(text("PRAGMA mmap_size=536870912"))  # 512MB
 
         # 重要インデックス
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_created ON galleries(created_at DESC, gallery_id DESC)"))
@@ -558,12 +566,14 @@ def _parse_tag_terms(tag_query: Optional[str], known_tags: Optional[Set[str]] = 
 
     lowered = [candidate.lower() for candidate in candidates]
 
-    if known_tags and not separators_present and len(lowered) > 1:
+    # 既知のタグを考慮した解析を常に実行（複数語のタグを正しく処理するため）
+    if known_tags and len(lowered) > 1:
         resolved: List[str] = []
         idx = 0
         total = len(lowered)
         while idx < total:
             match = None
+            # 最長一致で既知のタグを探す
             for end in range(total, idx, -1):
                 candidate = " ".join(lowered[idx:end])
                 if candidate in known_tags:
@@ -591,7 +601,13 @@ _GALLERY_FIELD_NAMES: Tuple[str, ...] = (
     "characters",
     "manga_type",
     "created_at",
+    "page_count",
+    "created_at_unix",
 )
+
+_FTS_CANDIDATE_MULTIPLIER = 5
+_FTS_CANDIDATE_MAX = 1000
+_MAX_GALLERY_ID_SENTINEL = 9_223_372_036_854_775_807
 
 def _serialize_gallery(mapping: Mapping[str, Any]) -> Dict[str, Any]:
     result = {field: mapping[field] for field in _GALLERY_FIELD_NAMES}
@@ -612,7 +628,7 @@ def _build_tag_exists_clause(alias: str, tag_terms: Tuple[str, ...]) -> Tuple[Li
     for idx, term in enumerate(tag_terms):
         key = f"tag_{idx}"
         where_list.append(
-            f"EXISTS (SELECT 1 FROM gallery_tags gt WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
+            f"EXISTS (SELECT 1 FROM gallery_tags INDEXED BY idx_gallery_tags_gallery_tag AS gt WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
         )
         params[key] = term
     return where_list, params
@@ -625,7 +641,7 @@ def _build_tag_not_exists_clause(alias: str, tag_terms: Tuple[str, ...]) -> Tupl
     for idx, term in enumerate(tag_terms):
         key = f"exclude_tag_{idx}"
         where_list.append(
-            f"NOT EXISTS (SELECT 1 FROM gallery_tags gt WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
+            f"NOT EXISTS (SELECT 1 FROM gallery_tags INDEXED BY idx_gallery_tags_gallery_tag AS gt WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
         )
         params[key] = term
     return where_list, params
@@ -636,7 +652,8 @@ async def search_galleries_fast(
     tag: str = None,
     character: str = None,
     limit: int = 50,
-    after_id: int | None = None,
+    after_created_at: str | None = None,
+    after_gallery_id: int | None = None,
     exclude_tag: str | None = None,
     min_pages: int | None = None,
     max_pages: int | None = None,
@@ -651,20 +668,37 @@ async def search_galleries_fast(
         params: Dict[str, object] = {"limit": limit}
         joins: List[str] = []
         where_clauses: List[str] = []
+        cte_segment: Optional[str] = None
 
-        # doujinshi のみ
+        # doujinshi only
         where_clauses.append("g.manga_type = 'doujinshi'")
 
-        if after_id is not None:
-            where_clauses.append("g.gallery_id > :after_id")
-            params["after_id"] = after_id
+        if after_created_at is not None or after_gallery_id is not None:
+            if after_created_at is not None:
+                params["cursor_created_at"] = after_created_at
+                params["cursor_gallery_id"] = (
+                    after_gallery_id if after_gallery_id is not None else _MAX_GALLERY_ID_SENTINEL
+                )
+                where_clauses.append(
+                    "(g.created_at < :cursor_created_at OR (g.created_at = :cursor_created_at AND g.gallery_id < :cursor_gallery_id))"
+                )
+            elif after_gallery_id is not None:
+                params["cursor_gallery_id"] = after_gallery_id
+                where_clauses.append("g.gallery_id < :cursor_gallery_id")
 
         if use_fts and fts:
-            joins.append("JOIN galleries_fts AS f ON f.rowid = g.gallery_id")
-            where_clauses.append("f MATCH :fts")
+            base_limit = max(limit, 1)
+            prelimit = min(max(base_limit * _FTS_CANDIDATE_MULTIPLIER, base_limit), _FTS_CANDIDATE_MAX)
             params["fts"] = fts
+            params["prelimit"] = prelimit
+            cte_segment = (
+                "WITH fts_candidates AS (\n"
+                "    SELECT rowid FROM galleries_fts WHERE galleries_fts MATCH :fts LIMIT :prelimit\n"
+                ")"
+            )
+            joins.append("JOIN fts_candidates AS f ON f.rowid = g.gallery_id")
         else:
-            # FTS が無い場合は LIKE フォールバック（簡易）
+            # FTS unavailable: fall back to LIKE search
             if title:
                 where_clauses.append("g.japanese_title LIKE :title_like")
                 params["title_like"] = f"%{title}%"
@@ -672,7 +706,7 @@ async def search_galleries_fast(
                 where_clauses.append("g.characters LIKE :character_like")
                 params["character_like"] = f"%{character}%"
 
-        # タグ: EXISTS 連鎖で AND 条件を満たす ID のみに絞り込む（GROUP BY/HAVING 回避）
+        # Tag filters using EXISTS chain to enforce AND semantics
         if tag_terms:
             exists_clauses, exists_params = _build_tag_exists_clause("g", tag_terms)
             where_clauses.extend(exists_clauses)
@@ -699,12 +733,13 @@ async def search_galleries_fast(
                 max_val = min_val
             params["min_pages"] = min_val
             params["max_pages"] = max_val
-            where_clauses.append(
-                "json_array_length(CASE WHEN json_valid(g.files) THEN g.files ELSE '[]' END) BETWEEN :min_pages AND :max_pages"
-            )
+            where_clauses.append("g.page_count BETWEEN :min_pages AND :max_pages")
 
-        # SQL 組み立て
-        sql_segments = ["SELECT g.*", "FROM galleries AS g"]
+        sql_segments: List[str] = []
+        if cte_segment:
+            sql_segments.append(cte_segment)
+        sql_segments.append("SELECT g.*")
+        sql_segments.append("FROM galleries AS g")
         if joins:
             sql_segments.extend(joins)
         if where_clauses:
@@ -716,7 +751,6 @@ async def search_galleries_fast(
         result = await db_session.execute(text(sql), params)
         return [_serialize_gallery(row) for row in result.mappings()]
 
-    # FTS 優先、失敗時は LIKE へ
     if fts:
         try:
             results = await run_query(True)
@@ -735,8 +769,6 @@ async def search_galleries_fast(
             limit=limit,
             exclude_tag=exclude_tag,
         )
-
-# 低速フォールバック（互換維持）
 async def search_galleries(
     db_session: AsyncSession,
     title: str = None,
@@ -754,6 +786,8 @@ async def search_galleries(
         Gallery.files,
         Gallery.manga_type,
         Gallery.created_at,
+        Gallery.page_count,
+        Gallery.created_at_unix,
     ).where(Gallery.manga_type == 'doujinshi')
 
     if title:
@@ -841,7 +875,8 @@ async def build_session_tag_profile(
     if not page_views:
         return {}
 
-    now = datetime.now()
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
     gallery_scores: Dict[int, float] = {}
     lookback_seconds = max(lookback_days, 1) * 86400
 
@@ -857,6 +892,11 @@ async def build_session_tag_profile(
             try:
                 start = datetime.fromisoformat(view.view_start)
                 end = datetime.fromisoformat(view.view_end)
+                # タイムゾーン情報がない場合はUTCと仮定
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
+                if end.tzinfo is None:
+                    end = end.replace(tzinfo=timezone.utc)
                 duration_seconds = max((end - start).total_seconds(), 0.0)
             except ValueError:
                 duration_seconds = None
@@ -869,6 +909,9 @@ async def build_session_tag_profile(
         if getattr(view, "view_start", None):
             try:
                 view_time = datetime.fromisoformat(view.view_start)
+                # タイムゾーン情報がない場合はUTCと仮定
+                if view_time.tzinfo is None:
+                    view_time = view_time.replace(tzinfo=timezone.utc)
                 age_seconds = max((now - view_time).total_seconds(), 0.0)
                 if lookback_seconds > 0:
                     recency_weight = 1.0 - min(age_seconds / lookback_seconds, 1.0)
@@ -1126,7 +1169,8 @@ class SearchRequest(BaseModel):
     exclude_tag: Optional[str] = None
     character: Optional[str] = None
     limit: int = 50
-    after_id: Optional[int] = None
+    after_created_at: Optional[str] = None
+    after_gallery_id: Optional[int] = None
     min_pages: Optional[int] = None
     max_pages: Optional[int] = None
 
@@ -1187,7 +1231,8 @@ async def search_galleries_endpoint(request: SearchRequest):
                 exclude_tag=request.exclude_tag,
                 character=request.character,
                 limit=request.limit,
-                after_id=request.after_id,
+                after_created_at=request.after_created_at,
+                after_gallery_id=request.after_gallery_id,
                 min_pages=request.min_pages,
                 max_pages=request.max_pages,
             )
@@ -1198,7 +1243,9 @@ async def search_galleries_endpoint(request: SearchRequest):
                     files_list = files_data if isinstance(files_data, list) else []
                     gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
                     result["image_urls"] = geturl(gallery_info)
-                    result["page_count"] = len(files_list)
+                    stored_pages = result.get("page_count")
+                    if not isinstance(stored_pages, int) or stored_pages < 0:
+                        result["page_count"] = len(files_list)
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
                     result["image_urls"] = []
@@ -1206,7 +1253,21 @@ async def search_galleries_endpoint(request: SearchRequest):
                 if "files" in result:
                     del result["files"]
 
-            return {"results": results, "count": len(results), "has_more": len(results) == request.limit}
+            # Derive the next cursor from the final item in this page
+            next_after_created_at = None
+            next_after_gallery_id = None
+            if results and len(results) == request.limit:
+                last_item = results[-1]
+                next_after_created_at = last_item.get("created_at")
+                next_after_gallery_id = last_item.get("gallery_id")
+
+            return {
+                "results": results,
+                "count": len(results),
+                "has_more": len(results) == request.limit,
+                "next_after_created_at": next_after_created_at,
+                "next_after_gallery_id": next_after_gallery_id,
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
 
@@ -1246,7 +1307,7 @@ async def api_recommendations(
                     {
                         **{k: v for k, v in result.items() if k != "files"},
                         "image_urls": image_urls,
-                        "page_count": len(files_list),
+                        "page_count": result.get("page_count") if isinstance(result.get("page_count"), int) and result.get("page_count") >= 0 else len(files_list),
                     }
                 )
             return {"results": payload, "count": len(payload)}
@@ -1260,7 +1321,8 @@ async def search_galleries_get(
     exclude_tag: Optional[str] = None,
     character: Optional[str] = None,
     limit: int = 50,
-    after_id: Optional[int] = None,
+    after_created_at: Optional[str] = None,
+    after_gallery_id: Optional[int] = None,
     min_pages: Optional[int] = None,
     max_pages: Optional[int] = None,
 ):
@@ -1273,7 +1335,8 @@ async def search_galleries_get(
                 exclude_tag=exclude_tag,
                 character=character,
                 limit=limit,
-                after_id=after_id,
+                after_created_at=after_created_at,
+                after_gallery_id=after_gallery_id,
                 min_pages=min_pages,
                 max_pages=max_pages,
             )
@@ -1284,7 +1347,9 @@ async def search_galleries_get(
                     files_list = files_data if isinstance(files_data, list) else []
                     gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
                     result["image_urls"] = geturl(gallery_info)
-                    result["page_count"] = len(files_list)
+                    stored_pages = result.get("page_count")
+                    if not isinstance(stored_pages, int) or stored_pages < 0:
+                        result["page_count"] = len(files_list)
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
                     result["image_urls"] = []
@@ -1292,7 +1357,21 @@ async def search_galleries_get(
                 if "files" in result:
                     del result["files"]
 
-            return {"results": results, "count": len(results), "has_more": len(results) == limit}
+            # Derive the next cursor from the final item in this page
+            next_after_created_at = None
+            next_after_gallery_id = None
+            if results and len(results) == limit:
+                last_item = results[-1]
+                next_after_created_at = last_item.get("created_at")
+                next_after_gallery_id = last_item.get("gallery_id")
+
+            return {
+                "results": results,
+                "count": len(results),
+                "has_more": len(results) == limit,
+                "next_after_created_at": next_after_created_at,
+                "next_after_gallery_id": next_after_gallery_id,
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
 
@@ -1514,7 +1593,7 @@ async def get_gallery(gallery_id: int):
                 "image_urls": image_urls,
                 "manga_type": gallery.manga_type,
                 "created_at": gallery.created_at,
-                "page_count": len(files_list),
+                "page_count": gallery.page_count if isinstance(gallery.page_count, int) and gallery.page_count >= 0 else len(files_list),
             }
     except HTTPException:
         raise

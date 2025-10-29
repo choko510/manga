@@ -1,6 +1,6 @@
 (function () {
     const LIMIT = 20;
-    let currentAfterId = null;
+    let currentAfterCreatedAt = null;
     let currentQuery = '';
     let currentMinPages = 0;
     let currentMaxPages = null;
@@ -69,6 +69,23 @@
                     cardObserver.unobserve(card);
                 });
             }, { rootMargin: '200px 0px' });
+
+            // 無限スクロール用のオブザーバー
+            const loadMoreContainer = document.getElementById('loadMoreContainer');
+            if (loadMoreContainer) {
+                const infiniteScrollObserver = new IntersectionObserver((entries) => {
+                    entries.forEach((entry) => {
+                        if (entry.isIntersecting && !isLoading) {
+                            const loadMoreButton = document.getElementById('loadMoreButton');
+                            if (loadMoreButton && loadMoreContainer.style.display !== 'none') {
+                                loadMoreButton.click();
+                            }
+                        }
+                    });
+                }, { rootMargin: '300px 0px' });
+                
+                infiniteScrollObserver.observe(loadMoreContainer);
+            }
         }
     }
 
@@ -93,6 +110,28 @@
             performSearch(elements, true);
         });
         elements.loadMoreButton.addEventListener('click', () => performSearch(elements, false));
+        
+        // 初期状態で無限スクロールを有効化
+        toggleInfiniteScroll(true);
+        
+        // 設定パネルに無限スクロールのオン/オフ切り替えを追加
+        const infiniteScrollToggle = document.createElement('div');
+        infiniteScrollToggle.innerHTML = `
+            <label style="display: flex; align-items: center; gap: 8px; margin-top: 16px;">
+                <input type="checkbox" id="infiniteScrollCheckbox" checked>
+                <span>無限スクロールを有効にする</span>
+            </label>
+        `;
+        
+        const settingsPanel = document.getElementById('settingsPanel');
+        if (settingsPanel) {
+            settingsPanel.insertBefore(infiniteScrollToggle, settingsPanel.querySelector('.settings-actions'));
+            
+            // チェックボックスのイベントリスナー
+            document.getElementById('infiniteScrollCheckbox').addEventListener('change', (e) => {
+                toggleInfiniteScroll(e.target.checked);
+            });
+        }
         elements.themeToggle.addEventListener('click', () => {
             const theme = MangaApp.toggleTheme();
             updateThemeToggleIcon(elements.themeToggle, theme);
@@ -175,7 +214,7 @@
         if (isLoading) return;
 
         if (reset) {
-            currentAfterId = null;
+            currentAfterCreatedAt = null;
             currentQuery = elements.searchInput.value.trim();
             currentMinPages = parseInt(elements.minPagesSelect.value, 10) || 0;
             const maxVal = parseInt(elements.maxPagesSelect.value, 10);
@@ -187,8 +226,8 @@
         showLoading(elements, true);
 
         try {
-            const data = await fetchSearchResults(currentQuery, currentAfterId, currentMinPages, currentMaxPages);
-            const { results, hasMore, nextAfterId } = data;
+            const data = await fetchSearchResults(currentQuery, currentAfterCreatedAt, currentMinPages, currentMaxPages);
+            const { results, hasMore, nextAfterCreatedAt } = data;
 
             if (reset && results.length === 0) {
                 elements.cardGrid.innerHTML = '<p>検索結果が見つかりませんでした。</p>';
@@ -197,8 +236,23 @@
                 renderResults(elements, results, reset);
             }
 
-            currentAfterId = nextAfterId;
-            elements.loadMoreContainer.style.display = hasMore ? 'block' : 'none';
+            currentAfterCreatedAt = nextAfterCreatedAt;
+            
+            // 無限スクロールが有効な場合はボタンを非表示に、そうでなければ表示
+            if (infiniteScrollEnabled) {
+                elements.loadMoreContainer.style.display = hasMore ? 'block' : 'none';
+                const loadMoreButton = document.getElementById('loadMoreButton');
+                if (loadMoreButton) {
+                    loadMoreButton.style.display = 'none';
+                }
+            } else {
+                elements.loadMoreContainer.style.display = hasMore ? 'block' : 'none';
+                const loadMoreButton = document.getElementById('loadMoreButton');
+                if (loadMoreButton) {
+                    loadMoreButton.style.display = 'block';
+                }
+            }
+            
             if (results.length) {
                 const hiddenTags = MangaApp.getHiddenTags();
                 elements.resultMeta.textContent = `表示件数: ${results.length}${hasMore ? ' / さらに表示可能' : ''}${hiddenTags.length ? '（除外タグ反映）' : ''}`;
@@ -212,52 +266,51 @@
             showLoading(elements, false);
         }
     }
-
-    async function fetchSearchResults(query, afterId, minPages, maxPages) {
-        const cacheKey = `${query}|${afterId ?? 'start'}|${minPages ?? 0}|${maxPages ?? ''}|${MangaApp.getHiddenTags().join(',')}`;
-        if (searchCache.has(cacheKey)) {
-            return searchCache.get(cacheKey);
-        }
-
-        const params = new URLSearchParams();
-        params.append('limit', LIMIT.toString());
-        if (query) {
-            params.append('tag', query);
-        }
-        if (typeof afterId === 'number') {
-            params.append('after_id', afterId.toString());
-        }
-        if (typeof minPages === 'number' && minPages > 0) {
-            params.append('min_pages', minPages.toString());
-        }
-        if (typeof maxPages === 'number' && maxPages > 0) {
-            params.append('max_pages', maxPages.toString());
-        }
-        const hiddenTags = MangaApp.getHiddenTags();
-        if (hiddenTags.length) {
-            params.append('exclude_tag', hiddenTags.join(','));
-        }
-
-        const response = await fetch(`/search?${params.toString()}`);
-        if (!response.ok) {
-            throw new Error(`HTTP error ${response.status}`);
-        }
-        const data = await response.json();
-
-        const filtered = data.results || [];
-        const lastItem = filtered[filtered.length - 1];
-        const result = {
-            results: filtered,
-            hasMore: Boolean(data.has_more),
-            nextAfterId: lastItem ? lastItem.gallery_id : null,
-        };
-        searchCache.set(cacheKey, result);
-        if (searchCache.size > 60) {
-            const firstKey = searchCache.keys().next().value;
-            searchCache.delete(firstKey);
-        }
-        return result;
+async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages) {
+    const cacheKey = `${query}|${afterCreatedAt ?? 'start'}|${minPages ?? 0}|${maxPages ?? ''}|${MangaApp.getHiddenTags().join(',')}`;
+    if (searchCache.has(cacheKey)) {
+        return searchCache.get(cacheKey);
     }
+
+    const params = new URLSearchParams();
+    params.append('limit', LIMIT.toString());
+    if (query) {
+        params.append('tag', query);
+    }
+    if (afterCreatedAt) {
+        params.append('after_created_at', afterCreatedAt);
+    }
+    if (typeof minPages === 'number' && minPages > 0) {
+        params.append('min_pages', minPages.toString());
+    }
+    if (typeof maxPages === 'number' && maxPages > 0) {
+        params.append('max_pages', maxPages.toString());
+    }
+    const hiddenTags = MangaApp.getHiddenTags();
+    if (hiddenTags.length) {
+        params.append('exclude_tag', hiddenTags.join(','));
+    }
+
+    const response = await fetch(`/search?${params.toString()}`);
+    if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+    }
+    const data = await response.json();
+
+    const filtered = data.results || [];
+    const lastItem = filtered[filtered.length - 1];
+    const result = {
+        results: filtered,
+        hasMore: Boolean(data.has_more),
+        nextAfterCreatedAt: lastItem ? lastItem.created_at : null,
+    };
+    searchCache.set(cacheKey, result);
+    if (searchCache.size > 60) {
+        const firstKey = searchCache.keys().next().value;
+        searchCache.delete(firstKey);
+    }
+    return result;
+}
 
     function renderResults(elements, results, reset) {
         const fragment = document.createDocumentFragment();
@@ -346,11 +399,7 @@
             const jp = document.createElement('span');
             jp.className = 'tag-jp';
             jp.textContent = MangaApp.translateTag(tag);
-            const en = document.createElement('span');
-            en.className = 'tag-en';
-            en.textContent = tag;
             chip.appendChild(jp);
-            chip.appendChild(en);
             tagItem.appendChild(chip);
             tagsList.appendChild(tagItem);
         });
@@ -416,6 +465,49 @@
         elements.loadingIndicator.style.display = visible ? 'block' : 'none';
         if (visible) {
             elements.loadMoreContainer.style.display = 'none';
+        }
+    }
+
+    // 無限スクロールの状態を管理
+    let infiniteScrollEnabled = true;
+    let lastScrollPosition = 0;
+    let scrollThreshold = 100; // ページ下部からの距離（ピクセル）
+
+    // スクロールイベントリスナーを追加
+    document.addEventListener('scroll', () => {
+        if (!infiniteScrollEnabled || isLoading) return;
+
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+        const windowHeight = window.innerHeight;
+        const documentHeight = document.documentElement.scrollHeight;
+        
+        // 下部に近づいたら自動読み込み
+        if (scrollTop + windowHeight >= documentHeight - scrollThreshold) {
+            const loadMoreButton = document.getElementById('loadMoreButton');
+            const loadMoreContainer = document.getElementById('loadMoreContainer');
+            
+            if (loadMoreButton && loadMoreContainer && loadMoreContainer.style.display !== 'none') {
+                loadMoreButton.click();
+            }
+        }
+        
+        lastScrollPosition = scrollTop;
+    });
+
+    // 無限スクロールのオン/オフを切り替える関数
+    function toggleInfiniteScroll(enabled) {
+        infiniteScrollEnabled = enabled;
+        const loadMoreButton = document.getElementById('loadMoreButton');
+        const loadMoreContainer = document.getElementById('loadMoreContainer');
+        
+        if (loadMoreButton && loadMoreContainer) {
+            if (enabled) {
+                loadMoreButton.textContent = 'さらに表示（自動読み込み有効）';
+                loadMoreButton.style.display = 'none'; // 自動読み込み時はボタンを非表示
+            } else {
+                loadMoreButton.textContent = 'さらに表示';
+                loadMoreButton.style.display = 'block'; // 手動読み込み時はボタンを表示
+            }
         }
     }
 

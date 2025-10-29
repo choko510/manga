@@ -169,6 +169,7 @@
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
+            align-items: center;
         }
 
         .tag-chip {
@@ -328,6 +329,7 @@
             <div>合計 <span id="tagsTotal">0</span> タグ</div>
             <div id="hiddenTagsSummary">除外タグなし</div>
             <div class="selected-tags" id="selectedTags"></div>
+            <button id="searchSelectedButton" class="primary-button" style="display:none;">選択したタグで検索</button>
         </div>
     </header>
 
@@ -382,6 +384,15 @@
                 }
             });
             document.getElementById('loadMoreButton').addEventListener('click', () => loadTags());
+            
+            const searchButton = document.getElementById('searchSelectedButton');
+            searchButton.addEventListener('click', () => {
+                if (state.selectedTags.size > 0) {
+                    const tags = Array.from(state.selectedTags).join(',');
+                    window.location.href = `/?tag=${encodeURIComponent(tags)}`;
+                }
+            });
+            
             document.addEventListener('manga:hidden-tags-change', () => {
                 updateHiddenTagsSummary();
                 state.offset = 0;
@@ -461,9 +472,17 @@
                 const actions = document.createElement('div');
                 actions.className = 'tag-actions';
 
+                const searchButton = document.createElement('button');
+                searchButton.className = 'primary-button';
+                searchButton.textContent = '検索';
+                searchButton.addEventListener('click', () => {
+                    // 単独タグの場合は直接検索
+                    window.location.href = `/?tag=${encodeURIComponent(tagName)}`;
+                });
+
                 const addButton = document.createElement('button');
-                addButton.className = 'primary-button';
-                addButton.textContent = '検索に追加';
+                addButton.className = 'ghost-button';
+                addButton.textContent = '追加';
                 addButton.addEventListener('click', () => {
                     state.selectedTags.add(tagName);
                     renderSelectedTags();
@@ -484,6 +503,7 @@
                     hideButton.textContent = hidden.has(normalized) ? '除外解除' : '除外する';
                 });
 
+                actions.appendChild(searchButton);
                 actions.appendChild(addButton);
                 actions.appendChild(hideButton);
 
@@ -500,9 +520,15 @@
         function renderSelectedTags() {
             const container = document.getElementById('selectedTags');
             container.innerHTML = '';
+            const searchButton = document.getElementById('searchSelectedButton');
+            
             if (!state.selectedTags.size) {
+                searchButton.style.display = 'none';
                 return;
             }
+            
+            searchButton.style.display = 'inline-block';
+            
             state.selectedTags.forEach((tag) => {
                 const chip = document.createElement('span');
                 chip.className = 'tag-chip';
@@ -516,10 +542,6 @@
                     renderSelectedTags();
                 });
                 chip.appendChild(removeButton);
-                chip.addEventListener('click', () => {
-                    const tags = Array.from(state.selectedTags).join(',');
-                    window.location.href = `/?tag=${encodeURIComponent(tags)}`;
-                });
                 container.appendChild(chip);
             });
         }

@@ -397,18 +397,6 @@ async function initializeTracking() {
     // 設定の読み込み
     loadConfig();
     
-    // プライバシー同意の確認
-    const hasConsent = checkPrivacyConsent();
-    if (!hasConsent) {
-        console.log('プライバシー同意待機中');
-        return;
-    }
-    
-    if (!isTrackingEnabled) {
-        console.log('トラッキングは無効になっています');
-        return;
-    }
-    
     // フィンガープリントの初期化
     await initializeFingerprint();
     

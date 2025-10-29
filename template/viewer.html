@@ -264,36 +264,123 @@
             height: auto;
             border-radius: var(--radius-card);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-            transition: opacity 0.3s ease;
+            transition: transform 0.3s ease, max-width 0.3s ease;
+        }
+
+        /* 画像サイズ調整用のスタイル */
+        .image-size-controls {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border-radius: var(--radius-pill);
+            padding: 8px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            z-index: 1000;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+        }
+
+        .image-size-controls.hidden {
+            transform: translateY(100px);
             opacity: 0;
+            pointer-events: none;
         }
 
-        .manga-page img.loaded {
-            opacity: 1;
+        body.dark-mode .image-size-controls {
+            background: rgba(30, 41, 59, 0.9);
         }
 
-        /* 画像プレースホルダー */
-        .image-placeholder {
-            width: 100%;
-            aspect-ratio: 3/4;
-            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
-            background-size: 200% 100%;
-            animation: loading 1.5s infinite;
-            border-radius: var(--radius-card);
+        .size-button {
+            border: none;
+            background: transparent;
+            color: var(--icon-color);
+            cursor: pointer;
+            padding: 8px;
+            border-radius: var(--radius-pill);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.2s ease;
+            font-size: 18px;
+            min-width: 40px;
+            min-height: 40px;
         }
 
-        @keyframes loading {
-            0% { background-position: 200% 0; }
-            100% { background-position: -200% 0; }
+        .size-button:hover {
+            background-color: rgba(37, 99, 235, 0.15);
         }
 
-        /* 画像遅延読み込み用のデータ属性 */
-        .manga-page[data-lazy="true"] img {
-            opacity: 0;
+        .size-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
-        .manga-page[data-lazy="loaded"] img {
-            opacity: 1;
+        .size-display {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            min-width: 50px;
+            text-align: center;
+        }
+
+        /* 画像サイズ調整トグルボタン */
+        .size-toggle-button {
+            border: none;
+            border-radius: var(--radius-pill);
+            padding: 8px 12px;
+            font-size: 18px;
+            background-color: var(--bg-button);
+            color: var(--icon-color);
+            cursor: pointer;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }
+
+        .size-toggle-button:hover {
+            background-color: rgba(37, 99, 235, 0.15);
+            color: #2563eb;
+        }
+
+        .size-toggle-button.active {
+            background-color: rgba(37, 99, 235, 0.3);
+            color: #2563eb;
+        }
+
+        /* モバイルでは画像サイズ調整を非表示 */
+        @media (max-width: 767px) {
+            .image-size-controls, .size-toggle-button {
+                display: none;
+            }
+        }
+
+        /* 画像サイズのクラス */
+        .img-size-small {
+            width: 50% !important;
+            max-width: 50% !important;
+        }
+
+        .img-size-medium {
+            width: 75% !important;
+            max-width: 75% !important;
+        }
+
+        .img-size-large {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+
+        .img-size-xlarge {
+            width: 120% !important;
+            max-width: 120% !important;
+        }
+
+        .img-size-xxlarge {
+            width: 150% !important;
+            max-width: 150% !important;
         }
 
         /* --- ローディング --- */
@@ -551,6 +638,11 @@
         <a href="/" class="back-button">← ホームに戻る</a>
         <h1 class="header-title" id="mangaTitle">漫画ビューアー</h1>
         <div class="header-actions">
+            <button id="sizeToggle" class="size-toggle-button" aria-label="画像サイズ調整パネルを表示/非表示">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                </svg>
+            </button>
             <button id="themeToggle" class="icon-button" aria-label="ダークモード切替">🌙</button>
         </div>
     </header>
@@ -627,6 +719,14 @@
         <span id="currentPage">1</span> / <span id="totalPages">1</span>
     </div>
 
+    <!-- 画像サイズ調整コントロール -->
+    <div class="image-size-controls hidden" id="imageSizeControls">
+        <button class="size-button" id="decreaseSize" aria-label="画像を縮小">−</button>
+        <span class="size-display" id="sizeDisplay">100%</span>
+        <button class="size-button" id="increaseSize" aria-label="画像を拡大">+</button>
+        <button class="size-button" id="resetSize" aria-label="元のサイズに戻す">⟲</button>
+    </div>
+
     <!-- トラッキングスクリプト -->
     <script src="/static/tracking.js" defer></script>
     <script src="/static/app.js"></script>
@@ -638,15 +738,6 @@
         let galleryData = null;
         let imageUrls = [];
         let currentPageIndex = 0;
-        let preloadLimit = 3; // プリロードする画像数
-        
-        // 画像遅延読み込み用変数
-        let imageObserver = null;
-        let loadedImages = new Set();
-        let imageCache = new Map();
-        let preloadQueue = []; // プリロード用のキュー
-        let preloadWorkers = 3; // プリロード用の同時処理数
-        let activePreloadWorkers = 0; // アクティブなプリロードワーカー数
         
         const ERROR_IMAGE_SRC = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIGZpbGw9IiNmMGYwZjAiLz48dGV4dCB4PSIyNCIgeT0iMjQiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxOCIgZmlsbD0iIzk5OSI+PC90ZXh0Pjwvc3ZnPg==';
         
@@ -670,6 +761,25 @@
         const viewerLikeButton = document.getElementById('viewerLikeButton');
         const recommendationSection = document.getElementById('recommendationSection');
         const recommendationGrid = document.getElementById('recommendationGrid');
+        
+        // 画像サイズ調整用DOM要素
+        const imageSizeControls = document.getElementById('imageSizeControls');
+        const decreaseSizeButton = document.getElementById('decreaseSize');
+        const increaseSizeButton = document.getElementById('increaseSize');
+        const resetSizeButton = document.getElementById('resetSize');
+        const sizeDisplay = document.getElementById('sizeDisplay');
+        const sizeToggle = document.getElementById('sizeToggle');
+        
+        // 画像サイズ調整用変数
+        let currentImageSize = 100; // パーセント
+        const imageSizeStep = 25; // ステップサイズ
+        const minImageSize = 50; // 最小サイズ
+        const maxImageSize = 200; // 最大サイズ
+        let isControlsVisible = false; // コントロールパネルの表示状態
+        
+        // 画像サイズ設定の保存キー
+        const IMAGE_SIZE_KEY = 'manga_viewer_image_size';
+        const CONTROLS_VISIBLE_KEY = 'manga_viewer_controls_visible';
 
         function getTrackingSessionId() {
             if (window.Tracking && typeof window.Tracking.getSessionId === 'function') {
@@ -678,8 +788,37 @@
             return null;
         }
 
+        // 設定を読み込む
+        function loadSettings() {
+            // 画像サイズ設定を読み込む
+            const savedImageSize = localStorage.getItem(IMAGE_SIZE_KEY);
+            if (savedImageSize) {
+                currentImageSize = parseInt(savedImageSize, 10);
+                if (currentImageSize < minImageSize) currentImageSize = minImageSize;
+                if (currentImageSize > maxImageSize) currentImageSize = maxImageSize;
+            }
+            
+            // コントロールパネルの表示状態を読み込む
+            const savedControlsVisible = localStorage.getItem(CONTROLS_VISIBLE_KEY);
+            if (savedControlsVisible) {
+                isControlsVisible = savedControlsVisible === 'true';
+            }
+        }
+        
+        // 設定を保存する
+        function saveSettings() {
+            // 画像サイズ設定を保存
+            localStorage.setItem(IMAGE_SIZE_KEY, currentImageSize.toString());
+            
+            // コントロールパネルの表示状態を保存
+            localStorage.setItem(CONTROLS_VISIBLE_KEY, isControlsVisible.toString());
+        }
+
         // 初期化
         document.addEventListener('DOMContentLoaded', () => {
+            // 設定を読み込む
+            loadSettings();
+            
             MangaApp.applyThemeToDocument(document);
             MangaApp.ensureTranslations().catch(() => {});
             updateThemeToggleIcon(MangaApp.getPreferredTheme());
@@ -712,9 +851,6 @@
                 }
             });
 
-            // 画像遅延読み込みの初期化
-            initImageLazyLoading();
-
             // モバイルナビゲーションの初期化
             if (isMobile) {
                 initMobileNavigation();
@@ -724,6 +860,20 @@
             if (isMobile) {
                 pageIndicator.style.display = 'block';
             }
+            
+            // 画像サイズ調整コントロールの初期化（PCのみ）
+            if (!isMobile && imageSizeControls) {
+                initImageSizeControls();
+                
+                // 保存された設定を適用
+                if (isControlsVisible) {
+                    imageSizeControls.classList.remove('hidden');
+                    sizeToggle.classList.add('active');
+                } else {
+                    imageSizeControls.classList.add('hidden');
+                    sizeToggle.classList.remove('active');
+                }
+            }
 
             if (currentGalleryId) {
                 loadGalleryData(currentGalleryId);
@@ -731,215 +881,120 @@
                 showError('ギャラリーIDが指定されていません。');
             }
         });
-
-        // 画像遅延読み込みの初期化
-        function initImageLazyLoading() {
-            // Intersection Observerのサポート確認
-            if ('IntersectionObserver' in window) {
-                imageObserver = new IntersectionObserver((entries) => {
-                    entries.forEach(entry => {
-                        if (entry.isIntersecting) {
-                            const img = entry.target.querySelector('img');
-                            const pageElement = entry.target;
-                            
-                            if (img && !pageElement.dataset.loaded) {
-                                loadImage(img, pageElement);
-                            }
-                        }
-                    });
-                }, {
-                    rootMargin: '200px', // ビューポートの200px手前から読み込み開始
-                    threshold: 0.1
-                });
-            } else {
-                // フォールバック：スクロールイベントでの遅延読み込み
-                initScrollLazyLoading();
+        
+        // 画像サイズ調整コントロールの初期化
+        function initImageSizeControls() {
+            if (decreaseSizeButton) {
+                decreaseSizeButton.addEventListener('click', decreaseImageSize);
             }
-        }
-
-        // 画像の読み込み
-        async function loadImage(img, pageElement) {
-            const imageUrl = img.dataset.src;
-
-            console.log('画像読み込み開始:', imageUrl);
-
-            if (!imageUrl || imageUrl.trim() === '') {
-                console.error('画像URLが空です');
-                pageElement.dataset.loaded = 'error';
-                return;
+            if (increaseSizeButton) {
+                increaseSizeButton.addEventListener('click', increaseImageSize);
             }
-
-            let placeholder = pageElement.querySelector('.image-placeholder');
-            if (!placeholder) {
-                placeholder = document.createElement('div');
-                placeholder.className = 'image-placeholder';
-                pageElement.insertBefore(placeholder, img);
+            if (resetSizeButton) {
+                resetSizeButton.addEventListener('click', resetImageSize);
             }
-
-            const removePlaceholder = () => {
-                if (placeholder && placeholder.parentNode) {
-                    placeholder.parentNode.removeChild(placeholder);
-                }
-            };
-
-            const markAsLoaded = () => {
-                img.classList.add('loaded');
-                pageElement.dataset.loaded = 'true';
-                pageElement.dataset.lazy = 'loaded';
-                loadedImages.add(imageUrl);
-                removePlaceholder();
-                if (imageObserver && pageElement) {
-                    imageObserver.unobserve(pageElement);
-                }
-            };
-
-            const handleError = (error, attemptedUrl) => {
-                console.error('画像読み込みエラー:', error, 'URL:', attemptedUrl || imageUrl);
-                img.onerror = null;
-                img.onload = null;
-                img.src = ERROR_IMAGE_SRC;
-                img.classList.add('loaded');
-                pageElement.dataset.loaded = 'error';
-                pageElement.dataset.lazy = 'error';
-                removePlaceholder();
-                if (imageObserver && pageElement) {
-                    imageObserver.unobserve(pageElement);
-                }
-            };
-
-            if (imageCache.has(imageUrl)) {
-                console.log('画像はキャッシュから読み込み:', imageUrl);
-                const cachedBlob = imageCache.get(imageUrl);
-                const objectUrl = URL.createObjectURL(cachedBlob);
-                img.onload = () => {
-                    markAsLoaded();
-                    URL.revokeObjectURL(objectUrl);
-                };
-                img.onerror = (error) => {
-                    URL.revokeObjectURL(objectUrl);
-                    handleError(error, objectUrl);
-                };
-                img.src = objectUrl;
-                if (img.complete) {
-                    img.onload();
-                }
-                return;
+            if (sizeToggle) {
+                sizeToggle.addEventListener('click', toggleSizeControls);
             }
-
-            if (loadedImages.has(imageUrl)) {
-                console.log('画像は既に読み込み済み:', imageUrl);
-                img.onload = markAsLoaded;
-                img.onerror = (error) => handleError(error, imageUrl);
-                img.src = imageUrl;
-                if (img.complete) {
-                    img.onload();
-                }
-                return;
-            }
-
-            try {
-                const optimizedUrl = getOptimizedImageUrl(imageUrl);
-                console.log('最適化URL:', optimizedUrl);
-
-                const response = await fetch(optimizedUrl);
-                console.log('フェッチレスポンス:', response.status, response.statusText);
-
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}, text: ${response.statusText}`);
-                }
-
-                const blob = await response.blob();
-                console.log('ブログサイズ:', blob.size, 'タイプ:', blob.type);
-
-                if (blob.size === 0) {
-                    throw new Error('Blob is empty');
-                }
-
-                const objectUrl = URL.createObjectURL(blob);
-                img.onload = () => {
-                    console.log('画像読み込み完了:', imageUrl);
-                    imageCache.set(imageUrl, blob);
-                    markAsLoaded();
-                    URL.revokeObjectURL(objectUrl);
-                };
-                img.onerror = (error) => {
-                    URL.revokeObjectURL(objectUrl);
-                    handleError(error, objectUrl);
-                };
-                img.src = objectUrl;
-            } catch (error) {
-                handleError(error, imageUrl);
-            }
-        }
-
-        // 画像のプリロード
-        async function preloadImage(imageUrl) {
-            if (imageCache.has(imageUrl) || loadedImages.has(imageUrl)) {
-                return; // 既にキャッシュされているか、読み込み済み
-            }
-
-            try {
-                const optimizedUrl = getOptimizedImageUrl(imageUrl);
-                const response = await fetch(optimizedUrl);
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                const blob = await response.blob();
-                if (blob.size === 0) {
-                    throw new Error('Blob is empty');
-                }
-
-                // キャッシュに保存
-                imageCache.set(imageUrl, blob);
-                console.log('プリロード完了:', imageUrl);
-            } catch (error) {
-                console.error('プリロードエラー:', error, imageUrl);
-            }
-        }
-
-        // プリロードキューの処理
-        async function processPreloadQueue() {
-            if (preloadQueue.length === 0 || activePreloadWorkers >= preloadWorkers) {
-                return;
-            }
-
-            const imageUrl = preloadQueue.shift();
-            activePreloadWorkers++;
-
-            try {
-                await preloadImage(imageUrl);
-            } finally {
-                activePreloadWorkers--;
-                // 残りのキューを処理
-                setTimeout(processPreloadQueue, 0);
-            }
-        }
-
-        // プリロードの開始
-        function startPreloading() {
-            // 現在のページの前後をプリロード
-            const startIndex = Math.max(0, currentPageIndex - Math.floor(preloadLimit / 2));
-            const endIndex = Math.min(imageUrls.length - 1, currentPageIndex + Math.floor(preloadLimit / 2));
-
-            for (let i = startIndex; i <= endIndex; i++) {
-                if (i !== currentPageIndex) { // 現在のページは除く
-                    const imageUrl = imageUrls[i];
-                    if (!imageCache.has(imageUrl) && !loadedImages.has(imageUrl)) {
-                        preloadQueue.push(imageUrl);
+            
+            // キーボードショートカット
+            document.addEventListener('keydown', (e) => {
+                if (e.ctrlKey || e.metaKey) {
+                    if (e.key === '=' || e.key === '+') {
+                        e.preventDefault();
+                        increaseImageSize();
+                    } else if (e.key === '-') {
+                        e.preventDefault();
+                        decreaseImageSize();
+                    } else if (e.key === '0') {
+                        e.preventDefault();
+                        resetImageSize();
                     }
                 }
+            });
+        }
+        
+        // 画像サイズ調整パネルの表示/非表示を切り替え
+        function toggleSizeControls() {
+            isControlsVisible = !isControlsVisible;
+            
+            if (imageSizeControls) {
+                if (isControlsVisible) {
+                    imageSizeControls.classList.remove('hidden');
+                    sizeToggle.classList.add('active');
+                } else {
+                    imageSizeControls.classList.add('hidden');
+                    sizeToggle.classList.remove('active');
+                }
             }
-
-            // プリロードキューを処理
-            for (let i = 0; i < preloadWorkers; i++) {
-                setTimeout(processPreloadQueue, i * 100); // 少し遅延させて開始
+            
+            // 設定を保存
+            saveSettings();
+        }
+        
+        // 画像サイズを縮小
+        function decreaseImageSize() {
+            if (currentImageSize > minImageSize) {
+                currentImageSize = Math.max(minImageSize, currentImageSize - imageSizeStep);
+                updateImageSize();
+                saveSettings();
+            }
+        }
+        
+        // 画像サイズを拡大
+        function increaseImageSize() {
+            if (currentImageSize < maxImageSize) {
+                currentImageSize = Math.min(maxImageSize, currentImageSize + imageSizeStep);
+                updateImageSize();
+                saveSettings();
+            }
+        }
+        
+        // 画像サイズをリセット
+        function resetImageSize() {
+            currentImageSize = 100;
+            updateImageSize();
+            saveSettings();
+        }
+        
+        // 画像サイズを更新
+        function updateImageSize() {
+            const images = document.querySelectorAll('.manga-page img');
+            images.forEach(img => {
+                // すべてのサイズクラスを削除
+                img.classList.remove('img-size-small', 'img-size-medium', 'img-size-large', 'img-size-xlarge', 'img-size-xxlarge');
+                
+                // サイズに応じてクラスを追加
+                if (currentImageSize <= 50) {
+                    img.classList.add('img-size-small');
+                } else if (currentImageSize <= 75) {
+                    img.classList.add('img-size-medium');
+                } else if (currentImageSize <= 100) {
+                    img.classList.add('img-size-large');
+                } else if (currentImageSize <= 125) {
+                    img.classList.add('img-size-xlarge');
+                } else {
+                    img.classList.add('img-size-xxlarge');
+                }
+            });
+            
+            // サイズ表示を更新
+            if (sizeDisplay) {
+                sizeDisplay.textContent = `${currentImageSize}%`;
+            }
+            
+            // ボタンの状態を更新
+            if (decreaseSizeButton) {
+                decreaseSizeButton.disabled = currentImageSize <= minImageSize;
+            }
+            if (increaseSizeButton) {
+                increaseSizeButton.disabled = currentImageSize >= maxImageSize;
             }
         }
 
         // ページ変更時の処理
         function onPageChange() {
             updatePageIndicator();
-            startPreloading(); // 新しいページに応じてプリロードを開始
         }
 
         // 前のページへ
@@ -979,53 +1034,6 @@
             }
         }
 
-        // 最適化された画像URLの生成
-        function getOptimizedImageUrl(originalUrl) {
-            // 画面サイズに応じた最適化
-            const maxWidth = isMobile ? 480 : isTablet ? 768 : 1200;
-            const quality = getComputedStyle(document.documentElement).getPropertyValue('--image-quality') || '80';
-            
-            // WebPサポートの確認
-            const supportsWebP = document.createElement('canvas').toDataURL('image/webp').indexOf('data:image/webp') === 0;
-            const format = supportsWebP ? 'webp' : 'jpeg';
-            
-            // APIエンドポイントを使用して画像を最適化
-            // URLがすでに/proxy/で始まっている場合は追加しない
-            if (originalUrl.startsWith('/proxy/')) {
-                return originalUrl;
-            }
-            return `/proxy/${originalUrl}`;
-        }
-
-        // スクロールベースの遅延読み込み（フォールバック）
-        function initScrollLazyLoading() {
-            let scrollTimer = null;
-            
-            const checkImages = () => {
-                const images = document.querySelectorAll('.manga-page[data-loaded="false"] img');
-                
-                images.forEach(img => {
-                    const rect = img.getBoundingClientRect();
-                    const isInViewport = rect.top < window.innerHeight + 200 && rect.bottom > -200;
-                    
-                    if (isInViewport) {
-                        const pageElement = img.closest('.manga-page');
-                        loadImage(img, pageElement);
-                    }
-                });
-            };
-            
-            window.addEventListener('scroll', () => {
-                if (scrollTimer) {
-                    clearTimeout(scrollTimer);
-                }
-                
-                scrollTimer = setTimeout(checkImages, 100);
-            }, { passive: true });
-            
-            // 初回チェック
-            checkImages();
-        }
 
         // モバイルナビゲーションの初期化
         function initMobileNavigation() {
@@ -1290,7 +1298,7 @@
             }
         }
 
-        // すべてのページを表示（遅延読み込み対応）
+        // すべてのページを表示（単純なimgタグを追加）
         function displayAllPages() {
             mangaPagesContainer.innerHTML = '';
             
@@ -1311,42 +1319,31 @@
                 
                 const pageDiv = document.createElement('div');
                 pageDiv.className = 'manga-page';
-                pageDiv.dataset.lazy = 'true';
-                pageDiv.dataset.loaded = 'false';
                 pageDiv.dataset.index = index;
-                
-                // プレースホルダーの作成
-                const placeholder = document.createElement('div');
-                placeholder.className = 'image-placeholder';
-                placeholder.style.aspectRatio = '3/4';
-                pageDiv.appendChild(placeholder);
                 
                 // 画像要素の作成
                 const img = document.createElement('img');
                 // URLが既に/proxy/で始まっている場合はそのまま使用
-                img.dataset.src = imageUrl.startsWith('/proxy/') ? imageUrl : `/proxy/${imageUrl}`;
-                // 画像URLをコンソールに出力
-                console.log(`画像 ${index + 1} URL (data-src):`, img.dataset.src);
+                const imageSrc = imageUrl.startsWith('/proxy/') ? imageUrl : `/proxy/${imageUrl}`;
+                img.src = imageSrc;
                 img.alt = `漫画ページ ${index + 1}`;
+                img.style.maxWidth = '100%';
+                img.style.height = 'auto';
+                img.style.borderRadius = 'var(--radius-card)';
+                img.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.1)';
                 
                 pageDiv.appendChild(img);
                 mangaPagesContainer.appendChild(pageDiv);
-                
-                // Observerの監視を開始
-                if (imageObserver) {
-                    imageObserver.observe(pageDiv);
-                }
-                
-                // 画像を直ちに読み込む（最初のページのみ）
-                if (index === 0) {
-                    loadImage(img, pageDiv);
-                }
             });
             
             // ページインジケーターの更新
             updatePageIndicator();
-            // プリロードを開始
-            startPreloading();
+            
+            // 画像サイズ調整機能を初期化（PCのみ）
+            if (!isMobile && imageSizeControls) {
+                updateImageSize();
+                saveSettings();
+            }
         }
 
         // ローディング表示の切り替え
