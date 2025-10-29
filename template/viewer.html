@@ -122,7 +122,6 @@
 
         .manga-info {
             width: 100%;
-            max-width: 800px;
             margin-bottom: 24px;
         }
 
@@ -176,6 +175,25 @@
             display: flex;
             align-items: center;
             gap: 4px;
+        }
+        
+        /* 日本語タグの縦書きスタイル */
+        .tag-group.vertical {
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+            height: auto;
+            max-height: 120px;
+            margin-right: 8px;
+        }
+        
+        .tag-group.vertical .tag-label {
+            writing-mode: horizontal-tb;
+            margin-bottom: 4px;
+        }
+        
+        .tag-group.vertical .tag-item {
+            writing-mode: horizontal-tb;
+            margin-bottom: 2px;
         }
 
         .tag-label {
@@ -1195,6 +1213,13 @@
             }
         }
 
+        // 日本語テキストを検出する関数
+        function containsJapanese(text) {
+            // ひらがな、カタカナ、漢字の正規表現
+            const japaneseRegex = /[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/;
+            return japaneseRegex.test(text);
+        }
+        
         // ギャラリー情報を更新
         function updateGalleryInfo() {
             if (!galleryData) return;
@@ -1213,6 +1238,12 @@
                     if (Array.isArray(tagArray) && tagArray.length > 0) {
                         const tagGroup = document.createElement('div');
                         tagGroup.className = 'tag-group';
+                        
+                        // 日本語タグが含まれているかチェック
+                        const hasJapaneseTags = tagArray.some(tag => containsJapanese(tag));
+                        if (hasJapaneseTags) {
+                            tagGroup.classList.add('vertical');
+                        }
                         
                         const tagLabel = document.createElement('span');
                         tagLabel.className = 'tag-label';
@@ -1237,6 +1268,11 @@
                     // パースに失敗した場合はテキストとして表示
                     const tagGroup = document.createElement('div');
                     tagGroup.className = 'tag-group';
+                    
+                    // 日本語タグが含まれているかチェック
+                    if (containsJapanese(galleryData.tags)) {
+                        tagGroup.classList.add('vertical');
+                    }
                     
                     const tagLabel = document.createElement('span');
                     tagLabel.className = 'tag-label';
@@ -1264,6 +1300,12 @@
                         const characterGroup = document.createElement('div');
                         characterGroup.className = 'tag-group';
                         
+                        // 日本語キャラクター名が含まれているかチェック
+                        const hasJapaneseCharacters = characterArray.some(character => containsJapanese(character));
+                        if (hasJapaneseCharacters) {
+                            characterGroup.classList.add('vertical');
+                        }
+                        
                         const characterLabel = document.createElement('span');
                         characterLabel.className = 'tag-label';
                         characterLabel.textContent = 'キャラ:';
@@ -1282,6 +1324,11 @@
                     // パースに失敗した場合はテキストとして表示
                     const characterGroup = document.createElement('div');
                     characterGroup.className = 'tag-group';
+                    
+                    // 日本語キャラクター名が含まれているかチェック
+                    if (containsJapanese(galleryData.characters)) {
+                        characterGroup.classList.add('vertical');
+                    }
                     
                     const characterLabel = document.createElement('span');
                     characterLabel.className = 'tag-label';
