@@ -1117,15 +1117,42 @@ def _derive_filename(url: str) -> str:
     return candidate or "download.bin"
 
 
-def geturl(gi: Dict[str, Any]):
-    urls: List[str] = []
-    files = gi.get("files", []) or []
+_IMAGE_RESOLVER_FAILURE_AT: float = 0.0
+_IMAGE_RESOLVER_FAILURE_COOLDOWN = 120.0
+_IMAGE_RESOLVER_TIMEOUT = 3.0
+
+
+async def _ensure_image_resolver_ready() -> bool:
+    """Initialise the image resolver without blocking the event loop."""
+
+    global _IMAGE_RESOLVER_FAILURE_AT
+
+    now = time.monotonic()
+    if _IMAGE_RESOLVER_FAILURE_AT and now - _IMAGE_RESOLVER_FAILURE_AT < _IMAGE_RESOLVER_FAILURE_COOLDOWN:
+        return False
+
     try:
-        ImageUriResolver.synchronize()
-    except Exception as e:
-        logger.error(f"ImageUriResolver 初期化エラー: {e}")
+        await asyncio.wait_for(ImageUriResolver.async_synchronize(), timeout=_IMAGE_RESOLVER_TIMEOUT)
+        return True
+    except asyncio.TimeoutError:
+        logger.warning("ImageUriResolver 同期がタイムアウトしました")
+    except Exception as exc:
+        logger.error("ImageUriResolver 初期化エラー: %s", exc)
+
+    _IMAGE_RESOLVER_FAILURE_AT = now
+    return False
+
+
+async def geturl(gi: Dict[str, Any]) -> List[str]:
+    files = gi.get("files", []) or []
+    if not files:
         return []
 
+    resolver_ready = await _ensure_image_resolver_ready()
+    if not resolver_ready:
+        return []
+
+    urls: List[str] = []
     for idx, f in enumerate(files):
         image = SimpleNamespace(
             index=idx,
@@ -1246,7 +1273,7 @@ async def search_galleries_endpoint(request: SearchRequest):
                     files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
                     files_list = files_data if isinstance(files_data, list) else []
                     gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
-                    result["image_urls"] = geturl(gallery_info)
+                    result["image_urls"] = await geturl(gallery_info)
                     stored_pages = result.get("page_count")
                     if not isinstance(stored_pages, int) or stored_pages < 0:
                         result["page_count"] = len(files_list)
@@ -1306,7 +1333,7 @@ async def api_recommendations(
                     files_data = []
                 files_list = files_data if isinstance(files_data, list) else []
                 gallery_info = {"gallery_id": result["gallery_id"], "files": files_list}
-                image_urls = geturl(gallery_info)
+                image_urls = await geturl(gallery_info)
                 payload.append(
                     {
                         **{k: v for k, v in result.items() if k != "files"},
@@ -1350,7 +1377,7 @@ async def search_galleries_get(
                     files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
                     files_list = files_data if isinstance(files_data, list) else []
                     gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
-                    result["image_urls"] = geturl(gallery_info)
+                    result["image_urls"] = await geturl(gallery_info)
                     stored_pages = result.get("page_count")
                     if not isinstance(stored_pages, int) or stored_pages < 0:
                         result["page_count"] = len(files_list)
@@ -1584,7 +1611,7 @@ async def get_gallery(gallery_id: int):
                 files_data = json.loads(gallery.files) if isinstance(gallery.files, str) else gallery.files
                 files_list = files_data if isinstance(files_data, list) else []
                 gallery_info = {"gallery_id": gallery.gallery_id, "files": files_list}
-                image_urls = geturl(gallery_info)
+                image_urls = await geturl(gallery_info)
             except (json.JSONDecodeError, TypeError) as e:
                 logger.error(f"files 解析エラー: {e}, gallery_id: {gallery.gallery_id}")
                 image_urls = []
