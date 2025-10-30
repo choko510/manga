@@ -112,10 +112,67 @@
         return anchor;
     }
 
-    function createHistoryCard(entry) {
+    function toHistoryId(entry) {
+        if (!entry) {
+            return '';
+        }
+        const id = entry.gallery_id;
+        if (typeof id === 'number' || typeof id === 'string') {
+            const str = String(id);
+            return str.length > 0 ? str : '';
+        }
+        return '';
+    }
+
+    function createHistoryCard(entry, state, handlers) {
+        const container = document.createElement('div');
+        container.className = 'history-card';
+        const id = toHistoryId(entry);
+        if (id) {
+            container.dataset.galleryId = id;
+        }
+
+        const isSelected = id && state.selected.has(id);
+        if (isSelected) {
+            container.classList.add('selected');
+        }
+
+        const selectControl = document.createElement('label');
+        selectControl.className = 'history-select-control';
+        selectControl.title = 'この履歴を選択';
+        selectControl.setAttribute('aria-label', 'この履歴を選択');
+        selectControl.addEventListener('click', (event) => {
+            event.stopPropagation();
+        });
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'history-select-checkbox';
+        checkbox.checked = isSelected;
+        checkbox.setAttribute('aria-label', 'この履歴を選択');
+        checkbox.addEventListener('click', (event) => {
+            event.stopPropagation();
+        });
+        checkbox.addEventListener('change', (event) => {
+            const target = event.target;
+            handlers.onToggle(id, Boolean(target.checked));
+        });
+        selectControl.appendChild(checkbox);
+
+        const indicator = document.createElement('span');
+        indicator.className = 'history-select-indicator';
+        selectControl.appendChild(indicator);
+
+        container.appendChild(selectControl);
+
         const anchor = document.createElement('a');
-        anchor.href = `/viewer?id=${entry.gallery_id}`;
-        anchor.className = 'history-card';
+        anchor.href = id ? `/viewer?id=${id}` : '#';
+        anchor.className = 'history-card-link';
+        if (!id) {
+            anchor.addEventListener('click', (event) => {
+                event.preventDefault();
+            });
+        }
 
         const thumb = document.createElement('div');
         thumb.className = 'history-thumbnail';
@@ -147,13 +204,14 @@
         meta.appendChild(updatedText);
 
         anchor.appendChild(meta);
-        return anchor;
+        container.appendChild(anchor);
+        return container;
     }
 
-    function renderHistory(elements) {
+    function renderHistory(elements, state) {
         const history = MangaApp.getHistory();
         renderContinueSection(elements, history);
-        renderHistoryList(elements, history);
+        renderHistoryList(elements, history, state);
     }
 
     function renderContinueSection(elements, history) {
@@ -178,7 +236,7 @@
         elements.continueContainer.appendChild(createContinueCard(continueEntry));
     }
 
-    function renderHistoryList(elements, history) {
+    function renderHistoryList(elements, history, state) {
         if (!elements.historyList || !elements.emptyState) {
             return;
         }
@@ -186,16 +244,70 @@
         if (!list.length) {
             elements.historyList.innerHTML = '';
             elements.emptyState.hidden = false;
+            state.selected.clear();
+            updateSelectionUI(elements, state);
             return;
         }
+
+        const availableIds = new Set(list.map((item) => toHistoryId(item)).filter((id) => id));
+        Array.from(state.selected).forEach((id) => {
+            if (!availableIds.has(id)) {
+                state.selected.delete(id);
+            }
+        });
 
         elements.emptyState.hidden = true;
         elements.historyList.innerHTML = '';
         const fragment = document.createDocumentFragment();
         list.forEach((entry) => {
-            fragment.appendChild(createHistoryCard(entry));
+            fragment.appendChild(createHistoryCard(entry, state, {
+                onToggle: (id, checked) => {
+                    toggleSelection(state, id, checked);
+                    updateSelectionUI(elements, state);
+                },
+            }));
         });
         elements.historyList.appendChild(fragment);
+        updateSelectionUI(elements, state);
+    }
+
+    function toggleSelection(state, id, checked) {
+        if (!id) {
+            return;
+        }
+        if (checked) {
+            state.selected.add(id);
+        } else {
+            state.selected.delete(id);
+        }
+    }
+
+    function updateSelectionUI(elements, state) {
+        if (!elements.historyList) {
+            return;
+        }
+        const cards = elements.historyList.querySelectorAll('.history-card');
+        cards.forEach((card) => {
+            const id = card.dataset.galleryId || '';
+            const selected = id && state.selected.has(id);
+            card.classList.toggle('selected', Boolean(selected));
+            const checkbox = card.querySelector('.history-select-checkbox');
+            if (checkbox) {
+                checkbox.checked = Boolean(selected);
+            }
+        });
+
+        if (elements.deleteSelectedButton) {
+            elements.deleteSelectedButton.disabled = state.selected.size === 0;
+        }
+
+        if (elements.selectAllButton) {
+            const total = cards.length;
+            const selectedCount = state.selected.size;
+            elements.selectAllButton.disabled = total === 0;
+            const shouldDeselect = total > 0 && selectedCount === total;
+            elements.selectAllButton.textContent = shouldDeselect ? '選択解除' : '全て選択';
+        }
     }
 
     function updateThemeToggle(themeToggle, theme) {
@@ -206,12 +318,18 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        const state = {
+            selected: new Set(),
+        };
+
         const elements = {
             continueSection: document.getElementById('continueSection'),
             continueContainer: document.getElementById('continueCardContainer'),
             historyList: document.getElementById('historyList'),
             emptyState: document.getElementById('historyEmpty'),
             clearButton: document.getElementById('historyClearButton'),
+            selectAllButton: document.getElementById('historySelectAllButton'),
+            deleteSelectedButton: document.getElementById('historyDeleteSelectedButton'),
             themeToggle: document.getElementById('themeToggle'),
         };
 
@@ -230,13 +348,51 @@
 
         if (elements.clearButton) {
             elements.clearButton.addEventListener('click', () => {
-                if (confirm('履歴をクリアしますか？')) {
+                if (confirm('履歴を全て削除しますか？')) {
                     MangaApp.clearHistory();
+                    state.selected.clear();
+                    updateSelectionUI(elements, state);
                 }
             });
         }
 
-        const render = () => renderHistory(elements);
+        if (elements.selectAllButton) {
+            elements.selectAllButton.addEventListener('click', () => {
+                const cards = elements.historyList?.querySelectorAll('.history-card') ?? [];
+                const total = cards.length;
+                const shouldDeselect = total > 0 && state.selected.size === total;
+                if (shouldDeselect) {
+                    state.selected.clear();
+                } else {
+                    cards.forEach((card) => {
+                        const id = card.dataset.galleryId;
+                        if (id) {
+                            state.selected.add(id);
+                        }
+                    });
+                }
+                updateSelectionUI(elements, state);
+            });
+        }
+
+        if (elements.deleteSelectedButton) {
+            elements.deleteSelectedButton.addEventListener('click', () => {
+                if (!state.selected.size) {
+                    return;
+                }
+                const count = state.selected.size;
+                const message = count === 1
+                    ? '選択した履歴を削除しますか？'
+                    : `選択した${count}件の履歴を削除しますか？`;
+                if (confirm(message)) {
+                    MangaApp.removeHistoryEntries(Array.from(state.selected));
+                    state.selected.clear();
+                    updateSelectionUI(elements, state);
+                }
+            });
+        }
+
+        const render = () => renderHistory(elements, state);
         render();
 
         document.addEventListener('manga:history-change', render);
