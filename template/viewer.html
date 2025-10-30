@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>漫画ビューアー</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@10/swiper-bundle.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         /* --- 基本設定とリセット --- */
         :root {
@@ -368,7 +369,7 @@
             display: flex;
             flex-direction: row;
             align-items: stretch;
-            gap: 16px;
+            gap: 8px;
             overflow-x: auto;
             padding-bottom: 12px;
             scroll-snap-type: x mandatory;
@@ -793,11 +794,9 @@
         <h1 class="header-title" id="mangaTitle">漫画ビューアー</h1>
         <div class="header-actions">
             <button id="sizeToggle" class="size-toggle-button" aria-label="画像サイズ調整パネルを表示/非表示">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-                </svg>
+                <i class="fas fa-search"></i>
             </button>
-            <button id="themeToggle" class="icon-button" aria-label="ダークモード切替">🌙</button>
+            <button id="themeToggle" class="icon-button" aria-label="ダークモード切替"><i class="fas fa-moon"></i></button>
         </div>
     </header>
 
@@ -814,7 +813,7 @@
             <div class="manga-info">
                 <div class="viewer-actions">
                     <h2 class="manga-title" id="mangaTitleInfo"></h2>
-                    <button id="viewerLikeButton" class="viewer-like-button" type="button">🤍 いいね</button>
+                    <button id="viewerLikeButton" class="viewer-like-button" type="button"><i class="far fa-heart"></i> いいね</button>
                 </div>
                 <div class="manga-tags" id="mangaTagsInfo"></div>
                 <div class="viewer-options">
@@ -825,7 +824,7 @@
                         <option value="swiper">ページめくり (Swiper)</option>
                         <option value="swiper-double">見開き (2ページ表示)</option>
                     </select>
-                    <button id="downloadPdfButton" class="download-button" type="button">📄 PDFをダウンロード</button>
+                    <button id="downloadPdfButton" class="download-button" type="button"><i class="fas fa-file-pdf"></i> PDFをダウンロード</button>
                 </div>
             </div>
 
@@ -1786,13 +1785,13 @@
 
         function updateThemeToggleIcon(theme) {
             if (!themeToggle) return;
-            themeToggle.textContent = theme === 'dark' ? '☀️' : '🌙';
+            themeToggle.innerHTML = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
         }
 
         function updateLikeButton(isLiked) {
             if (!viewerLikeButton) return;
             viewerLikeButton.classList.toggle('active', isLiked);
-            viewerLikeButton.textContent = isLiked ? '❤️ いいね済み' : '🤍 いいね';
+            viewerLikeButton.innerHTML = isLiked ? '<i class="fas fa-heart"></i> いいね済み' : '<i class="far fa-heart"></i> いいね';
         }
 
         async function handlePdfDownload() {
@@ -1813,7 +1812,7 @@
             isDownloadingPdf = true;
             const originalLabel = downloadPdfButton.textContent;
             downloadPdfButton.disabled = true;
-            downloadPdfButton.textContent = '📄 PDF生成中...';
+            downloadPdfButton.innerHTML = '<i class="fas fa-file-pdf"></i> PDF生成中...';
 
             try {
                 const { jsPDF } = window.jspdf;
@@ -1893,7 +1892,7 @@
             try {
                 const params = new URLSearchParams();
                 params.append('gallery_id', String(galleryId));
-                params.append('limit', '6');
+                params.append('limit', '10');
                 const hidden = MangaApp.getHiddenTags();
                 if (hidden.length) {
                     params.append('exclude_tag', hidden.join(','));

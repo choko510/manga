@@ -47,7 +47,7 @@
     function updateThemeToggleIcon(theme) {
         const toggle = document.getElementById('themeToggle');
         if (!toggle) return;
-        toggle.textContent = theme === 'dark' ? '☀️' : '🌙';
+        toggle.innerHTML = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
     }
 
     function updateHiddenSummary(element) {
@@ -127,13 +127,13 @@
         likeButton.setAttribute('aria-label', 'いいね');
         const liked = MangaApp.isLiked(gallery.gallery_id);
         likeButton.classList.toggle('active', liked);
-        likeButton.textContent = liked ? '❤️' : '🤍';
+        likeButton.innerHTML = liked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
         likeButton.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
             const toggled = MangaApp.toggleLike(gallery.gallery_id);
             likeButton.classList.toggle('active', toggled);
-            likeButton.textContent = toggled ? '❤️' : '🤍';
+            likeButton.innerHTML = toggled ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
         });
 
         const info = document.createElement('div');

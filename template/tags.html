@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>タグ一覧 - UI再現サイト v2</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
             --bg-main: #ffffff;
@@ -380,8 +381,8 @@
             </nav>
             <div class="search-container">
                 <input type="search" id="tagSearchInput" placeholder="タグを検索 (複数語対応)" aria-label="タグ検索">
-                <button id="searchButton" class="primary-button" style="flex:0 0 auto;">検索</button>
-                <button id="themeToggle" class="icon-button" aria-label="ダークモード切替">🌙</button>
+                <button id="searchButton" class="primary-button" style="flex:0 0 auto;"><i class="fas fa-search"></i> 検索</button>
+                <button id="themeToggle" class="icon-button" aria-label="ダークモード切替"><i class="fas fa-moon"></i></button>
             </div>
         </div>
         <div class="filter-summary">
@@ -530,7 +531,7 @@
 
             try {
                 const params = new URLSearchParams();
-                params.append('limit', '100');
+                params.append('limit', '400');
                 params.append('offset', state.offset.toString());
                 if (state.search) {
                     params.append('search', state.search);

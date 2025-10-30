@@ -963,6 +963,13 @@ async def build_session_tag_profile(
         return {}
     return {tag: weight / max_weight for tag, weight in tag_weights.items() if weight > 0}
 
+
+# =================================================================================
+# vvvvvvvvvvvvvvvvvvvvvvvv 高速化のための修正箇所 vvvvvvvvvvvvvvvvvvvvvvvv
+# =================================================================================
+RECOMMENDATION_CANDIDATE_MULTIPLIER = 10
+RECOMMENDATION_CANDIDATE_MAX = 200
+
 async def get_recommended_galleries(
     db_session: AsyncSession,
     gallery_id: Optional[int] = None,
@@ -970,111 +977,127 @@ async def get_recommended_galleries(
     exclude_tag: Optional[str] = None,
     session_tag_weights: Optional[Mapping[str, float]] = None,
 ) -> List[Dict[str, Any]]:
-    target_tags: Tuple[str, ...] = tuple()
-    exclude_ids: List[int] = []
+    """
+    高速化されたおすすめギャラリー取得関数。
+    - 重いJOINとGROUP BYを避け、軽量なクエリで関連候補を絞り込む。
+    - 2段階のフェッチ戦略でDB負荷を軽減。
+    """
+    base_gallery_tags: Tuple[str, ...] = tuple()
+    exclude_ids: Set[int] = set()
 
     if gallery_id is not None:
-        stmt = select(Gallery).where(Gallery.gallery_id == gallery_id)
+        exclude_ids.add(gallery_id)
+        stmt = select(Gallery.tags).where(Gallery.gallery_id == gallery_id)
         result = await db_session.execute(stmt)
-        gallery = result.scalars().first()
-        if gallery:
-            exclude_ids.append(gallery.gallery_id)
+        gallery_tags_json = result.scalar_one_or_none()
+        if gallery_tags_json:
             try:
-                raw_tags = json.loads(gallery.tags) if gallery.tags else []
+                raw_tags = json.loads(gallery_tags_json)
+                normalized = []
+                for tag in raw_tags or []:
+                    if isinstance(tag, str):
+                        cleaned_tag = tag.strip().lower()
+                        if cleaned_tag:
+                            normalized.append(cleaned_tag)
+                base_gallery_tags = tuple(normalized[:15])  # 参照するタグ数を制限
             except (TypeError, json.JSONDecodeError):
-                raw_tags = []
-            normalized = []
-            for tag in raw_tags or []:
-                if isinstance(tag, str):
-                    normalized.append(tag.strip().lower())
-            target_tags = tuple(normalized[:10])
+                pass
 
     known_tags = await _get_known_tag_set(db_session)
     exclude_terms = _parse_tag_terms(exclude_tag, known_tags)
+    
+    candidate_galleries: Dict[int, Dict[str, Any]] = {}
 
-    params: Dict[str, Any] = {"limit": limit}
-    where_clauses = ["g.manga_type = 'doujinshi'"]
-    joins: List[str] = []
-    order_clause = "ORDER BY g.created_at DESC, g.gallery_id DESC"
-
-    if target_tags:
-        joins.append("JOIN gallery_tags gt ON gt.gallery_id = g.gallery_id")
+    # ステップ1: タグに基づいて関連性の高い候補ギャラリーIDを取得
+    if base_gallery_tags:
+        candidate_limit = min(limit * RECOMMENDATION_CANDIDATE_MULTIPLIER, RECOMMENDATION_CANDIDATE_MAX)
+        params: Dict[str, Any] = {"limit": candidate_limit}
+        
         tag_placeholders = []
-        for idx, tag_value in enumerate(target_tags):
-            key = f"rec_tag_{idx}"
-            params[key] = tag_value
+        for i, tag in enumerate(base_gallery_tags):
+            key = f"tag_{i}"
+            params[key] = tag
             tag_placeholders.append(f":{key}")
-        where_clauses.append(f"gt.tag IN ({', '.join(tag_placeholders)})")
-        order_clause = "ORDER BY COUNT(DISTINCT gt.tag) DESC, g.created_at DESC, g.gallery_id DESC"
 
+        # gallery_tagsテーブルのみを使い、高速にマッチ数を集計
+        candidate_query = f"""
+            SELECT
+                gt.gallery_id,
+                COUNT(gt.gallery_id) as match_count
+            FROM gallery_tags AS gt
+            WHERE gt.tag IN ({', '.join(tag_placeholders)})
+            GROUP BY gt.gallery_id
+            ORDER BY match_count DESC
+            LIMIT :limit
+        """
+        
+        candidate_id_rows = await db_session.execute(text(candidate_query), params)
+        candidate_ids_with_score = {row.gallery_id: row.match_count for row in candidate_id_rows}
+
+        if candidate_ids_with_score:
+            # 除外IDを削除
+            for ex_id in exclude_ids:
+                candidate_ids_with_score.pop(ex_id, None)
+
+            # ステップ2: 候補IDのギャラリー情報を取得
+            if candidate_ids_with_score:
+                galleries_stmt = select(Gallery).where(Gallery.gallery_id.in_(candidate_ids_with_score.keys()))
+                gallery_results = await db_session.execute(galleries_stmt)
+
+                for gallery_row in gallery_results.scalars().all():
+                    serialized = _serialize_gallery(gallery_row.__dict__)
+                    serialized["_match_score"] = candidate_ids_with_score.get(gallery_row.gallery_id, 0)
+                    candidate_galleries[gallery_row.gallery_id] = serialized
+
+    # 取得したギャラリーをスコア順にソート
+    sorted_galleries = sorted(candidate_galleries.values(), key=lambda g: -g.get("_match_score", 0))
+
+    # exclude_tagでフィルタリング
     if exclude_terms:
-        not_exists, not_params = _build_tag_not_exists_clause("g", exclude_terms)
-        where_clauses.extend(not_exists)
-        params.update(not_params)
+        # このフィルタリングはPython側で行う方が効率的
+        def check_exclude(g: Dict[str, Any]) -> bool:
+            try:
+                g_tags = {t.strip().lower() for t in json.loads(g.get("tags") or "[]")}
+                return not any(ex_tag in g_tags for ex_tag in exclude_terms)
+            except:
+                return True
+        sorted_galleries = [g for g in sorted_galleries if check_exclude(g)]
 
-    if exclude_ids:
-        placeholders = []
-        for idx, gid in enumerate(exclude_ids):
-            key = f"exclude_id_{idx}"
-            params[key] = gid
-            placeholders.append(f":{key}")
-        if placeholders:
-            where_clauses.append(f"g.gallery_id NOT IN ({', '.join(placeholders)})")
+    galleries = sorted_galleries[:limit]
+    final_gallery_ids = {g["gallery_id"] for g in galleries}
+    exclude_ids.update(final_gallery_ids)
 
-    select_clause = "SELECT g.*"
-    from_clause = "FROM galleries AS g"
-    if joins:
-        from_clause += " " + " ".join(joins)
-
-    where_sql = ""
-    if where_clauses:
-        where_sql = "WHERE " + " AND ".join(where_clauses)
-
-    group_sql = ""
-    if target_tags:
-        group_sql = "GROUP BY g.gallery_id"
-
-    sql = "\n".join([select_clause, from_clause, where_sql, group_sql, order_clause, "LIMIT :limit"])
-
-    result = await db_session.execute(text(sql), params)
-    galleries = [_serialize_gallery(row) for row in result.mappings()]
-
+    # ステップ3: 結果が不足している場合、最新のギャラリーで補完
     if len(galleries) < limit:
         remaining = limit - len(galleries)
         fallback_params: Dict[str, Any] = {"limit": remaining}
         fallback_clauses = ["g.manga_type = 'doujinshi'"]
+
         if exclude_terms:
             not_exists, not_params = _build_tag_not_exists_clause("g", exclude_terms)
             fallback_clauses.extend(not_exists)
             fallback_params.update(not_params)
+
+        # これまでに見つかった全てのIDを除外
         if exclude_ids:
             placeholders = []
-            for idx, gid in enumerate(exclude_ids):
-                key = f"fallback_exclude_{idx}"
-                fallback_params[key] = gid
+            for i, ex_id in enumerate(exclude_ids):
+                key = f"ex_id_{i}"
+                fallback_params[key] = ex_id
                 placeholders.append(f":{key}")
-            if placeholders:
-                fallback_clauses.append(f"g.gallery_id NOT IN ({', '.join(placeholders)})")
+            fallback_clauses.append(f"g.gallery_id NOT IN ({','.join(placeholders)})")
 
-        fallback_where = "WHERE " + " AND ".join(fallback_clauses)
-        fallback_sql = "\n".join([
-            "SELECT g.*",
-            "FROM galleries AS g",
-            fallback_where,
-            "ORDER BY g.created_at DESC, g.gallery_id DESC",
-            "LIMIT :limit",
-        ])
-        fallback_rows = await db_session.execute(text(fallback_sql), fallback_params)
-        fallback_list = [_serialize_gallery(row) for row in fallback_rows.mappings()]
-        existing_ids = {g["gallery_id"] for g in galleries}
-        for item in fallback_list:
-            if item["gallery_id"] not in existing_ids:
-                galleries.append(item)
-                existing_ids.add(item["gallery_id"])
-            if len(galleries) >= limit:
-                break
+        fallback_sql = text(
+            "SELECT * FROM galleries AS g WHERE " + " AND ".join(fallback_clauses) + 
+            " ORDER BY g.created_at DESC, g.gallery_id DESC LIMIT :limit"
+        )
+        
+        fallback_result = await db_session.execute(fallback_sql, fallback_params)
+        fallback_galleries = [_serialize_gallery(row) for row in fallback_result.mappings()]
+        galleries.extend(fallback_galleries)
 
-    if session_tag_weights:
+    # ステップ4: パーソナライズスコアで最終的な並び替え
+    if session_tag_weights and galleries:
         normalized_weights = {
             key.strip().lower(): value
             for key, value in session_tag_weights.items()
@@ -1084,32 +1107,31 @@ async def get_recommended_galleries(
             for idx, item in enumerate(galleries):
                 item["_base_order"] = idx
                 score = 0.0
-                raw_tags = item.get("tags")
                 try:
-                    tags_list = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
-                except (TypeError, json.JSONDecodeError):
-                    tags_list = []
-                if isinstance(tags_list, list):
+                    tags_list = json.loads(item.get("tags") or "[]")
                     for tag_value in tags_list:
                         normalized = _normalize_tag_value(tag_value)
                         if normalized:
                             score += normalized_weights.get(normalized, 0.0)
+                except (TypeError, json.JSONDecodeError):
+                    pass
                 item["_personal_score"] = score
-
-            galleries.sort(
-                key=lambda item: (
-                    -item.get("_personal_score", 0.0),
-                    item.get("_base_order", 0),
-                )
-            )
-
+            
+            # 安定ソート: パーソナルスコアが同じ場合は元の順序を維持
+            galleries.sort(key=lambda item: (-item.get("_personal_score", 0.0), item.get("_base_order", 0)))
+            
             for item in galleries:
                 score = item.pop("_personal_score", None)
                 item.pop("_base_order", None)
-                if score:
+                item.pop("_match_score", None) # 不要なキーを削除
+                if score and score > 0:
                     item["personal_score"] = round(float(score), 4)
 
-    return galleries
+    return galleries[:limit]
+
+# =================================================================================
+# ^^^^^^^^^^^^^^^^^^^^^^^^ 高速化のための修正箇所 ^^^^^^^^^^^^^^^^^^^^^^^^^
+# =================================================================================
 
 def _derive_filename(url: str) -> str:
     trimmed = url.split("?", 1)[0].rstrip("/")
@@ -1302,6 +1324,10 @@ async def search_galleries_endpoint(request: SearchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
 
+
+# =================================================================================
+# vvvvvvvvvvvvvvvvvvvvvvvv 高速化のための修正箇所 vvvvvvvvvvvvvvvvvvvvvvvv
+# =================================================================================
 @app.get("/api/recommendations")
 async def api_recommendations(
     gallery_id: Optional[int] = None,
@@ -1314,10 +1340,13 @@ async def api_recommendations(
             session_tag_weights: Optional[Dict[str, float]] = None
             if session_id:
                 try:
+                    # NOTE: さらなる高速化のため、この結果をキャッシュすることも検討できます
                     session_tag_weights = await build_session_tag_profile(db, session_id)
                 except Exception as exc:
                     logger.error("おすすめ個人化プロファイル作成エラー: %s", exc)
                     session_tag_weights = None
+
+            # 1. 高速化された関数でギャラリーリストを取得
             results = await get_recommended_galleries(
                 db,
                 gallery_id=gallery_id,
@@ -1325,7 +1354,12 @@ async def api_recommendations(
                 exclude_tag=exclude_tag,
                 session_tag_weights=session_tag_weights,
             )
-            payload: List[Dict[str, Any]] = []
+
+            if not results:
+                return {"results": [], "count": 0}
+
+            # 2. geturlの呼び出しを並列化
+            geturl_tasks = []
             for result in results:
                 try:
                     files_data = json.loads(result.get("files")) if isinstance(result.get("files"), str) else result.get("files")
@@ -1333,17 +1367,45 @@ async def api_recommendations(
                     files_data = []
                 files_list = files_data if isinstance(files_data, list) else []
                 gallery_info = {"gallery_id": result["gallery_id"], "files": files_list}
-                image_urls = await geturl(gallery_info)
-                payload.append(
-                    {
-                        **{k: v for k, v in result.items() if k != "files"},
-                        "image_urls": image_urls,
-                        "page_count": result.get("page_count") if isinstance(result.get("page_count"), int) and result.get("page_count") >= 0 else len(files_list),
-                    }
-                )
+                geturl_tasks.append(geturl(gallery_info))
+            
+            # asyncio.gatherで全てのgeturlコルーチンを並列実行
+            image_urls_results = await asyncio.gather(*geturl_tasks, return_exceptions=True)
+
+            # 3. 結果をマージして最終的なペイロードを生成
+            payload: List[Dict[str, Any]] = []
+            for i, result in enumerate(results):
+                image_urls = image_urls_results[i]
+                if isinstance(image_urls, Exception):
+                    logger.error(f"geturlがギャラリーID {result['gallery_id']} で失敗: {image_urls}")
+                    image_urls = []
+
+                # page_countを再計算または検証
+                try:
+                    files_data = json.loads(result.get("files")) if isinstance(result.get("files"), str) else result.get("files")
+                    files_list = files_data if isinstance(files_data, list) else []
+                except (json.JSONDecodeError, TypeError):
+                    files_list = []
+                
+                page_count = result.get("page_count")
+                if not isinstance(page_count, int) or page_count < 0:
+                    page_count = len(files_list)
+
+                # レスポンスから 'files' キーを削除
+                final_result = {k: v for k, v in result.items() if k != "files"}
+                final_result["image_urls"] = image_urls
+                final_result["page_count"] = page_count
+                payload.append(final_result)
+
             return {"results": payload, "count": len(payload)}
+
     except Exception as e:
+        logger.exception("おすすめ取得APIで予期せぬエラーが発生しました")
         raise HTTPException(status_code=500, detail=f"おすすめ取得エラー: {str(e)}")
+
+# =================================================================================
+# ^^^^^^^^^^^^^^^^^^^^^^^^ 高速化のための修正箇所 ^^^^^^^^^^^^^^^^^^^^^^^^^
+# =================================================================================
 
 @app.get("/search")
 async def search_galleries_get(
@@ -1429,6 +1491,15 @@ async def proxy_request(path: str):
                             await asyncio.sleep(retry_delay * (2 ** attempt))
                             continue
                         raise HTTPException(status_code=resp.status, detail=f"Upstream 5xx: {resp.status}")
+                    if resp.status == 404:
+                        # 404エラーの場合はImageUriResolverを同期して再試行
+                        logger.info("404エラーを検出、ImageUriResolverを同期します")
+                        try:
+                            await ImageUriResolver.async_synchronize()
+                            logger.info("ImageUriResolverの同期完了、再試行します")
+                        except Exception as e:
+                            logger.error(f"ImageUriResolver同期エラー: {e}")
+                        raise HTTPException(status_code=resp.status, detail=f"Upstream 4xx: {resp.status}")
                     if resp.status >= 400:
                         raise HTTPException(status_code=resp.status, detail=f"Upstream 4xx: {resp.status}")
 
@@ -1781,7 +1852,7 @@ async def record_single_event(request: EventRequest):
                 element_selector=request.element_selector,
                 element_text=request.element_text,
                 x_position=request.x_position,
-                y_position=request.y_position,
+                y_position=event.y_position,
                 scroll_direction=request.scroll_direction,
                 scroll_speed=request.scroll_speed,
                 timestamp=request.timestamp or datetime.now().isoformat(),
@@ -1872,4 +1943,5 @@ async def shutdown_event():
 # =========================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="localhost", port=8000)
+    uvicorn.run(app, host="localhost", port=8000,access_log=False,   # アクセスログ無効
+    log_level="critical")

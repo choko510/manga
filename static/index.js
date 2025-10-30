@@ -194,7 +194,7 @@
     }
 
     function updateThemeToggleIcon(button, theme) {
-        button.textContent = theme === 'dark' ? '☀️' : '🌙';
+        button.innerHTML = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
     }
 
     function updateHiddenTagsUI(elements) {
@@ -366,13 +366,13 @@ async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages) {
         likeButton.setAttribute('aria-label', 'いいね');
         const liked = MangaApp.isLiked(gallery.gallery_id);
         likeButton.classList.toggle('active', liked);
-        likeButton.textContent = liked ? '❤️' : '🤍';
+        likeButton.innerHTML = liked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
         likeButton.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
             const isLiked = MangaApp.toggleLike(gallery.gallery_id);
             likeButton.classList.toggle('active', isLiked);
-            likeButton.textContent = isLiked ? '❤️' : '🤍';
+            likeButton.innerHTML = isLiked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
         });
 
         const info = document.createElement('div');

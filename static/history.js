@@ -314,7 +314,7 @@
         if (!themeToggle) {
             return;
         }
-        themeToggle.textContent = theme === 'dark' ? '☀️' : '🌙';
+        themeToggle.innerHTML = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
     }
 
     document.addEventListener('DOMContentLoaded', () => {
