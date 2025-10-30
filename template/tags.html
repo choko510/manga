@@ -192,6 +192,36 @@
             cursor: pointer;
         }
 
+        .category-container {
+            display: flex;
+            flex-direction: column;
+            gap: 32px;
+        }
+
+        .category-section {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .category-header {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .category-title {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .category-count {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
         .tags-grid {
             display: grid;
             gap: 16px;
@@ -318,6 +348,7 @@
                 <a href="/" class="nav-button">ホーム</a>
                 <a href="/tags" class="nav-button active">タグ</a>
                 <a href="/recommendations" class="nav-button">おすすめ</a>
+                <a href="/history" class="nav-button">履歴</a>
             </nav>
             <div class="search-container">
                 <input type="search" id="tagSearchInput" placeholder="タグを検索 (複数語対応)" aria-label="タグ検索">
@@ -335,7 +366,7 @@
 
     <main class="content-area">
         <section>
-            <div class="tags-grid" id="tagsGrid"></div>
+            <div class="category-container" id="categoryContainer"></div>
             <div class="loading" id="loadingIndicator" style="display:none;">読み込み中...</div>
             <div class="error-message" id="errorMessage" style="display:none;"></div>
             <div class="load-more-container" id="loadMoreContainer" style="display:none;">
@@ -353,14 +384,23 @@
             total: 0,
             search: '',
             selectedTags: new Set(),
+            allTags: [],
+            categoryDefinitions: [],
+            tagToCategory: new Map(),
+            fallbackCategoryId: null,
         };
 
         document.addEventListener('DOMContentLoaded', () => {
             MangaApp.applyThemeToDocument(document);
-            MangaApp.ensureTranslations().catch(() => {});
-            setupEventHandlers();
-            updateHiddenTagsSummary();
-            loadTags();
+            (async () => {
+                await Promise.all([
+                    MangaApp.ensureTranslations().catch(() => {}),
+                    loadCategoryDefinitions(),
+                ]);
+                setupEventHandlers();
+                updateHiddenTagsSummary();
+                loadTags(true);
+            })().catch((error) => console.error('初期化エラー', error));
         });
 
         function setupEventHandlers() {
@@ -400,6 +440,42 @@
             });
         }
 
+        async function loadCategoryDefinitions() {
+            try {
+                const response = await fetch('/static/tag-categories.json');
+                if (!response.ok) {
+                    throw new Error(`HTTP error ${response.status}`);
+                }
+                const data = await response.json();
+                if (!Array.isArray(data)) {
+                    throw new Error('カテゴリーデータが不正です');
+                }
+                state.categoryDefinitions = data.map((category) => ({
+                    id: category.id,
+                    label: category.label,
+                    tags: Array.isArray(category.tags) ? category.tags : [],
+                    isFallback: Boolean(category.isFallback),
+                }));
+                state.tagToCategory = new Map();
+                state.fallbackCategoryId = null;
+                state.categoryDefinitions.forEach((category) => {
+                    if (category.isFallback && !state.fallbackCategoryId) {
+                        state.fallbackCategoryId = category.id;
+                    }
+                    category.tags.forEach((tag) => {
+                        if (typeof tag === 'string' && tag.trim()) {
+                            state.tagToCategory.set(tag.trim().toLowerCase(), category.id);
+                        }
+                    });
+                });
+            } catch (error) {
+                console.error('タグカテゴリの読み込みに失敗しました', error);
+                state.categoryDefinitions = [];
+                state.tagToCategory = new Map();
+                state.fallbackCategoryId = null;
+            }
+        }
+
         function updateThemeToggleIcon(button, theme) {
             button.textContent = theme === 'dark' ? '☀️' : '🌙';
         }
@@ -415,7 +491,9 @@
             state.isLoading = true;
             toggleLoading(true);
             if (reset) {
-                document.getElementById('tagsGrid').innerHTML = '';
+                state.offset = 0;
+                state.allTags = [];
+                clearCategoryContainer();
                 state.selectedTags.clear();
                 renderSelectedTags();
             }
@@ -432,10 +510,12 @@
                     throw new Error(`HTTP error ${response.status}`);
                 }
                 const data = await response.json();
+                const newTags = Array.isArray(data.tags) ? data.tags : [];
                 state.total = data.total || 0;
                 document.getElementById('tagsTotal').textContent = state.total;
-                renderTags(data.tags || [], reset);
-                state.offset += 100;
+                state.allTags = reset ? newTags : state.allTags.concat(newTags);
+                renderTags(state.allTags);
+                state.offset += newTags.length;
                 document.getElementById('loadMoreContainer').style.display = data.has_more ? 'block' : 'none';
             } catch (error) {
                 console.error('タグ読み込みエラー', error);
@@ -446,75 +526,169 @@
             }
         }
 
-        function renderTags(tags, reset) {
-            const grid = document.getElementById('tagsGrid');
-            if (reset) {
-                grid.innerHTML = '';
+        function clearCategoryContainer() {
+            const container = document.getElementById('categoryContainer');
+            if (container) {
+                container.innerHTML = '';
             }
+        }
+
+        function renderTags(allTags) {
+            const container = document.getElementById('categoryContainer');
+            if (!container) {
+                return;
+            }
+
+            container.innerHTML = '';
+
+            if (!Array.isArray(allTags) || !allTags.length) {
+                document.getElementById('errorMessage').style.display = 'none';
+                return;
+            }
+
+            const groups = buildCategoryGroups(allTags);
             const fragment = document.createDocumentFragment();
-            tags.forEach((tagInfo) => {
-                const card = document.createElement('article');
-                card.className = 'tag-card';
-                const tagName = tagInfo.tag || '';
-                const jpName = MangaApp.translateTag(tagName);
 
-                const title = document.createElement('h3');
-                title.className = 'tag-name';
-                title.textContent = jpName;
-                const original = document.createElement('small');
-                original.textContent = tagName;
-                title.appendChild(original);
+            groups.forEach((group) => {
+                const section = document.createElement('section');
+                section.className = 'category-section';
 
-                const count = document.createElement('div');
-                count.className = 'tag-count';
-                count.textContent = `${tagInfo.count.toLocaleString()} 件`;
+                const header = document.createElement('header');
+                header.className = 'category-header';
 
-                const actions = document.createElement('div');
-                actions.className = 'tag-actions';
+                const title = document.createElement('h2');
+                title.className = 'category-title';
+                title.textContent = group.label;
 
-                const searchButton = document.createElement('button');
-                searchButton.className = 'primary-button';
-                searchButton.textContent = '検索';
-                searchButton.addEventListener('click', () => {
-                    // 単独タグの場合は直接検索
-                    window.location.href = `/?tag=${encodeURIComponent(tagName)}`;
+                const count = document.createElement('span');
+                count.className = 'category-count';
+                count.textContent = `${group.items.length} 件`;
+
+                header.appendChild(title);
+                header.appendChild(count);
+
+                const grid = document.createElement('div');
+                grid.className = 'tags-grid';
+
+                group.items.forEach((tagInfo) => {
+                    grid.appendChild(createTagCard(tagInfo));
                 });
 
-                const addButton = document.createElement('button');
-                addButton.className = 'ghost-button';
-                addButton.textContent = '追加';
-                addButton.addEventListener('click', () => {
-                    state.selectedTags.add(tagName);
-                    renderSelectedTags();
-                });
-
-                const hideButton = document.createElement('button');
-                hideButton.className = 'ghost-button';
-                hideButton.textContent = MangaApp.isTagHidden(tagName) ? '除外解除' : '除外する';
-                hideButton.addEventListener('click', () => {
-                    const hidden = new Set(MangaApp.getHiddenTags());
-                    const normalized = tagName.toLowerCase();
-                    if (hidden.has(normalized)) {
-                        hidden.delete(normalized);
-                    } else {
-                        hidden.add(normalized);
-                    }
-                    MangaApp.saveHiddenTags(Array.from(hidden));
-                    hideButton.textContent = hidden.has(normalized) ? '除外解除' : '除外する';
-                });
-
-                actions.appendChild(searchButton);
-                actions.appendChild(addButton);
-                actions.appendChild(hideButton);
-
-                card.appendChild(title);
-                card.appendChild(count);
-                card.appendChild(actions);
-
-                fragment.appendChild(card);
+                section.appendChild(header);
+                section.appendChild(grid);
+                fragment.appendChild(section);
             });
-            grid.appendChild(fragment);
+
+            container.appendChild(fragment);
             document.getElementById('errorMessage').style.display = 'none';
+        }
+
+        function buildCategoryGroups(allTags) {
+            if (state.search) {
+                return [{
+                    id: 'search',
+                    label: '検索結果',
+                    items: allTags,
+                }];
+            }
+
+            if (!state.categoryDefinitions.length) {
+                return [{
+                    id: 'all',
+                    label: 'すべてのタグ',
+                    items: allTags,
+                }];
+            }
+
+            const fallbackId = state.fallbackCategoryId || 'uncategorized';
+            const groupMap = new Map();
+
+            state.categoryDefinitions.forEach((category) => {
+                groupMap.set(category.id, {
+                    id: category.id,
+                    label: category.label,
+                    items: [],
+                });
+            });
+
+            if (!groupMap.has(fallbackId)) {
+                groupMap.set(fallbackId, {
+                    id: fallbackId,
+                    label: 'その他',
+                    items: [],
+                });
+            }
+
+            const fallbackGroup = groupMap.get(fallbackId);
+
+            allTags.forEach((tagInfo) => {
+                const tagName = (tagInfo.tag || '').toLowerCase();
+                const categoryId = state.tagToCategory.get(tagName);
+                const targetGroup = (categoryId && groupMap.get(categoryId)) || fallbackGroup;
+                targetGroup.items.push(tagInfo);
+            });
+
+            return Array.from(groupMap.values()).filter((group) => group.items.length);
+        }
+
+        function createTagCard(tagInfo) {
+            const card = document.createElement('article');
+            card.className = 'tag-card';
+            const tagName = tagInfo.tag || '';
+            const jpName = MangaApp.translateTag(tagName);
+
+            const title = document.createElement('h3');
+            title.className = 'tag-name';
+            title.textContent = jpName;
+            const original = document.createElement('small');
+            original.textContent = tagName;
+            title.appendChild(original);
+
+            const count = document.createElement('div');
+            count.className = 'tag-count';
+            count.textContent = `${tagInfo.count.toLocaleString()} 件`;
+
+            const actions = document.createElement('div');
+            actions.className = 'tag-actions';
+
+            const searchButton = document.createElement('button');
+            searchButton.className = 'primary-button';
+            searchButton.textContent = '検索';
+            searchButton.addEventListener('click', () => {
+                window.location.href = `/?tag=${encodeURIComponent(tagName)}`;
+            });
+
+            const addButton = document.createElement('button');
+            addButton.className = 'ghost-button';
+            addButton.textContent = '追加';
+            addButton.addEventListener('click', () => {
+                state.selectedTags.add(tagName);
+                renderSelectedTags();
+            });
+
+            const hideButton = document.createElement('button');
+            hideButton.className = 'ghost-button';
+            hideButton.textContent = MangaApp.isTagHidden(tagName) ? '除外解除' : '除外する';
+            hideButton.addEventListener('click', () => {
+                const hidden = new Set(MangaApp.getHiddenTags());
+                const normalized = tagName.toLowerCase();
+                if (hidden.has(normalized)) {
+                    hidden.delete(normalized);
+                } else {
+                    hidden.add(normalized);
+                }
+                MangaApp.saveHiddenTags(Array.from(hidden));
+                hideButton.textContent = hidden.has(normalized) ? '除外解除' : '除外する';
+            });
+
+            actions.appendChild(searchButton);
+            actions.appendChild(addButton);
+            actions.appendChild(hideButton);
+
+            card.appendChild(title);
+            card.appendChild(count);
+            card.appendChild(actions);
+            return card;
         }
 
         function renderSelectedTags() {
