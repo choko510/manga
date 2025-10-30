@@ -628,7 +628,7 @@ def _build_tag_exists_clause(alias: str, tag_terms: Tuple[str, ...]) -> Tuple[Li
     for idx, term in enumerate(tag_terms):
         key = f"tag_{idx}"
         where_list.append(
-            f"EXISTS (SELECT 1 FROM gallery_tags INDEXED BY idx_gallery_tags_gallery_tag AS gt WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
+            f"EXISTS (SELECT 1 FROM gallery_tags AS gt INDEXED BY idx_gallery_tags_gallery_tag WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
         )
         params[key] = term
     return where_list, params
@@ -641,7 +641,7 @@ def _build_tag_not_exists_clause(alias: str, tag_terms: Tuple[str, ...]) -> Tupl
     for idx, term in enumerate(tag_terms):
         key = f"exclude_tag_{idx}"
         where_list.append(
-            f"NOT EXISTS (SELECT 1 FROM gallery_tags INDEXED BY idx_gallery_tags_gallery_tag AS gt WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
+            f"NOT EXISTS (SELECT 1 FROM gallery_tags AS gt INDEXED BY idx_gallery_tags_gallery_tag WHERE gt.gallery_id = {alias}.gallery_id AND gt.tag = :{key})"
         )
         params[key] = term
     return where_list, params
