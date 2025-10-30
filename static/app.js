@@ -10,6 +10,7 @@
     let translations = {};
     let hiddenTagSet = null;
     let likedSet = null;
+    const galleryThumbnailCache = new Map();
 
     function normaliseTag(tag) {
         return (tag || '').toString().trim().toLowerCase();
@@ -118,6 +119,23 @@
         return likes.has(galleryId);
     }
 
+    function sanitiseHistoryEntry(entry) {
+        if (!entry || typeof entry !== 'object') {
+            return null;
+        }
+        const { image_urls, thumbnail_url, ...rest } = entry;
+        return { ...rest };
+    }
+
+    function sanitiseHistory(entries) {
+        if (!Array.isArray(entries)) {
+            return [];
+        }
+        return entries
+            .map((item) => sanitiseHistoryEntry(item))
+            .filter((item) => item !== null);
+    }
+
     function getHistory() {
         try {
             const raw = localStorage.getItem(STORAGE_KEYS.history);
@@ -126,7 +144,14 @@
             }
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed)) {
-                return parsed;
+                const sanitised = sanitiseHistory(parsed);
+                const hadSensitiveFields = parsed.some((item) =>
+                    item && typeof item === 'object' && ('image_urls' in item || 'thumbnail_url' in item)
+                );
+                if (hadSensitiveFields) {
+                    localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(sanitised));
+                }
+                return sanitised;
             }
             return [];
         } catch (error) {
@@ -135,11 +160,107 @@
     }
 
     function saveHistory(entries) {
-        localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(entries));
-        document.dispatchEvent(new CustomEvent('manga:history-change', { detail: { history: entries } }));
+        const sanitised = sanitiseHistory(entries);
+        localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(sanitised));
+        document.dispatchEvent(new CustomEvent('manga:history-change', { detail: { history: sanitised } }));
     }
 
     const HISTORY_LIMIT = 20;
+
+    function findFirstImageUrl(source) {
+        if (Array.isArray(source)) {
+            for (const value of source) {
+                if (typeof value === 'string' && value.trim().length > 0) {
+                    return value.trim();
+                }
+            }
+        } else if (typeof source === 'string' && source.trim().length > 0) {
+            return source.trim();
+        }
+        return '';
+    }
+
+    function cacheThumbnailFromEntry(entry) {
+        if (!entry || typeof entry !== 'object') {
+            return;
+        }
+        const galleryId = entry.gallery_id;
+        const firstImage = findFirstImageUrl(entry.image_urls);
+        if (!galleryId || !firstImage) {
+            return;
+        }
+        const cached = galleryThumbnailCache.get(galleryId);
+        if (typeof cached === 'string' && cached) {
+            return;
+        }
+        galleryThumbnailCache.set(galleryId, firstImage);
+    }
+
+    function getCachedGalleryThumbnailUrl(galleryId) {
+        const cached = galleryThumbnailCache.get(galleryId);
+        return typeof cached === 'string' ? cached : '';
+    }
+
+    function getThumbnailUrl(entry) {
+        if (!entry || typeof entry !== 'object') {
+            return '';
+        }
+        const galleryId = entry.gallery_id;
+        let raw = '';
+        if (galleryId) {
+            raw = getCachedGalleryThumbnailUrl(galleryId);
+            if (!raw) {
+                const fromEntry = findFirstImageUrl(entry.image_urls);
+                if (fromEntry) {
+                    galleryThumbnailCache.set(galleryId, fromEntry);
+                    raw = fromEntry;
+                }
+            }
+        } else {
+            raw = findFirstImageUrl(entry.image_urls);
+        }
+        if (!raw) {
+            return '';
+        }
+        return raw.startsWith('/proxy/') ? raw : `/proxy/${raw}`;
+    }
+
+    function buildThumbnailStyle(entry) {
+        const url = getThumbnailUrl(entry);
+        return url ? `background-image: url(${url});` : '';
+    }
+
+    function fetchGalleryThumbnail(galleryId) {
+        if (!galleryId) {
+            return Promise.resolve('');
+        }
+        const cached = galleryThumbnailCache.get(galleryId);
+        if (typeof cached === 'string') {
+            return Promise.resolve(cached);
+        }
+        if (cached && typeof cached.then === 'function') {
+            return cached;
+        }
+        const request = fetch(`/gallery/${galleryId}`)
+            .then((response) => {
+                if (!response.ok) {
+                    throw new Error('Failed to fetch gallery');
+                }
+                return response.json();
+            })
+            .then((data) => {
+                const firstImage = findFirstImageUrl(data?.image_urls);
+                const normalised = firstImage || '';
+                galleryThumbnailCache.set(galleryId, normalised);
+                return normalised;
+            })
+            .catch(() => {
+                galleryThumbnailCache.set(galleryId, '');
+                return '';
+            });
+        galleryThumbnailCache.set(galleryId, request);
+        return request;
+    }
 
     function addHistoryEntry(entry) {
         if (!entry || !entry.gallery_id) {
@@ -148,6 +269,7 @@
         const currentHistory = getHistory();
         const existingEntry = currentHistory.find((item) => item.gallery_id === entry.gallery_id);
         const history = currentHistory.filter((item) => item.gallery_id !== entry.gallery_id);
+        cacheThumbnailFromEntry(entry);
         const pageCount = Number.isFinite(entry.page_count) && entry.page_count >= 0
             ? entry.page_count
             : Number.isFinite(existingEntry?.page_count)
@@ -169,7 +291,6 @@
         history.unshift({
             gallery_id: entry.gallery_id,
             japanese_title: entry.japanese_title || '',
-            image_urls: entry.image_urls || [],
             viewed_at: Date.now(),
             updated_at: Date.now(),
             page_count: pageCount,
@@ -257,5 +378,8 @@
         applyThemeToDocument: applyTheme,
         toggleTheme,
         getPreferredTheme,
+        getThumbnailUrl,
+        buildThumbnailStyle,
+        fetchGalleryThumbnail,
     };
 })();
