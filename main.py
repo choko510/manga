@@ -1220,6 +1220,10 @@ async def read_viewer():
 async def read_recommendations():
     return _serve_cached_html("template/recommendations.html")
 
+@app.get("/history", response_class=HTMLResponse)
+async def read_history():
+    return _serve_cached_html("template/history.html")
+
 @app.post("/search")
 async def search_galleries_endpoint(request: SearchRequest):
     try:

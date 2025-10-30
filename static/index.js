@@ -155,10 +155,12 @@
             updateHiddenTagsSummary(elements);
         }, 400));
 
-        elements.clearHistoryButton.addEventListener('click', () => {
-            MangaApp.clearHistory();
-            renderHistory(elements);
-        });
+        if (elements.clearHistoryButton) {
+            elements.clearHistoryButton.addEventListener('click', () => {
+                MangaApp.clearHistory();
+                renderHistory(elements);
+            });
+        }
 
         document.addEventListener('manga:history-change', () => renderHistory(elements));
         document.addEventListener('manga:hidden-tags-change', () => {
@@ -435,6 +437,9 @@ async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages) {
     }
 
     function renderHistory(elements) {
+        if (!elements.historySection || !elements.historyGrid) {
+            return;
+        }
         const history = MangaApp.getHistory();
         if (!history.length) {
             elements.historySection.classList.remove('active');

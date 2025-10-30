@@ -1178,6 +1178,9 @@
         // ページ変更時の処理
         function onPageChange() {
             updatePageIndicator();
+            if (window.MangaApp && typeof MangaApp.updateHistoryProgress === 'function' && currentGalleryId && imageUrls && imageUrls.length) {
+                MangaApp.updateHistoryProgress(Number(currentGalleryId), currentPageIndex, imageUrls.length);
+            }
         }
 
         // 前のページへ
@@ -1222,7 +1225,7 @@
         }
 
         // 指定ページへスクロール
-        function scrollToPage(pageIndex) {
+        function scrollToPage(pageIndex, smooth = true) {
             if (currentReadingMode === 'swiper' && swiperInstance) {
                 swiperInstance.slideTo(pageIndex);
                 return;
@@ -1247,7 +1250,7 @@
             const pages = document.querySelectorAll('.manga-page');
             if (pages[pageIndex]) {
                 pages[pageIndex].scrollIntoView({
-                    behavior: 'smooth',
+                    behavior: smooth ? 'smooth' : 'auto',
                     block: 'start'
                 });
             }
@@ -1366,18 +1369,34 @@
                     return;
                 }
                 
-                // UIを更新
-                updateGalleryInfo();
-                displayAllPages();
-                showContent(true);
-                updateLikeButton(MangaApp.isLiked(Number(galleryData.gallery_id)));
+                const numericGalleryId = Number(galleryData.gallery_id);
+                let savedPageIndex = 0;
+                if (window.MangaApp && typeof MangaApp.getHistory === 'function') {
+                    const previousEntry = MangaApp.getHistory().find((item) => item.gallery_id === numericGalleryId);
+                    if (previousEntry) {
+                        if (Number.isFinite(previousEntry.last_page_index)) {
+                            savedPageIndex = Math.max(0, Math.min(previousEntry.last_page_index, imageUrls.length - 1));
+                        } else if (Number.isFinite(previousEntry.last_page)) {
+                            savedPageIndex = Math.max(0, Math.min(previousEntry.last_page - 1, imageUrls.length - 1));
+                        }
+                    }
+                }
+
                 MangaApp.addHistoryEntry({
-                    gallery_id: Number(galleryData.gallery_id),
+                    gallery_id: numericGalleryId,
                     japanese_title: galleryData.japanese_title,
                     image_urls: imageUrls,
                     page_count: imageUrls.length,
                 });
-                loadRecommendations(Number(galleryData.gallery_id));
+
+                currentPageIndex = savedPageIndex;
+
+                // UIを更新
+                updateGalleryInfo();
+                displayAllPages();
+                showContent(true);
+                updateLikeButton(MangaApp.isLiked(numericGalleryId));
+                loadRecommendations(numericGalleryId);
 
             } catch (error) {
                 console.error('ギャラリーデータの読み込みエラー:', error);
@@ -1495,19 +1514,23 @@
                 return;
             }
 
+            const desiredIndex = Math.max(0, Math.min(currentPageIndex || 0, imageUrls.length - 1));
+
             destroySwiper();
             mangaPagesContainer.classList.remove('pages-layout-vertical', 'pages-layout-horizontal', 'pages-layout-swiper');
             mangaPagesContainer.innerHTML = '';
+
+            let effectiveIndex = desiredIndex;
 
             switch (currentReadingMode) {
                 case 'horizontal':
                     renderHorizontalLayout();
                     break;
                 case 'swiper':
-                    renderSwiperLayout(false);
+                    effectiveIndex = renderSwiperLayout(false, desiredIndex);
                     break;
                 case 'swiper-double':
-                    renderSwiperLayout(true);
+                    effectiveIndex = renderSwiperLayout(true, desiredIndex);
                     break;
                 case 'vertical':
                 default:
@@ -1520,7 +1543,12 @@
                 readingModeSelect.value = currentReadingMode;
             }
 
-            currentPageIndex = 0;
+            currentPageIndex = Math.max(0, Math.min(effectiveIndex, imageUrls.length - 1));
+
+            if ((currentReadingMode === 'vertical' || currentReadingMode === 'horizontal') && currentPageIndex > 0) {
+                scrollToPage(currentPageIndex, false);
+            }
+
             onPageChange();
 
             if (!isMobile && imageSizeControls) {
@@ -1565,7 +1593,7 @@
             });
         }
 
-        function renderSwiperLayout(isDoublePage) {
+        function renderSwiperLayout(isDoublePage, startIndex = 0) {
             if (typeof Swiper === 'undefined') {
                 console.warn('Swiperが利用できないため縦スクロールにフォールバックします。');
                 currentReadingMode = 'vertical';
@@ -1574,7 +1602,7 @@
                 }
                 saveSettings();
                 renderVerticalLayout();
-                return;
+                return Math.max(0, Math.min(startIndex, imageUrls.length - 1));
             }
 
             mangaPagesContainer.classList.add('pages-layout-swiper');
@@ -1597,6 +1625,8 @@
             mangaPagesContainer.appendChild(swiperContainer);
 
             doublePageStartIndices = [];
+            let effectiveIndex = Math.max(0, Math.min(startIndex, imageUrls.length - 1));
+            let initialSlide = effectiveIndex;
 
             if (isDoublePage) {
                 for (let i = 0; i < imageUrls.length; i += 2) {
@@ -1610,6 +1640,14 @@
                     doublePageStartIndices.push(i);
                     wrapper.appendChild(slide);
                 }
+
+                let slideIndex = doublePageStartIndices.indexOf(effectiveIndex);
+                if (slideIndex === -1) {
+                    const nextSlide = doublePageStartIndices.findIndex((start) => start > effectiveIndex);
+                    slideIndex = nextSlide === -1 ? doublePageStartIndices.length - 1 : Math.max(0, nextSlide - 1);
+                }
+                initialSlide = Math.max(0, slideIndex);
+                effectiveIndex = doublePageStartIndices[initialSlide] ?? 0;
             } else {
                 imageUrls.forEach((imageUrl, index) => {
                     const slide = document.createElement('div');
@@ -1618,12 +1656,14 @@
                     slide.appendChild(createPageElement(imageUrl, index));
                     wrapper.appendChild(slide);
                 });
+                initialSlide = Math.max(0, Math.min(effectiveIndex, imageUrls.length - 1));
             }
 
             swiperInstance = new Swiper(swiperContainer, {
                 loop: false,
                 slidesPerView: 1,
                 spaceBetween: 16,
+                initialSlide,
                 navigation: {
                     nextEl: nextButton,
                     prevEl: prevButton,
@@ -1640,8 +1680,8 @@
             swiperInstance.on('slideChange', () => {
                 if (currentReadingMode === 'swiper-double') {
                     const activeSlide = swiperInstance.slides[swiperInstance.activeIndex];
-                    const startIndex = Number(activeSlide?.dataset?.startIndex || 0);
-                    currentPageIndex = startIndex;
+                    const startIndexValue = Number(activeSlide?.dataset?.startIndex || 0);
+                    currentPageIndex = startIndexValue;
                 } else {
                     currentPageIndex = swiperInstance.activeIndex;
                 }
@@ -1649,6 +1689,9 @@
             });
 
             swiperInstance.update();
+            swiperInstance.slideTo(initialSlide, 0);
+
+            return effectiveIndex;
         }
 
         function destroySwiper() {
@@ -1673,7 +1716,6 @@
 
             // 画像サイズ調整機能を初期化（PCのみ）
             if (!isMobile && imageSizeControls) {
-                updateImageSize();
                 saveSettings();
             }
         }
