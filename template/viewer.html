@@ -120,11 +120,24 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+            flex: 1;
+            width: 100%;
+        }
+
+        #viewerContent {
+            display: none;
+            flex: 1;
+            flex-direction: column;
+            gap: 32px;
+            width: 100%;
+        }
+
+        #viewerContent.is-visible {
+            display: flex;
         }
 
         .manga-info {
             width: 100%;
-            margin-bottom: 24px;
         }
 
         .manga-title {
@@ -212,6 +225,22 @@
             }
         }
 
+        @media (max-width: 767px) {
+            #viewerContent {
+                gap: 24px;
+            }
+
+            .viewer-container.pages-layout-swiper {
+                padding: 12px;
+                border-radius: 16px;
+                box-shadow: 0 12px 28px rgba(15, 23, 42, 0.25);
+            }
+
+            .viewer-container.pages-layout-swiper .swiper-slide {
+                border-radius: 12px;
+            }
+        }
+
         .viewer-like-button {
             border: none;
             border-radius: var(--radius-pill);
@@ -288,17 +317,18 @@
 
         /* --- ビューアー --- */
         .viewer-container {
+            flex: 1;
             width: 100%;
-            max-width: 800px;
+            max-width: none;
             display: flex;
-            flex-direction: column;
-            align-items: center;
+            align-items: stretch;
+            justify-content: flex-start;
         }
 
         .recommendation-section {
             width: 100%;
             max-width: 960px;
-            margin: 40px auto 0;
+            margin: 0 auto;
             background: var(--bg-button);
             border-radius: var(--radius-card);
             padding: 24px;
@@ -387,39 +417,117 @@
         }
 
         .viewer-container.pages-layout-swiper {
-            display: block;
-            width: 100%;
-        }
-
-        .swiper {
-            width: 100%;
-            max-width: 100%;
-        }
-
-        .swiper-slide {
+            position: relative;
             display: flex;
-            justify-content: center;
             align-items: center;
-        }
-
-        .swiper-slide .manga-page {
+            justify-content: center;
             width: 100%;
-            margin-bottom: 0;
+            height: 100%;
+            background: radial-gradient(circle at center, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.98));
+            border-radius: clamp(12px, 2vw, 24px);
+            padding: clamp(8px, 1.5vw, 24px);
+            box-shadow: 0 24px 48px rgba(15, 23, 42, 0.35);
+            overflow: hidden;
         }
 
-        .swiper-slide-double {
-            gap: 16px;
-            flex-wrap: wrap;
+        body.dark-mode .viewer-container.pages-layout-swiper {
+            background: radial-gradient(circle at center, rgba(8, 11, 19, 0.95), rgba(8, 11, 19, 0.98));
         }
 
-        .swiper-slide-double .manga-page {
-            flex: 1 1 calc(50% - 16px);
-            max-width: calc(50% - 16px);
-        }
-
-        .swiper-slide-double .manga-page img {
+        .viewer-container.pages-layout-swiper .swiper {
             width: 100%;
+            height: 100%;
             max-width: 100%;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-horizontal-mode .swiper-wrapper,
+        .viewer-container.pages-layout-swiper .swiper-vertical-mode .swiper-wrapper {
+            display: flex;
+            align-items: stretch;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-vertical-mode .swiper-wrapper {
+            flex-direction: column;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-slide {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            background: rgba(12, 17, 28, 0.92);
+            border-radius: clamp(10px, 2vw, 20px);
+            overflow: hidden;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-vertical-mode .swiper-slide {
+            height: 100%;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-slide .manga-page {
+            width: 100%;
+            height: 100%;
+            margin-bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-slide .manga-page img {
+            width: 100%;
+            height: auto;
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: 0;
+            box-shadow: none;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-slide-double {
+            gap: 0;
+            display: flex;
+            flex-direction: row;
+            align-items: stretch;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-slide-double .manga-page {
+            flex: 1 1 50%;
+            max-width: 50%;
+            border-right: 1px solid rgba(148, 163, 184, 0.08);
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-slide-double .manga-page:last-child {
+            border-right: none;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-slide-double .manga-page img {
+            width: 100%;
+        }
+
+        body.dark-mode .viewer-container.pages-layout-swiper .swiper-slide-double .manga-page {
+            border-color: rgba(51, 65, 85, 0.65);
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-button-prev,
+        .viewer-container.pages-layout-swiper .swiper-button-next {
+            color: rgba(255, 255, 255, 0.85);
+            transition: color 0.2s ease, transform 0.2s ease;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-button-prev:hover,
+        .viewer-container.pages-layout-swiper .swiper-button-next:hover {
+            color: #60a5fa;
+            transform: translateY(-2px);
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-pagination-bullet {
+            background: rgba(255, 255, 255, 0.35);
+            opacity: 1;
+        }
+
+        .viewer-container.pages-layout-swiper .swiper-pagination-bullet-active {
+            background: #60a5fa;
         }
 
         /* 画像サイズ調整用のスタイル */
@@ -809,7 +917,7 @@
             エラーが発生しました。もう一度お試しください。
         </div>
         
-        <div id="viewerContent" style="display: none; width: 100%;">
+        <div id="viewerContent" style="display: none;">
             <div class="manga-info">
                 <div class="viewer-actions">
                     <h2 class="manga-title" id="mangaTitleInfo"></h2>
@@ -822,6 +930,7 @@
                         <option value="vertical">縦スクロール</option>
                         <option value="horizontal">横スクロール</option>
                         <option value="swiper">ページめくり (Swiper)</option>
+                        <option value="swiper-vertical">ページめくり (Swiper縦スクロール)</option>
                         <option value="swiper-double">見開き (2ページ表示)</option>
                     </select>
                     <button id="downloadPdfButton" class="download-button" type="button"><i class="fas fa-file-pdf"></i> PDFをダウンロード</button>
@@ -952,7 +1061,7 @@
         const IMAGE_SIZE_KEY = 'manga_viewer_image_size';
         const CONTROLS_VISIBLE_KEY = 'manga_viewer_controls_visible';
         const READING_MODE_KEY = 'manga_viewer_reading_mode';
-        const VALID_READING_MODES = new Set(['vertical', 'horizontal', 'swiper', 'swiper-double']);
+        const VALID_READING_MODES = new Set(['vertical', 'horizontal', 'swiper', 'swiper-vertical', 'swiper-double']);
 
         function getTrackingSessionId() {
             if (window.Tracking && typeof window.Tracking.getSessionId === 'function') {
@@ -1202,7 +1311,7 @@
 
         // 前のページへ
         function navigatePrevious() {
-            if ((currentReadingMode === 'swiper' || currentReadingMode === 'swiper-double') && swiperInstance) {
+            if ((currentReadingMode === 'swiper' || currentReadingMode === 'swiper-vertical' || currentReadingMode === 'swiper-double') && swiperInstance) {
                 swiperInstance.slidePrev();
                 return;
             }
@@ -1220,7 +1329,7 @@
                 return;
             }
 
-            if (currentReadingMode === 'swiper' && swiperInstance) {
+            if ((currentReadingMode === 'swiper' || currentReadingMode === 'swiper-vertical') && swiperInstance) {
                 if (swiperInstance.activeIndex < imageUrls.length - 1) {
                     swiperInstance.slideNext();
                 }
@@ -1243,7 +1352,7 @@
 
         // 指定ページへスクロール
         function scrollToPage(pageIndex, smooth = true) {
-            if (currentReadingMode === 'swiper' && swiperInstance) {
+            if ((currentReadingMode === 'swiper' || currentReadingMode === 'swiper-vertical') && swiperInstance) {
                 swiperInstance.slideTo(pageIndex);
                 return;
             }
@@ -1573,10 +1682,13 @@
                     renderHorizontalLayout();
                     break;
                 case 'swiper':
-                    effectiveIndex = renderSwiperLayout(false, desiredIndex);
+                    effectiveIndex = renderSwiperLayout({ startIndex: desiredIndex });
+                    break;
+                case 'swiper-vertical':
+                    effectiveIndex = renderSwiperLayout({ startIndex: desiredIndex, direction: 'vertical' });
                     break;
                 case 'swiper-double':
-                    effectiveIndex = renderSwiperLayout(true, desiredIndex);
+                    effectiveIndex = renderSwiperLayout({ isDoublePage: true, startIndex: desiredIndex });
                     break;
                 case 'vertical':
                 default:
@@ -1639,7 +1751,7 @@
             });
         }
 
-        function renderSwiperLayout(isDoublePage, startIndex = 0) {
+        function renderSwiperLayout({ isDoublePage = false, startIndex = 0, direction = 'horizontal' } = {}) {
             if (typeof Swiper === 'undefined') {
                 console.warn('Swiperが利用できないため縦スクロールにフォールバックします。');
                 currentReadingMode = 'vertical';
@@ -1654,6 +1766,7 @@
             mangaPagesContainer.classList.add('pages-layout-swiper');
             const swiperContainer = document.createElement('div');
             swiperContainer.className = 'swiper';
+            swiperContainer.classList.add(direction === 'vertical' ? 'swiper-vertical-mode' : 'swiper-horizontal-mode');
             const wrapper = document.createElement('div');
             wrapper.className = 'swiper-wrapper';
             swiperContainer.appendChild(wrapper);
@@ -1673,6 +1786,7 @@
             doublePageStartIndices = [];
             let effectiveIndex = Math.max(0, Math.min(startIndex, imageUrls.length - 1));
             let initialSlide = effectiveIndex;
+            const isVertical = direction === 'vertical';
 
             if (isDoublePage) {
                 for (let i = 0; i < imageUrls.length; i += 2) {
@@ -1705,10 +1819,11 @@
                 initialSlide = Math.max(0, Math.min(effectiveIndex, imageUrls.length - 1));
             }
 
-            swiperInstance = new Swiper(swiperContainer, {
+            const swiperOptions = {
                 loop: false,
+                direction,
                 slidesPerView: 1,
-                spaceBetween: 16,
+                spaceBetween: isDoublePage ? 0 : (isVertical ? 12 : 16),
                 initialSlide,
                 navigation: {
                     nextEl: nextButton,
@@ -1721,7 +1836,18 @@
                 keyboard: {
                     enabled: true,
                 },
-            });
+                watchOverflow: true,
+                resistanceRatio: 0.85,
+            };
+
+            if (isVertical) {
+                swiperOptions.mousewheel = {
+                    forceToAxis: true,
+                    releaseOnEdges: true,
+                };
+            }
+
+            swiperInstance = new Swiper(swiperContainer, swiperOptions);
 
             swiperInstance.on('slideChange', () => {
                 if (currentReadingMode === 'swiper-double') {
@@ -1773,7 +1899,11 @@
 
         // コンテンツ表示の切り替え
         function showContent(show) {
-            viewerContent.style.display = show ? 'block' : 'none';
+            if (!viewerContent) {
+                return;
+            }
+            viewerContent.style.display = show ? 'flex' : 'none';
+            viewerContent.classList.toggle('is-visible', Boolean(show));
         }
 
         // エラー表示
