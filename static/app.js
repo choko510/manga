@@ -339,6 +339,53 @@
         saveHistory([]);
     }
 
+    function removeHistoryEntries(ids) {
+        if (!Array.isArray(ids) || ids.length === 0) {
+            return;
+        }
+        const targetIds = new Set(
+            ids
+                .map((id) => {
+                    if (typeof id === 'number' || typeof id === 'string') {
+                        return String(id);
+                    }
+                    if (id && typeof id === 'object' && 'gallery_id' in id) {
+                        return String(id.gallery_id);
+                    }
+                    return null;
+                })
+                .filter((value) => typeof value === 'string' && value.length > 0)
+        );
+        if (!targetIds.size) {
+            return;
+        }
+
+        const history = getHistory();
+        const filtered = history.filter((item) => {
+            if (!item || typeof item !== 'object') {
+                return true;
+            }
+            const id = item.gallery_id;
+            const str = (typeof id === 'number' || typeof id === 'string') ? String(id) : '';
+            if (!str) {
+                return true;
+            }
+            return !targetIds.has(str);
+        });
+
+        if (filtered.length === history.length) {
+            return;
+        }
+        saveHistory(filtered);
+    }
+
+    function removeHistoryEntry(id) {
+        if (typeof id === 'undefined' || id === null) {
+            return;
+        }
+        removeHistoryEntries([id]);
+    }
+
     function getPreferredTheme() {
         const stored = localStorage.getItem(STORAGE_KEYS.theme);
         if (stored === 'dark' || stored === 'light') {
@@ -375,6 +422,8 @@
         addHistoryEntry,
         updateHistoryProgress,
         clearHistory,
+        removeHistoryEntries,
+        removeHistoryEntry,
         applyThemeToDocument: applyTheme,
         toggleTheme,
         getPreferredTheme,
