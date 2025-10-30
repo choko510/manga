@@ -28,6 +28,7 @@
             --content-padding: 32px;
             --touch-target-size: 48px;
             --image-quality: 80;
+            --viewer-vertical-offset: 260px;
         }
 
         body.dark-mode {
@@ -116,12 +117,15 @@
 
         /* --- メインコンテンツ --- */
         .content-area {
-            padding: var(--content-padding);
+            padding: clamp(16px, 3vw, var(--content-padding));
+            padding-bottom: clamp(24px, 6vh, 56px);
             display: flex;
             flex-direction: column;
             align-items: center;
             flex: 1;
             width: 100%;
+            max-width: 1600px;
+            margin: 0 auto;
         }
 
         #viewerContent {
@@ -316,6 +320,18 @@
         }
 
         /* --- ビューアー --- */
+        @media (max-width: 1279px) {
+            :root {
+                --viewer-vertical-offset: 220px;
+            }
+        }
+
+        @media (max-width: 767px) {
+            :root {
+                --viewer-vertical-offset: 200px;
+            }
+        }
+
         .viewer-container {
             flex: 1;
             width: 100%;
@@ -323,7 +339,7 @@
             display: flex;
             align-items: stretch;
             justify-content: flex-start;
-            min-height: clamp(420px, 68vh, 880px);
+            min-height: clamp(520px, calc(100vh - var(--viewer-vertical-offset)), 1080px);
         }
 
         .recommendation-section {
@@ -479,10 +495,10 @@
             justify-content: center;
             width: 100%;
             height: 100%;
-            background: radial-gradient(circle at center, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.98));
-            border-radius: clamp(12px, 2vw, 24px);
-            padding: clamp(10px, 1.8vw, 28px);
-            box-shadow: 0 24px 48px rgba(15, 23, 42, 0.35);
+            background: radial-gradient(circle at center, rgba(15, 23, 42, 0.92), rgba(7, 11, 22, 0.98));
+            border-radius: clamp(18px, 2.5vw, 28px);
+            padding: clamp(16px, 2.4vw, 32px);
+            box-shadow: 0 28px 60px rgba(15, 23, 42, 0.42);
             overflow: hidden;
         }
 
@@ -507,13 +523,15 @@
         }
 
         .viewer-container.pages-layout-swiper .swiper-slide {
+            position: relative;
             display: flex;
             align-items: center;
             justify-content: center;
             height: 100%;
-            background: rgba(12, 17, 28, 0.92);
-            border-radius: clamp(10px, 2vw, 20px);
+            background: linear-gradient(135deg, rgba(18, 27, 43, 0.97), rgba(10, 15, 26, 0.94));
+            border-radius: clamp(12px, 2vw, 22px);
             overflow: hidden;
+            box-shadow: inset 0 0 32px rgba(0, 0, 0, 0.35);
         }
 
         .viewer-container.pages-layout-swiper .swiper-vertical-mode .swiper-slide {
@@ -547,22 +565,37 @@
             align-items: stretch;
         }
 
+        .viewer-container.pages-layout-swiper .swiper-slide-double::before {
+            content: "";
+            position: absolute;
+            top: clamp(12px, 1.4vw, 24px);
+            bottom: clamp(12px, 1.4vw, 24px);
+            width: 1px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(to bottom, rgba(30, 41, 59, 0), rgba(82, 101, 134, 0.65), rgba(30, 41, 59, 0));
+            pointer-events: none;
+            opacity: 0.65;
+        }
+
         .viewer-container.pages-layout-swiper .swiper-slide-double .manga-page {
             flex: 1 1 50%;
             max-width: 50%;
-            border-right: 1px solid rgba(148, 163, 184, 0.08);
-        }
-
-        .viewer-container.pages-layout-swiper .swiper-slide-double .manga-page:last-child {
-            border-right: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: clamp(8px, 1vw, 16px);
         }
 
         .viewer-container.pages-layout-swiper .swiper-slide-double .manga-page img {
-            width: 100%;
+            width: auto;
+            height: 100%;
+            max-height: 100%;
+            max-width: 100%;
         }
 
-        body.dark-mode .viewer-container.pages-layout-swiper .swiper-slide-double .manga-page {
-            border-color: rgba(51, 65, 85, 0.65);
+        body.dark-mode .viewer-container.pages-layout-swiper .swiper-slide-double::before {
+            background: linear-gradient(to bottom, rgba(51, 65, 85, 0), rgba(107, 142, 191, 0.7), rgba(51, 65, 85, 0));
         }
 
         .viewer-container.pages-layout-swiper .swiper-button-prev,
