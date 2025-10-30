@@ -436,6 +436,43 @@ async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages) {
         return [];
     }
 
+    function applyHistoryThumbnail(element, entry) {
+        if (!element) {
+            return;
+        }
+
+        const url = typeof MangaApp.getThumbnailUrl === 'function'
+            ? MangaApp.getThumbnailUrl(entry)
+            : '';
+
+        if (url) {
+            element.style.backgroundImage = `url(${url})`;
+            return;
+        }
+
+        if (!entry?.gallery_id || typeof MangaApp.fetchGalleryThumbnail !== 'function') {
+            element.style.backgroundImage = '';
+            return;
+        }
+
+        const galleryId = entry.gallery_id;
+        element.dataset.galleryId = String(galleryId);
+        MangaApp.fetchGalleryThumbnail(galleryId)
+            .then((fetchedUrl) => {
+                if (!fetchedUrl) {
+                    return;
+                }
+                if (element.dataset.galleryId !== String(galleryId)) {
+                    return;
+                }
+                const resolved = fetchedUrl.startsWith('/proxy/') ? fetchedUrl : `/proxy/${fetchedUrl}`;
+                element.style.backgroundImage = `url(${resolved})`;
+            })
+            .catch(() => {
+                element.style.backgroundImage = '';
+            });
+    }
+
     function renderHistory(elements) {
         if (!elements.historySection || !elements.historyGrid) {
             return;
@@ -453,10 +490,7 @@ async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages) {
             const card = document.createElement('a');
             card.href = `/viewer?id=${item.gallery_id}`;
             card.className = 'history-card';
-            const firstImage = Array.isArray(item.image_urls) && item.image_urls.length > 0 ? item.image_urls[0] : '';
-            if (firstImage) {
-                card.style.backgroundImage = `url(${firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`})`;
-            }
+            applyHistoryThumbnail(card, item);
             const label = document.createElement('span');
             label.textContent = item.japanese_title || '無題';
             card.appendChild(label);

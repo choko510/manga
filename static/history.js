@@ -28,14 +28,41 @@
         return `${years}年前`;
     }
 
-    function buildThumbnailStyle(entry) {
-        const imageUrls = Array.isArray(entry?.image_urls) ? entry.image_urls : [];
-        const firstImage = imageUrls.find((url) => typeof url === 'string' && url.trim().length > 0);
-        if (!firstImage) {
-            return '';
+    function applyThumbnail(element, entry) {
+        if (!element) {
+            return;
         }
-        const resolved = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
-        return `background-image: url(${resolved});`;
+
+        const url = typeof MangaApp.getThumbnailUrl === 'function'
+            ? MangaApp.getThumbnailUrl(entry)
+            : '';
+
+        if (url) {
+            element.style.backgroundImage = `url(${url})`;
+            return;
+        }
+
+        if (!entry?.gallery_id || typeof MangaApp.fetchGalleryThumbnail !== 'function') {
+            element.style.backgroundImage = '';
+            return;
+        }
+
+        const galleryId = entry.gallery_id;
+        element.dataset.galleryId = String(galleryId);
+        MangaApp.fetchGalleryThumbnail(galleryId)
+            .then((fetchedUrl) => {
+                if (!fetchedUrl) {
+                    return;
+                }
+                if (element.dataset.galleryId !== String(galleryId)) {
+                    return;
+                }
+                const resolved = fetchedUrl.startsWith('/proxy/') ? fetchedUrl : `/proxy/${fetchedUrl}`;
+                element.style.backgroundImage = `url(${resolved})`;
+            })
+            .catch(() => {
+                element.style.backgroundImage = '';
+            });
     }
 
     function calculateProgress(entry) {
@@ -59,7 +86,7 @@
 
         const thumbnail = document.createElement('div');
         thumbnail.className = 'continue-thumbnail';
-        thumbnail.setAttribute('style', buildThumbnailStyle(entry));
+        applyThumbnail(thumbnail, entry);
         anchor.appendChild(thumbnail);
 
         const info = document.createElement('div');
@@ -92,7 +119,7 @@
 
         const thumb = document.createElement('div');
         thumb.className = 'history-thumbnail';
-        thumb.setAttribute('style', buildThumbnailStyle(entry));
+        applyThumbnail(thumb, entry);
         anchor.appendChild(thumb);
 
         const title = document.createElement('h3');
