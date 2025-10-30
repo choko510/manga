@@ -1,0 +1,75 @@
+[
+    {
+        "id": "costume",
+        "label": "衣装",
+        "tags": [
+            "schoolgirl uniform",
+            "bunny girl",
+            "swimsuit",
+            "lingerie",
+            "maid",
+            "nurse",
+            "kimono",
+            "stockings",
+            "gymshorts",
+            "bloomers",
+            "cheerleader",
+            "chinese dress",
+            "witch",
+            "leotard",
+            "bodysuit",
+            "business suit",
+            "military uniform"
+        ]
+    },
+    {
+        "id": "situation",
+        "label": "シチュエーション",
+        "tags": [
+            "netorare",
+            "group",
+            "mind control",
+            "sleeping",
+            "voyeurism",
+            "public sex",
+            "rape",
+            "drugs",
+            "cheating",
+            "time stop",
+            "body swap",
+            "gender bender",
+            "exhibitionism",
+            "monster",
+            "idol",
+            "teacher"
+        ]
+    },
+    {
+        "id": "fetish",
+        "label": "フェティッシュ",
+        "tags": [
+            "anal",
+            "blowjob",
+            "double penetration",
+            "nakadashi",
+            "femdom",
+            "bondage",
+            "tentacles",
+            "pregnant",
+            "footjob",
+            "ahegao",
+            "spanking",
+            "futanari",
+            "bdsm",
+            "paizuri",
+            "bbw",
+            "giantess"
+        ]
+    },
+    {
+        "id": "other",
+        "label": "その他",
+        "isFallback": true,
+        "tags": []
+    }
+]
