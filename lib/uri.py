@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from threading import Lock
 from typing import Optional
 from urllib.parse import quote
@@ -86,6 +87,20 @@ class ImageUriResolver:
     _lock: Lock = Lock()
     _async_lock: asyncio.Lock | None = None
     _signature: tuple[str, bool, tuple[int, ...]] | None = None
+    _last_synced_at: float | None = None
+    _refresh_interval: float = 900.0  # seconds
+
+    @classmethod
+    def _should_refresh(cls, force: bool) -> bool:
+        """Return whether resolver metadata must be refreshed."""
+
+        if force:
+            return True
+        if not cls._is_initialised():
+            return True
+        if cls._last_synced_at is None:
+            return True
+        return (time.monotonic() - cls._last_synced_at) >= cls._refresh_interval
 
     @classmethod
     def _parse_response(cls, response_text: str) -> tuple[str, bool, set[int]]:
@@ -124,6 +139,7 @@ class ImageUriResolver:
         subdomain_set.clear()
         subdomain_set.update(subdomain_codes)
         cls._signature = (path_code, starts_with_a, tuple(sorted(subdomain_codes)))
+        cls._last_synced_at = time.monotonic()
 
     @classmethod
     def _is_initialised(cls) -> bool:
@@ -135,11 +151,11 @@ class ImageUriResolver:
 
     @classmethod
     def synchronize(cls, *, force: bool = False) -> None:
-        if not force and cls._is_initialised():
+        if not cls._should_refresh(force):
             return
 
         with cls._lock:
-            if not force and cls._is_initialised():
+            if not cls._should_refresh(force):
                 return
             response_text = fetch(f"{RESOURCE_DOMAIN}/gg.js").decode("utf-8")
             parts = cls._parse_response(response_text)
@@ -147,7 +163,7 @@ class ImageUriResolver:
 
     @classmethod
     async def async_synchronize(cls, *, force: bool = False) -> None:
-        if not force and cls._is_initialised():
+        if not cls._should_refresh(force):
             return
 
         with cls._lock:
@@ -157,7 +173,7 @@ class ImageUriResolver:
 
         assert lock is not None
         async with lock:
-            if not force and cls._is_initialised():
+            if not cls._should_refresh(force):
                 return
             response_text = (await async_fetch(f"{RESOURCE_DOMAIN}/gg.js")).decode(
                 "utf-8"
@@ -171,6 +187,7 @@ class ImageUriResolver:
 
         with cls._lock:
             cls._signature = None
+            cls._last_synced_at = None
             IMAGE_URI_PARTS[0] = ""
             IMAGE_URI_PARTS[1] = False
             subdomain_set = IMAGE_URI_PARTS[2]
