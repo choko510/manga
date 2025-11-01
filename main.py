@@ -1492,13 +1492,16 @@ async def proxy_request(path: str):
                             continue
                         raise HTTPException(status_code=resp.status, detail=f"Upstream 5xx: {resp.status}")
                     if resp.status == 404:
-                        # 404エラーの場合はImageUriResolverを同期して再試行
-                        logger.info("404エラーを検出、ImageUriResolverを同期します")
+                        # 404エラーの場合はImageUriResolverを強制同期して再試行
+                        logger.info("404エラーを検出、ImageUriResolverを再同期します")
                         try:
-                            await ImageUriResolver.async_synchronize()
-                            logger.info("ImageUriResolverの同期完了、再試行します")
+                            await ImageUriResolver.async_synchronize(force=True)
+                            logger.info("ImageUriResolverの再同期が完了しました。再試行します")
                         except Exception as e:
-                            logger.error(f"ImageUriResolver同期エラー: {e}")
+                            logger.error(f"ImageUriResolver再同期エラー: {e}")
+                        if attempt < max_retries:
+                            await asyncio.sleep(retry_delay * (2 ** attempt))
+                            continue
                         raise HTTPException(status_code=resp.status, detail=f"Upstream 4xx: {resp.status}")
                     if resp.status >= 400:
                         raise HTTPException(status_code=resp.status, detail=f"Upstream 4xx: {resp.status}")
