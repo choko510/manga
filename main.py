@@ -29,7 +29,7 @@ import logging
 # =========================
 # ログ設定
 # =========================
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # =========================
@@ -1855,7 +1855,7 @@ async def record_single_event(request: EventRequest):
                 element_selector=request.element_selector,
                 element_text=request.element_text,
                 x_position=request.x_position,
-                y_position=event.y_position,
+                y_position=request.y_position,
                 scroll_direction=request.scroll_direction,
                 scroll_speed=request.scroll_speed,
                 timestamp=request.timestamp or datetime.now().isoformat(),
@@ -1945,6 +1945,14 @@ async def shutdown_event():
 # エントリポイント
 # =========================
 if __name__ == "__main__":
+    import argparse
     import uvicorn
-    uvicorn.run(app, host="localhost", port=8000,access_log=False,   # アクセスログ無効
-    log_level="critical")
+
+    parser = argparse.ArgumentParser(description="Run FastAPI server")
+    parser.add_argument("--host", type=str, default="localhost", help="Server host (default: localhost)")
+    parser.add_argument("--port", type=int, default=8000, help="Server port (default: 8000)")
+    parser.add_argument("--log", type=str, choices=["critical", "error", "warning", "info", "debug", "trace"],
+                        default="info", help="Logging level (default: info)")
+    args = parser.parse_args()
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log)
