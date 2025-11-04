@@ -30,6 +30,8 @@
             clearHistoryButton: document.getElementById('clearHistoryButton'),
             closeSettingsButton: document.getElementById('closeSettingsButton'),
             resetSettingsButton: document.getElementById('resetSettingsButton'),
+            filtersToggle: document.getElementById('filtersToggle'),
+            searchOptions: document.getElementById('searchOptions'),
         };
 
         MangaApp.applyThemeToDocument(document);
@@ -167,6 +169,37 @@
             updateHiddenTagsUI(elements);
             performSearch(elements, true);
         });
+
+        setupFiltersToggle(elements);
+    }
+
+    function setupFiltersToggle(elements) {
+        const { filtersToggle, searchOptions } = elements;
+        if (!filtersToggle || !searchOptions) {
+            return;
+        }
+
+        const mobileMediaQuery = window.matchMedia('(max-width: 767px)');
+
+        const handleViewportChange = (event) => {
+            if (!event.matches) {
+                filtersToggle.setAttribute('aria-expanded', 'false');
+                searchOptions.classList.remove('active');
+            }
+        };
+
+        if (mobileMediaQuery.addEventListener) {
+            mobileMediaQuery.addEventListener('change', handleViewportChange);
+        } else if (mobileMediaQuery.addListener) {
+            mobileMediaQuery.addListener(handleViewportChange);
+        }
+
+        filtersToggle.addEventListener('click', () => {
+            const isActive = searchOptions.classList.toggle('active');
+            filtersToggle.setAttribute('aria-expanded', isActive.toString());
+        });
+
+        handleViewportChange(mobileMediaQuery);
     }
 
     function toggleSettings(elements, show) {

@@ -69,11 +69,12 @@
             z-index: 100;
             display: flex;
             flex-direction: column;
-            gap: 16px;
-            padding: 20px 32px 16px;
+            gap: 12px;
+            padding: 18px 32px 14px;
             background: var(--bg-header);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
         }
 
         .header-top {
@@ -118,6 +119,12 @@
         }
 
         .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .action-buttons {
             display: flex;
             align-items: center;
             gap: 10px;
@@ -193,12 +200,17 @@
             transform: translateY(-1px);
         }
 
+        .filters-toggle {
+            display: none;
+        }
+
         .search-options {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
             gap: 16px;
-            margin-top: 8px;
+            margin-top: 4px;
+            transition: max-height 0.3s ease;
         }
 
         .filter-group {
@@ -554,20 +566,58 @@
 
         @media (max-width: 767px) {
             .site-header {
-                padding: 16px;
+                padding: 14px 16px 12px;
+                gap: 10px;
             }
 
             .header-top {
                 flex-direction: column;
                 align-items: stretch;
+                gap: 12px;
+            }
+
+            .nav-button {
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+
+            .main-nav {
+                margin: 0 -8px;
+                padding: 0 8px 2px;
             }
 
             .header-actions {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+            }
+
+            .search-container {
+                width: 100%;
+            }
+
+            .action-buttons {
                 justify-content: flex-end;
+                gap: 8px;
+            }
+
+            .filters-toggle {
+                display: inline-flex;
             }
 
             .search-options {
-                justify-content: space-between;
+                display: none;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+                padding: 12px;
+                background: rgba(148, 163, 184, 0.12);
+                border-radius: 16px;
+                box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+            }
+
+            .search-options.active {
+                display: flex;
             }
 
             .card-grid {
@@ -595,11 +645,16 @@
                     <input type="search" id="searchInput" placeholder="タグをスペース・カンマ区切りで複数検索" aria-label="タグ検索">
                     <button id="searchButton" class="search-button">検索</button>
                 </div>
-                <button id="themeToggle" class="icon-button" aria-label="ダークモード切替">🌙</button>
-                <button id="settingsToggle" class="icon-button" aria-label="表示設定">⚙️</button>
+                <div class="action-buttons">
+                    <button id="themeToggle" class="icon-button" aria-label="ダークモード切替"><i class="fas fa-moon" aria-hidden="true"></i></button>
+                    <button id="settingsToggle" class="icon-button" aria-label="表示設定"><i class="fas fa-cog" aria-hidden="true"></i></button>
+                    <button id="filtersToggle" class="icon-button filters-toggle" aria-label="検索フィルターの表示切替" aria-expanded="false" aria-controls="searchOptions">
+                        <i class="fas fa-sliders-h"></i>
+                    </button>
+                </div>
             </div>
         </div>
-        <div class="search-options">
+        <div class="search-options" id="searchOptions">
             <div class="filter-group">
                 <label for="minPagesSelect">最小ページ数</label>
                 <select id="minPagesSelect">
