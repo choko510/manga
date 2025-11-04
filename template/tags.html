@@ -507,7 +507,9 @@
         }
 
         function updateThemeToggleIcon(button, theme) {
-            button.textContent = theme === 'dark' ? '☀️' : '🌙';
+            button.innerHTML = theme === 'dark'
+                ? '<i class="fas fa-sun" aria-hidden="true"></i>'
+                : '<i class="fas fa-moon" aria-hidden="true"></i>';
         }
 
         function updateHiddenTagsSummary() {
@@ -785,7 +787,8 @@
                 chip.textContent = MangaApp.translateTag(tag);
                 chip.title = tag;
                 const removeButton = document.createElement('button');
-                removeButton.textContent = '✕';
+                removeButton.setAttribute('aria-label', `${MangaApp.translateTag(tag)} を除外する`);
+                removeButton.innerHTML = '<i class="fas fa-xmark" aria-hidden="true"></i>';
                 removeButton.addEventListener('click', (event) => {
                     event.stopPropagation();
                     state.selectedTags.delete(tag);
