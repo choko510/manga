@@ -1780,6 +1780,44 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
             return {"tags": tags, "total": total_count, "has_more": (offset + limit) < (total_count or 0)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"タグ情報の取得エラー: {str(e)}")
+@app.get("/api/popular-tags")
+async def get_popular_tags(limit: int = 50, exclude_existing: bool = True):
+    """
+    sa.dbから使用頻度の高いタグを取得するAPI
+    既存の翻訳データにないタグのみを返すオプション付き
+    """
+    try:
+        async with get_db_session() as db:
+            # 基本クエリ：タグを使用頻度順に取得
+            query = "SELECT tag, count FROM tag_stats ORDER BY count DESC, tag ASC LIMIT :limit"
+            params: Dict[str, Any] = {"limit": limit}
+            
+            # 既存の翻訳を除外する場合
+            if exclude_existing:
+                # 翻訳データを読み込み
+                translations_data = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
+                existing_tags = set(translations_data.keys()) if translations_data else set()
+                
+                if existing_tags:
+                    # 既存タグを除外するクエリを構築
+                    placeholders = ', '.join([f':exclude_{i}' for i in range(len(existing_tags))])
+                    for i, tag in enumerate(existing_tags):
+                        params[f'exclude_{i}'] = tag
+                    
+                    query = f"""
+                        SELECT tag, count FROM tag_stats 
+                        WHERE tag NOT IN ({placeholders})
+                        ORDER BY count DESC, tag ASC 
+                        LIMIT :limit
+                    """
+            
+            result = await db.execute(text(query), params)
+            rows = result.fetchall()
+            tags = [{"tag": r.tag, "count": r.count} for r in rows]
+            return {"tags": tags, "count": len(tags)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"人気タグの取得エラー: {str(e)}")
+
 
 @app.get("/tags", response_class=HTMLResponse)
 async def read_tags():

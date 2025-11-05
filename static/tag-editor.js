@@ -8,6 +8,7 @@
     const statusBar = document.getElementById('statusBar');
 
     const addTranslationButton = document.getElementById('addTranslationButton');
+    const autoAddButton = document.getElementById('autoAddButton');
     const saveTranslationsButton = document.getElementById('saveTranslationsButton');
     const addCategoryButton = document.getElementById('addCategoryButton');
     const saveCategoriesButton = document.getElementById('saveCategoriesButton');
@@ -16,21 +17,28 @@
         translations: [],
         categories: [],
     };
-
-    function showStatus(message, type = 'success', timeout = 3000) {
-        if (!statusBar) return;
-        statusBar.textContent = message;
-        statusBar.classList.remove('success', 'error', 'visible');
-        statusBar.classList.add(type === 'error' ? 'error' : 'success');
-        requestAnimationFrame(() => {
-            statusBar.classList.add('visible');
-        });
-        if (timeout > 0) {
-            setTimeout(() => {
-                statusBar.classList.remove('visible');
-            }, timeout);
-        }
+function showStatus(message, type = 'success', timeout = 3000) {
+    if (!statusBar) return;
+    statusBar.textContent = message;
+    statusBar.classList.remove('success', 'error', 'visible');
+    statusBar.classList.add(type === 'error' ? 'error' : 'success');
+    requestAnimationFrame(() => {
+        statusBar.classList.add('visible');
+    });
+    if (timeout > 0) {
+        setTimeout(() => {
+            statusBar.classList.remove('visible');
+        }, timeout);
     }
+}
+
+function showProgress(current, total, message = '処理中...') {
+    if (!statusBar) return;
+    const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
+    statusBar.textContent = `${message} (${current}/${total} - ${percentage}%)`;
+    statusBar.classList.remove('success', 'error', 'visible');
+    statusBar.classList.add('visible');
+}
 
     function normaliseTag(value) {
         return (value || '').toString().trim().toLowerCase();
@@ -316,6 +324,68 @@
         row.querySelector('input')?.focus();
         updateEmptyStates();
         updateTranslationCount();
+    });
+    
+    // データベースからタグを自動的に追加する機能
+    autoAddButton?.addEventListener('click', async () => {
+        try {
+            showStatus('データベースからタグを取得中...', 'success', 0);
+            
+            // 人気タグを取得（既存の翻訳を除外）
+            const response = await fetch('/api/popular-tags?limit=1000&exclude_existing=true');
+            if (!response.ok) {
+                throw new Error('人気タグの取得に失敗しました');
+            }
+            
+            const data = await response.json();
+            const popularTags = data.tags || [];
+            
+            if (popularTags.length === 0) {
+                showStatus('追加可能なタグがありません', 'error', 3000);
+                return;
+            }
+            
+            // 既存のタグと重複チェック
+            const existingTags = new Set(state.translations.map(t => normaliseTag(t.tag)));
+            
+            // 重複しないタグのみをフィルタリング
+            const newTags = popularTags.filter(tagInfo => !existingTags.has(normaliseTag(tagInfo.tag)));
+            
+            if (newTags.length === 0) {
+                showStatus('すべてのタグが既に登録されています', 'error', 3000);
+                return;
+            }
+            
+            // 新しいタグを翻訳リストに追加（進捗表示付き）
+            let addedCount = 0;
+            showProgress(0, newTags.length, 'タグを追加中');
+            
+            for (let i = 0; i < newTags.length; i++) {
+                const tagInfo = newTags[i];
+                const entry = {
+                    tag: tagInfo.tag,
+                    translation: '' // 翻訳は空のまま
+                };
+                state.translations.push(entry);
+                const row = createTranslationRow(entry);
+                translationsTableBody?.prepend(row);
+                addedCount++;
+                
+                // 進捗を更新
+                showProgress(i + 1, newTags.length, 'タグを追加中');
+                
+                // 少し遅延を入れてUIが更新されるようにする
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            
+            updateEmptyStates();
+            updateTranslationCount();
+            showStatus(`${addedCount}件のタグを追加しました`, 'success', 3000);
+            
+        } catch (error) {
+            console.error(error);
+            showStatus(error.message || 'タグの追加に失敗しました', 'error', 5000);
+        }
     });
 
     saveTranslationsButton?.addEventListener('click', () => {
