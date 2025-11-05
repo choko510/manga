@@ -140,6 +140,16 @@ class UserEvent(TrackingBase):
     scroll_speed = Column(Integer)     # ピクセル/秒
     timestamp = Column(String)
 
+# ---- ランキング ----
+class GalleryRanking(Base):
+    __tablename__ = 'gallery_rankings'
+    gallery_id = Column(Integer, primary_key=True)
+    ranking_type = Column(String, primary_key=True)  # 'daily', 'weekly', 'monthly', 'all_time'
+    score = Column(Integer, nullable=False, default=0)  # ランキングスコア（アクセス数など）
+    view_count = Column(Integer, nullable=False, default=0)  # 閲覧数
+    last_updated = Column(String)  # 最終更新日時
+    created_at = Column(String)  # 作成日時
+
 # =========================
 # FastAPI
 # =========================
@@ -175,6 +185,38 @@ _STATIC_FILE_CACHE: Dict[str, Tuple[float, str]] = {}
 
 TAG_TRANSLATIONS_FILE = Path("static/tag-translations.json")
 TAG_CATEGORIES_FILE = Path("static/tag-categories.json")
+
+# ランキングデータファイル
+RANKING_FILES = {
+    "daily": "day_ids.txt",
+    "weekly": "week_ids.txt",
+    "monthly": "month_ids.txt",
+    "yearly": "year_ids.txt",
+    "all_time": "all_ids.txt"
+}
+
+async def _load_ranking_ids(ranking_type: str) -> List[int]:
+    """
+    ランキングデータファイルからギャラリーIDを読み込む
+    ranking_type: 'daily', 'weekly', 'monthly', 'yearly', 'all_time'
+    """
+    if ranking_type not in RANKING_FILES:
+        raise ValueError(f"Invalid ranking type: {ranking_type}")
+    
+    file_path = RANKING_FILES[ranking_type]
+    
+    def _read_ids():
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return [int(line.strip()) for line in f if line.strip().isdigit()]
+        except FileNotFoundError:
+            logger.error(f"ランキングファイルが見つかりません: {file_path}")
+            return []
+        except Exception as e:
+            logger.error(f"ランキングファイル読み込みエラー: {e}")
+            return []
+    
+    return await asyncio.to_thread(_read_ids)
 
 
 def _load_static_file(path: str) -> str:
@@ -440,6 +482,27 @@ async def init_database():
                 SELECT tag, COUNT(*) FROM gallery_tags GROUP BY tag
                 """
             ))
+
+        # ---- ランキングテーブル ----
+        await conn.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS gallery_rankings (
+                gallery_id INTEGER NOT NULL,
+                ranking_type TEXT NOT NULL,
+                score INTEGER NOT NULL DEFAULT 0,
+                view_count INTEGER NOT NULL DEFAULT 0,
+                last_updated TEXT,
+                created_at TEXT,
+                PRIMARY KEY (gallery_id, ranking_type),
+                FOREIGN KEY (gallery_id) REFERENCES galleries(gallery_id) ON DELETE CASCADE
+            )
+            """
+        ))
+        
+        # ランキングテーブルのインデックス
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_rankings_type_score ON gallery_rankings(ranking_type, score DESC)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_rankings_gallery_id ON gallery_rankings(gallery_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_rankings_last_updated ON gallery_rankings(last_updated)"))
 
         # 統計最適化
         await conn.execute(text("ANALYZE"))
@@ -1463,21 +1526,84 @@ async def search_galleries_get(
     after_gallery_id: Optional[int] = None,
     min_pages: Optional[int] = None,
     max_pages: Optional[int] = None,
+    sort_by: Optional[str] = None,
 ):
     try:
         async with get_db_session() as db:
-            results = await search_galleries_fast(
-                db,
-                title=title,
-                tag=tag,
-                exclude_tag=exclude_tag,
-                character=character,
-                limit=limit,
-                after_created_at=after_created_at,
-                after_gallery_id=after_gallery_id,
-                min_pages=min_pages,
-                max_pages=max_pages,
-            )
+            # sort_byパラメータがランキングの場合は特別処理
+            if sort_by and sort_by in ['daily', 'weekly', 'monthly', 'yearly', 'all_time']:
+                # ランキングファイルからIDを読み込む
+                ranking_ids = await _load_ranking_ids(sort_by)
+                
+                # タグ検索の場合はタグでフィルタリング
+                if tag:
+                    known_tags = await _get_known_tag_set(db)
+                    tag_terms = _parse_tag_terms(tag, known_tags)
+                    
+                    if tag_terms:
+                        # タグを持つギャラリーIDを取得
+                        tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
+                        
+                        tag_query = f"""
+                            SELECT DISTINCT g.gallery_id
+                            FROM galleries AS g
+                            WHERE {' AND '.join(tag_exists_clauses)}
+                        """
+                        
+                        tag_result = await db.execute(text(tag_query), tag_params)
+                        tag_gallery_ids = {row.gallery_id for row in tag_result.fetchall()}
+                        
+                        # ランキングIDとタグを持つギャラリーIDの共通部分を取得
+                        filtered_ranking_ids = [gid for gid in ranking_ids if gid in tag_gallery_ids]
+                    else:
+                        filtered_ranking_ids = []
+                else:
+                    filtered_ranking_ids = ranking_ids
+                
+                # ランキング順にギャラリー情報を取得
+                if filtered_ranking_ids:
+                    # リミットとオフセットを適用
+                    start_idx = 0  # 簡略化のため常に先頭から
+                    end_idx = min(start_idx + limit, len(filtered_ranking_ids))
+                    paginated_ids = filtered_ranking_ids[start_idx:end_idx]
+                    
+                    placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
+                    params = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
+                    
+                    query = f"""
+                        SELECT
+                            g.gallery_id,
+                            g.japanese_title,
+                            g.tags,
+                            g.characters,
+                            g.files,
+                            g.manga_type,
+                            g.created_at,
+                            g.page_count,
+                            g.created_at_unix
+                        FROM galleries AS g
+                        WHERE g.gallery_id IN ({placeholders})
+                        ORDER BY g.gallery_id DESC
+                    """
+                    
+                    result = await db.execute(text(query), params)
+                    results = [_serialize_gallery(row) for row in result.mappings()]
+                else:
+                    results = []
+            else:
+                # 通常の検索
+                results = await search_galleries_fast(
+                    db,
+                    title=title,
+                    tag=tag,
+                    exclude_tag=exclude_tag,
+                    character=character,
+                    limit=limit,
+                    after_created_at=after_created_at,
+                    after_gallery_id=after_gallery_id,
+                    min_pages=min_pages,
+                    max_pages=max_pages,
+                )
 
             for result in results:
                 try:
@@ -1781,7 +1907,7 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"タグ情報の取得エラー: {str(e)}")
 @app.get("/api/popular-tags")
-async def get_popular_tags(limit: int = 50, exclude_existing: bool = True):
+async def get_popular_tags(limit: int = 10, offset: int = 0, exclude_existing: bool = True):
     """
     sa.dbから使用頻度の高いタグを取得するAPI
     既存の翻訳データにないタグのみを返すオプション付き
@@ -1789,8 +1915,8 @@ async def get_popular_tags(limit: int = 50, exclude_existing: bool = True):
     try:
         async with get_db_session() as db:
             # 基本クエリ：タグを使用頻度順に取得
-            query = "SELECT tag, count FROM tag_stats ORDER BY count DESC, tag ASC LIMIT :limit"
-            params: Dict[str, Any] = {"limit": limit}
+            query = "SELECT tag, count FROM tag_stats ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
+            params: Dict[str, Any] = {"limit": limit, "offset": offset}
             
             # 既存の翻訳を除外する場合
             if exclude_existing:
@@ -1805,10 +1931,10 @@ async def get_popular_tags(limit: int = 50, exclude_existing: bool = True):
                         params[f'exclude_{i}'] = tag
                     
                     query = f"""
-                        SELECT tag, count FROM tag_stats 
+                        SELECT tag, count FROM tag_stats
                         WHERE tag NOT IN ({placeholders})
-                        ORDER BY count DESC, tag ASC 
-                        LIMIT :limit
+                        ORDER BY count DESC, tag ASC
+                        LIMIT :limit OFFSET :offset
                     """
             
             result = await db.execute(text(query), params)
@@ -2045,6 +2171,123 @@ async def record_single_event(request: EventRequest):
         raise HTTPException(status_code=500, detail=f"イベント記録エラー: {str(e)}")
 
 # =========================
+# ランキング系API
+# =========================
+@app.get("/api/rankings")
+async def get_rankings(
+    ranking_type: str = "daily",
+    limit: int = 50,
+    offset: int = 0,
+    tag: Optional[str] = None
+):
+    """
+    ランキングデータを取得するAPI
+    ranking_type: 'daily', 'weekly', 'monthly', 'yearly', 'all_time'
+    tag: タグでフィルタリング（オプション）
+    """
+    try:
+        # ファイルからランキングIDを読み込む
+        ranking_ids = await _load_ranking_ids(ranking_type)
+        
+        # オフセットとリミットを適用
+        start_index = offset
+        end_index = offset + limit
+        paginated_ids = ranking_ids[start_index:end_index]
+        
+        if not paginated_ids:
+            return {
+                "rankings": [],
+                "count": 0,
+                "total": len(ranking_ids),
+                "has_more": False
+            }
+        
+        # データベースからギャラリー情報を取得
+        async with get_db_session() as db:
+            placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
+            params = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
+            
+            # タグフィルタリング用のWHERE句を構築
+            tag_filter_clause = ""
+            if tag:
+                known_tags = await _get_known_tag_set(db)
+                tag_terms = _parse_tag_terms(tag, known_tags)
+                if tag_terms:
+                    # EXISTS句を使用してタグAND検索を実装
+                    tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
+                    params.update(tag_params)
+                    tag_filter_clause = f"AND {' AND '.join(tag_exists_clauses)}"
+            
+            query = f"""
+                SELECT
+                    g.gallery_id,
+                    g.japanese_title,
+                    g.tags,
+                    g.characters,
+                    g.files,
+                    g.page_count,
+                    g.created_at,
+                    g.created_at_unix
+                FROM galleries AS g
+                WHERE g.gallery_id IN ({placeholders}) {tag_filter_clause}
+                ORDER BY g.gallery_id DESC
+            """
+            
+            result = await db.execute(text(query), params)
+            rows = result.fetchall()
+            
+            # ギャラリーIDをキーとして行をマッピング
+            gallery_dict = {row.gallery_id: row for row in rows}
+            
+            rankings = []
+            for rank_position, gallery_id in enumerate(paginated_ids, start=offset + 1):
+                if gallery_id in gallery_dict:
+                    row = gallery_dict[gallery_id]
+                    ranking_data = {
+                        "gallery_id": row.gallery_id,
+                        "ranking_type": ranking_type,
+                        "rank": rank_position,
+                        "japanese_title": row.japanese_title,
+                        "tags": row.tags,
+                        "characters": row.characters,
+                        "page_count": row.page_count,
+                        "created_at": row.created_at,
+                        "created_at_unix": row.created_at_unix
+                    }
+                    
+                    # 画像URLを取得
+                    try:
+                        files_data = json.loads(row.files) if hasattr(row, 'files') and row.files else []
+                        files_list = files_data if isinstance(files_data, list) else []
+                        gallery_info = {"gallery_id": row.gallery_id, "files": files_list}
+                        ranking_data["image_urls"] = await geturl(gallery_info)
+                    except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                        logger.error(f"ランキングデータの画像URL取得エラー: {e}, gallery_id: {row.gallery_id}")
+                        ranking_data["image_urls"] = []
+                    
+                    rankings.append(ranking_data)
+            
+            return {
+                "rankings": rankings,
+                "count": len(rankings),
+                "total": len(ranking_ids),
+                "has_more": (offset + limit) < len(ranking_ids)
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ランキングデータの取得エラー: {str(e)}")
+
+@app.post("/api/rankings/update")
+async def update_rankings():
+    """
+    ランキングデータを更新するAPI（現在は無効化）
+    *_ids.txtファイルから直接読み込むため、このエンドポイントは不要
+    """
+    return {"status": "disabled", "message": "ランキング更新は無効化されています。*_ids.txtファイルから直接読み込まれます。"}
+
+# ランキング更新関数は不要になったため削除
+# *_ids.txtファイルから直接読み込むため
+
+# =========================
 # 定期同期タスク
 # =========================
 async def hourly_sync_task():
@@ -2061,6 +2304,47 @@ async def hourly_sync_task():
         except Exception as e:
             logger.error(f"同期中にエラー: {str(e)}")
             await asyncio.sleep(3600)
+
+async def daily_ranking_update_task():
+    """日次ランキング更新タスク（*_ids.txtファイルを定期的に更新）"""
+    while True:
+        try:
+            # 毎日午前2時に実行
+            now = datetime.now()
+            next_update = now.replace(hour=2, minute=0, second=0, microsecond=0)
+            if next_update <= now:
+                next_update = next_update + timedelta(days=1)
+            
+            wait_seconds = (next_update - now).total_seconds()
+            logger.info(f"次回のランキングファイル更新は {next_update.strftime('%Y-%m-%d %H:%M:%S')} に実行")
+            await asyncio.sleep(wait_seconds)
+            
+            logger.info("ランキングファイル更新開始")
+            try:
+                # hitomi.pyのdownload_all_popular_files()を実行
+                import sys
+                import subprocess
+                
+                # スクリプトを実行
+                result = subprocess.run(
+                    [sys.executable, "scraper/hitomi.py"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300  # 5分タイムアウト
+                )
+                
+                if result.returncode == 0:
+                    logger.info("ランキングファイル更新完了")
+                    logger.info(f"出力: {result.stdout}")
+                else:
+                    logger.error(f"ランキングファイル更新エラー: {result.stderr}")
+            except subprocess.TimeoutExpired:
+                logger.error("ランキングファイル更新がタイムアウトしました")
+            except Exception as e:
+                logger.error(f"ランキングファイル更新中にエラー: {str(e)}")
+        except Exception as e:
+            logger.error(f"ランキング更新タスク全体でエラー: {str(e)}")
+            await asyncio.sleep(3600)  # エラーの場合は1時間待って再試行
 
 # =========================
 # ライフサイクル
@@ -2103,16 +2387,26 @@ async def startup_event():
     # 同期スケジューラ開始
     scheduler_task = asyncio.create_task(hourly_sync_task())
     logger.info("同期スケジューラ開始")
+    
+    # ランキング更新スケジューラ開始
+    ranking_scheduler_task = asyncio.create_task(daily_ranking_update_task())
+    logger.info("ランキングファイル更新スケジューラ開始")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global global_session, scheduler_task
+    global global_session, scheduler_task, ranking_scheduler_task
     if 'scheduler_task' in globals() and scheduler_task:
         scheduler_task.cancel()
         try:
             await scheduler_task
         except asyncio.CancelledError:
             logger.info("同期スケジューラ停止")
+    if 'ranking_scheduler_task' in globals() and ranking_scheduler_task:
+        ranking_scheduler_task.cancel()
+        try:
+            await ranking_scheduler_task
+        except asyncio.CancelledError:
+            logger.info("ランキング更新スケジューラ停止")
     if global_session:
         await global_session.close()
         logger.info("Global session closed")

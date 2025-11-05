@@ -12,6 +12,7 @@
         const elements = {
             searchInput: document.getElementById('searchInput'),
             searchButton: document.getElementById('searchButton'),
+            sortBySelect: document.getElementById('sortBySelect'),
             minPagesSelect: document.getElementById('minPagesSelect'),
             maxPagesSelect: document.getElementById('maxPagesSelect'),
             cardGrid: document.getElementById('cardGrid'),
@@ -109,6 +110,11 @@
                 currentMaxPages = null;
             }
             ensureValidPageRange(elements);
+            performSearch(elements, true);
+        });
+        
+        // 並び順の変更イベントリスナーを追加
+        elements.sortBySelect.addEventListener('change', () => {
             performSearch(elements, true);
         });
         elements.loadMoreButton.addEventListener('click', () => performSearch(elements, false));
@@ -258,10 +264,13 @@
             elements.resultMeta.textContent = '';
         }
 
+        // 並び順の値を取得
+        const sortBy = elements.sortBySelect ? elements.sortBySelect.value : 'created_at';
+
         showLoading(elements, true);
 
         try {
-            const data = await fetchSearchResults(currentQuery, currentAfterCreatedAt, currentMinPages, currentMaxPages);
+            const data = await fetchSearchResults(currentQuery, currentAfterCreatedAt, currentMinPages, currentMaxPages, sortBy);
             const { results, hasMore, nextAfterCreatedAt } = data;
 
             if (reset && results.length === 0) {
@@ -301,8 +310,8 @@
             showLoading(elements, false);
         }
     }
-async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages) {
-    const cacheKey = `${query}|${afterCreatedAt ?? 'start'}|${minPages ?? 0}|${maxPages ?? ''}|${MangaApp.getHiddenTags().join(',')}`;
+async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages, sortBy = 'created_at') {
+    const cacheKey = `${query}|${afterCreatedAt ?? 'start'}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
     if (searchCache.has(cacheKey)) {
         return searchCache.get(cacheKey);
     }
@@ -326,18 +335,49 @@ async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages) {
         params.append('exclude_tag', hiddenTags.join(','));
     }
 
-    const response = await fetch(`/search?${params.toString()}`);
+    // ランキングソートの場合はタグ検索かどうかで処理を分岐
+    let response;
+    if (sortBy !== 'created_at' && ['daily', 'weekly', 'monthly', 'yearly', 'all_time'].includes(sortBy)) {
+        if (query) {
+            // タグ検索の場合は通常の検索APIを使用し、パラメータにソート順を追加
+            params.append('sort_by', sortBy);
+            response = await fetch(`/search?${params.toString()}`);
+        } else {
+            // タグなしの場合はランキングAPIを使用
+            const rankingParams = new URLSearchParams();
+            rankingParams.append('ranking_type', sortBy);
+            rankingParams.append('limit', LIMIT.toString());
+            response = await fetch(`/api/rankings?${rankingParams.toString()}`);
+        }
+    } else {
+        response = await fetch(`/search?${params.toString()}`);
+    }
     if (!response.ok) {
         throw new Error(`HTTP error ${response.status}`);
     }
     const data = await response.json();
 
-    const filtered = data.results || [];
-    const lastItem = filtered[filtered.length - 1];
+    // ランキングAPIと検索APIでレスポンス形式が異なるため、それぞれに対応
+    let filtered, hasMore, nextAfterCreatedAt;
+    
+    if (sortBy !== 'created_at' && ['daily', 'weekly', 'monthly', 'yearly', 'all_time'].includes(sortBy)) {
+        // ランキングAPIのレスポンスを処理
+        filtered = data.rankings || [];
+        hasMore = Boolean(data.has_more);
+        const lastItem = filtered[filtered.length - 1];
+        nextAfterCreatedAt = null; // ランキングでは使用しない
+    } else {
+        // 検索APIのレスポンスを処理
+        filtered = data.results || [];
+        hasMore = Boolean(data.has_more);
+        const lastItem = filtered[filtered.length - 1];
+        nextAfterCreatedAt = lastItem ? lastItem.created_at : null;
+    }
+    
     const result = {
         results: filtered,
-        hasMore: Boolean(data.has_more),
-        nextAfterCreatedAt: lastItem ? lastItem.created_at : null,
+        hasMore: hasMore,
+        nextAfterCreatedAt: nextAfterCreatedAt,
     };
     searchCache.set(cacheKey, result);
     if (searchCache.size > 60) {
@@ -375,9 +415,16 @@ async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages) {
         placeholder.className = 'image-placeholder';
         thumbnail.appendChild(placeholder);
         const img = document.createElement('img');
-        const firstImage = Array.isArray(gallery.image_urls) && gallery.image_urls.length > 0
-            ? gallery.image_urls[0]
-            : '';
+        let firstImage = '';
+        // ランキングAPIと検索APIで画像URLの形式が異なる可能性があるため、両方に対応
+        if (Array.isArray(gallery.image_urls) && gallery.image_urls.length > 0) {
+            firstImage = gallery.image_urls[0];
+        } else if (typeof gallery.image_urls === 'string' && gallery.image_urls) {
+            firstImage = gallery.image_urls;
+        } else if (gallery.thumbnail_url) {
+            firstImage = gallery.thumbnail_url;
+        }
+        
         if (firstImage) {
             const resolved = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
             img.dataset.src = resolved;

@@ -229,6 +229,9 @@
             background: transparent;
             font-size: 14px;
             color: var(--text-primary);
+            padding: 6px 8px;
+            border-radius: 6px;
+            background-color: rgba(148, 163, 184, 0.08);
         }
 
         .hidden-summary {
@@ -534,6 +537,54 @@
             color: var(--text-secondary);
         }
 
+        .rankings-section {
+            background: var(--bg-card);
+            border-radius: var(--radius-card);
+            padding: 24px;
+            box-shadow: var(--shadow-card);
+        }
+
+        .ranking-tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .ranking-tab {
+            border: none;
+            border-radius: var(--radius-pill);
+            background: var(--bg-button);
+            color: var(--text-secondary);
+            padding: 8px 16px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }
+
+        .ranking-tab.active,
+        .ranking-tab:hover {
+            background-color: var(--accent-soft);
+            color: var(--accent);
+        }
+
+        .rank-number {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: var(--accent);
+            color: white;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+            z-index: 2;
+        }
+
         .settings-panel input[type="text"] {
             border: 1px solid rgba(148, 163, 184, 0.4);
             border-radius: 12px;
@@ -566,6 +617,7 @@
 
         @media (max-width: 767px) {
             .site-header {
+                position: static;
                 padding: 14px 16px 12px;
                 gap: 10px;
             }
@@ -656,6 +708,17 @@
         </div>
         <div class="search-options" id="searchOptions">
             <div class="filter-group">
+                <label for="sortBySelect">並び順</label>
+                <select id="sortBySelect">
+                    <option value="created_at" selected>新着順</option>
+                    <option value="daily">日間ランキング</option>
+                    <option value="weekly">週間ランキング</option>
+                    <option value="monthly">月間ランキング</option>
+                    <option value="yearly">年間ランキング</option>
+                    <option value="all_time">総合ランキング</option>
+                </select>
+            </div>
+            <div class="filter-group">
                 <label for="minPagesSelect">最小ページ数</label>
                 <select id="minPagesSelect">
                     <option value="0">0</option>
@@ -692,7 +755,7 @@
     </aside>
 
     <main class="content-area">
-        <section class="results-section" aria-live="polite">
+        <section class="results-section" id="searchSection" aria-live="polite">
             <div class="section-header">
                 <h2 class="section-title">検索結果</h2>
                 <div class="result-meta" id="resultMeta"></div>
@@ -706,6 +769,7 @@
     </main>
 
     <script src="/static/tracking.js" defer></script>
+    <script src="/static/rankings.js" defer></script>
     <script src="/static/app.js" defer></script>
     <script src="/static/index.js" defer></script>
 </body>

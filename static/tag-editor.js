@@ -16,6 +16,8 @@
     const state = {
         translations: [],
         categories: [],
+        popularTagsOffset: 0, // 追加: 人気タグの取得オフセット
+        popularTagsLimit: 10, // 追加: 人気タグの取得数
     };
 function showStatus(message, type = 'success', timeout = 3000) {
     if (!statusBar) return;
@@ -128,10 +130,33 @@ function showProgress(current, total, message = '処理中...') {
         header.appendChild(idInput);
         header.appendChild(labelInput);
 
-        const textarea = document.createElement('textarea');
-        textarea.className = 'tag-textarea';
-        textarea.placeholder = 'タグを1行ずつ入力';
-        textarea.value = Array.isArray(category.tags) ? category.tags.join('\n') : '';
+        // タグ入力エリアを改善
+        const tagInputContainer = document.createElement('div');
+        tagInputContainer.className = 'tag-input-container';
+        
+        const tagInput = document.createElement('input');
+        tagInput.type = 'text';
+        tagInput.className = 'table-input tag-input';
+        tagInput.placeholder = 'タグを入力（オートコンプリート対応）';
+        
+        const addTagButton = document.createElement('button');
+        addTagButton.type = 'button';
+        addTagButton.className = 'button secondary add-tag-btn';
+        addTagButton.textContent = '追加';
+        
+        tagInputContainer.appendChild(tagInput);
+        tagInputContainer.appendChild(addTagButton);
+
+        // タグ表示エリア
+        const tagDisplayContainer = document.createElement('div');
+        tagDisplayContainer.className = 'tag-display-container';
+        
+        // 既存のタグを表示
+        const existingTags = Array.isArray(category.tags) ? category.tags : [];
+        existingTags.forEach(tag => {
+            const tagElement = createTagElement(tag);
+            tagDisplayContainer.appendChild(tagElement);
+        });
 
         const buttonRow = document.createElement('div');
         buttonRow.className = 'section-actions';
@@ -147,11 +172,198 @@ function showProgress(current, total, message = '処理中...') {
         buttonRow.appendChild(deleteButton);
 
         card.appendChild(header);
-        card.appendChild(textarea);
+        card.appendChild(tagInputContainer);
+        card.appendChild(tagDisplayContainer);
         card.appendChild(buttonRow);
 
-        card._inputs = { idInput, labelInput, textarea };
+        // オートコンプリート機能
+        setupTagAutocomplete(tagInput, tagDisplayContainer);
+        
+        // 追加ボタンのイベント
+        addTagButton.addEventListener('click', () => {
+            const tagValue = tagInput.value.trim();
+            if (tagValue) {
+                addTagToCategory(tagValue, tagDisplayContainer, category);
+                tagInput.value = '';
+            }
+        });
+        
+        // Enterキーでタグ追加
+        tagInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const tagValue = tagInput.value.trim();
+                if (tagValue) {
+                    addTagToCategory(tagValue, tagDisplayContainer, category);
+                    tagInput.value = '';
+                }
+            }
+        });
+
+        card._inputs = { idInput, labelInput, tagInput, tagDisplayContainer };
         return card;
+    }
+
+    function createTagElement(tag) {
+        const tagElement = document.createElement('div');
+        tagElement.className = 'tag-element';
+        
+        const tagText = document.createElement('span');
+        tagText.className = 'tag-text';
+        
+        // 翻訳を適用して表示
+        const translation = getTagTranslation(tag);
+        if (translation) {
+            tagText.textContent = `${translation} (${tag})`;
+            tagElement.title = `${tag} - ${translation}`;
+        } else {
+            tagText.textContent = tag;
+            tagElement.title = tag;
+        }
+        
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.className = 'tag-remove-btn';
+        removeButton.textContent = '×';
+        removeButton.addEventListener('click', () => {
+            tagElement.remove();
+        });
+        
+        tagElement.appendChild(tagText);
+        tagElement.appendChild(removeButton);
+        return tagElement;
+    }
+
+    function getTagTranslation(tag) {
+        const translation = state.translations.find(t => normaliseTag(t.tag) === normaliseTag(tag));
+        return translation ? translation.translation : '';
+    }
+
+    function addTagToCategory(tag, container, category) {
+        // 重複チェック
+        const existingTags = Array.from(container.querySelectorAll('.tag-text')).map(el =>
+            el.textContent.split(' (')[0] // 翻訳がある場合は翻訳部分のみ取得
+        );
+        
+        const translation = getTagTranslation(tag);
+        const displayText = translation ? `${translation} (${tag})` : tag;
+        
+        if (existingTags.includes(displayText)) {
+            showStatus('このタグは既に追加されています', 'error', 3000);
+            return;
+        }
+        
+        const tagElement = createTagElement(tag);
+        container.appendChild(tagElement);
+        
+        // カテゴリのタグリストを更新
+        if (!category.tags) {
+            category.tags = [];
+        }
+        category.tags.push(tag);
+    }
+
+    function setupTagAutocomplete(input, container) {
+        let currentFocus = -1;
+        
+        input.addEventListener('input', function() {
+            const value = this.value.trim();
+            closeAllLists();
+            
+            if (!value) return;
+            
+            // 利用可能なタグ（既に追加されているものを除く）
+            const existingTags = Array.from(container.querySelectorAll('.tag-text')).map(el =>
+                el.textContent.split(' (')[1]?.replace(')', '') || el.textContent
+            );
+            
+            const availableTags = state.translations
+                .filter(t => !existingTags.includes(t.tag))
+                .filter(t => t.tag.toLowerCase().includes(value.toLowerCase()) ||
+                            t.translation.toLowerCase().includes(value.toLowerCase()))
+                .slice(0, 10); // 最大10件まで表示
+                
+            if (availableTags.length === 0) return;
+            
+            const listContainer = document.createElement('div');
+            listContainer.setAttribute('id', 'autocomplete-list');
+            listContainer.className = 'autocomplete-items';
+            
+            availableTags.forEach((item, index) => {
+                const itemElement = document.createElement('div');
+                itemElement.className = 'autocomplete-item';
+                
+                // 翻訳と元のタグを表示
+                itemElement.innerHTML = `<strong>${item.translation || item.tag}</strong> (${item.tag})`;
+                
+                itemElement.addEventListener('click', function() {
+                    addTagToCategory(item.tag, container, container.closest('.category-card')._category);
+                    input.value = '';
+                    closeAllLists();
+                });
+                
+                itemElement.addEventListener('mouseover', function() {
+                    currentFocus = index;
+                    addActive(listContainer.getElementsByClassName('autocomplete-item'));
+                });
+                
+                listContainer.appendChild(itemElement);
+            });
+            
+            this.parentNode.appendChild(listContainer);
+        });
+        
+        input.addEventListener('keydown', function(e) {
+            const listContainer = document.getElementById('autocomplete-list');
+            if (!listContainer) return;
+            
+            const items = listContainer.getElementsByClassName('autocomplete-item');
+            if (items.length === 0) return;
+            
+            if (e.keyCode === 40) { // 下矢印
+                currentFocus++;
+                addActive(items);
+            } else if (e.keyCode === 38) { // 上矢印
+                currentFocus--;
+                addActive(items);
+            } else if (e.keyCode === 13) { // Enter
+                e.preventDefault();
+                if (currentFocus > -1) {
+                    items[currentFocus].click();
+                }
+            } else if (e.keyCode === 27) { // Esc
+                closeAllLists();
+            }
+        });
+        
+        function addActive(items) {
+            if (!items) return;
+            removeActive(items);
+            if (currentFocus >= 0 && currentFocus < items.length) {
+                items[currentFocus].classList.add('autocomplete-active');
+            }
+        }
+        
+        function removeActive(items) {
+            for (let i = 0; i < items.length; i++) {
+                items[i].classList.remove('autocomplete-active');
+            }
+        }
+        
+        function closeAllLists() {
+            const lists = document.getElementsByClassName('autocomplete-items');
+            for (let i = 0; i < lists.length; i++) {
+                lists[i].parentNode.removeChild(lists[i]);
+            }
+            currentFocus = -1;
+        }
+        
+        // クリックでリストを閉じる
+        document.addEventListener('click', function(e) {
+            if (e.target !== input) {
+                closeAllLists();
+            }
+        });
     }
 
     function renderCategories(categories) {
@@ -159,6 +371,8 @@ function showProgress(current, total, message = '処理中...') {
         categoriesContainer.innerHTML = '';
         categories.forEach((category) => {
             const card = createCategoryCard(category);
+            // カテゴリオブジェクトへの参照を保存
+            card._category = category;
             categoriesContainer.appendChild(card);
         });
         updateEmptyStates();
@@ -250,16 +464,22 @@ function showProgress(current, total, message = '処理中...') {
         const cards = Array.from(categoriesContainer.querySelectorAll('.category-card'));
         return cards
             .map((card) => {
-                const { idInput, labelInput, textarea } = card._inputs || {};
-                if (!idInput || !labelInput || !textarea) {
+                const { idInput, labelInput, tagDisplayContainer } = card._inputs || {};
+                if (!idInput || !labelInput || !tagDisplayContainer) {
                     return null;
                 }
                 const id = idInput.value.trim();
                 const label = labelInput.value.trim();
-                const tags = textarea.value
-                    .split(/\r?\n/)
-                    .map((tag) => tag.trim())
-                    .filter((tag) => tag.length > 0);
+                
+                // タグ表示エリアからタグを収集
+                const tagElements = tagDisplayContainer.querySelectorAll('.tag-text');
+                const tags = Array.from(tagElements).map(el => {
+                    const text = el.textContent;
+                    // 翻訳がある場合は元のタグ名を抽出
+                    const match = text.match(/\(([^)]+)\)$/);
+                    return match ? match[1] : text;
+                });
+                
                 if (!id && tags.length === 0 && !label) {
                     return null;
                 }
@@ -331,8 +551,8 @@ function showProgress(current, total, message = '処理中...') {
         try {
             showStatus('データベースからタグを取得中...', 'success', 0);
             
-            // 人気タグを取得（既存の翻訳を除外）
-            const response = await fetch('/api/popular-tags?limit=1000&exclude_existing=true');
+            // 人気タグを取得（既存の翻訳を除外、オフセットとリミットを指定）
+            const response = await fetch(`/api/popular-tags?limit=${state.popularTagsLimit}&offset=${state.popularTagsOffset}&exclude_existing=true`);
             if (!response.ok) {
                 throw new Error('人気タグの取得に失敗しました');
             }
@@ -378,6 +598,9 @@ function showProgress(current, total, message = '処理中...') {
                 await new Promise(resolve => setTimeout(resolve, 10));
             }
             
+            // オフセットを更新（次回取得時に使用）
+            state.popularTagsOffset += state.popularTagsLimit;
+            
             updateEmptyStates();
             updateTranslationCount();
             showStatus(`${addedCount}件のタグを追加しました`, 'success', 3000);
@@ -396,6 +619,8 @@ function showProgress(current, total, message = '処理中...') {
         const category = { id: '', label: '', tags: [] };
         state.categories.push(category);
         const card = createCategoryCard(category);
+        // カテゴリオブジェクトへの参照を保存
+        card._category = category;
         categoriesContainer?.prepend(card);
         card.querySelector('input')?.focus();
         updateEmptyStates();

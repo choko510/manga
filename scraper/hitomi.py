@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -360,11 +360,66 @@ async def fetch_hitomi_data(session: aiohttp.ClientSession, url: str) -> Dict[st
     except Exception as e:
         raise ValueError(f"データ解析エラー: {str(e)}")
 
+def load_existing_galleries(galleries_file: str = "galleries.txt") -> Set[int]:
+    """
+    既存のギャラリーIDをgalleries.txtから読み込む
+    ファイルが存在しない場合はread_galleries.pyで生成する
+    
+    Args:
+        galleries_file: ギャラリーIDが保存されているファイルパス
+    
+    Returns:
+        既存のギャラリーIDのセット
+    """
+    existing_ids = set()
+    
+    # ファイルが存在しない場合はread_galleries.pyで生成
+    if not os.path.exists(galleries_file):
+        print(f"{galleries_file}が見つかりません。read_galleries.pyで生成します。")
+        try:
+            # read_galleries.pyの関数をインポートして実行
+            import sys
+            import importlib.util
+            
+            # read_galleries.pyのパスを取得
+            read_galleries_path = os.path.join(os.path.dirname(__file__), "read_galleries.py")
+            
+            # モジュールを動的にインポート
+            spec = importlib.util.spec_from_file_location("read_galleries", read_galleries_path)
+            read_galleries_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(read_galleries_module)
+            
+            # read_all_galleries関数を実行
+            read_galleries_module.read_all_galleries()
+            print(f"{galleries_file}を生成しました。")
+        except Exception as e:
+            print(f"{galleries_file}の生成中にエラーが発生しました: {e}")
+            return existing_ids
+    
+    # ファイルから既存のIDを読み込む
+    try:
+        with open(galleries_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and line.isdigit():
+                    existing_ids.add(int(line))
+        print(f"galleries.txtから {len(existing_ids)}件の既存IDを読み込みました")
+    except FileNotFoundError:
+        print(f"{galleries_file}が見つかりません。新規作成します。")
+    except Exception as e:
+        print(f"{galleries_file}の読み込み中にエラーが発生しました: {e}")
+    
+    return existing_ids
+
 async def download_all_popular_files() -> None:
     """
     すべての人気ランキングファイル（年、月、週、日）をダウンロードして
     それぞれの ID リストをテキストファイルに出力する
+    galleries.txtに既存のIDがある場合は重複を除外して出力する
     """
+    # 既存のギャラリーIDを読み込む
+    existing_ids = load_existing_galleries()
+    
     # 人気ランキングファイルの情報
     popular_files = [
         {"name": "all", "url": AllURL, "output": "all_ids.txt"},
@@ -385,12 +440,18 @@ async def download_all_popular_files() -> None:
             with reader:
                 ids = reader.read_all()
             
-            # テキストファイルに出力
+            # 既存IDとの重複のみを抽出
+            duplicate_ids = [id for id in ids if id in existing_ids]
+            filtered_count = len(duplicate_ids)
+            
+            # テキストファイルに出力（重複IDのみ）
             with open(file_info["output"], "w", encoding="utf-8") as f:
-                for id in ids:
+                for id in duplicate_ids:
                     f.write(f"{id}\n")
             
-            print(f"✓ {file_info['name']} ランキング: {len(ids)}件の ID を {file_info['output']} に出力しました")
+            print(f"✓ {file_info['name']} ランキング: {len(duplicate_ids)}件の重複IDを {file_info['output']} に出力しました")
+            if len(ids) - filtered_count > 0:
+                print(f"  (新規ID除外: {len(ids) - filtered_count}件)")
             
         except Exception as e:
             print(f"✗ {file_info['name']} ランキングのダウンロードに失敗しました: {e}")
