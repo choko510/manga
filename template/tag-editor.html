@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>タグ管理</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+    <style>
+        :root {
+            color-scheme: light dark;
+        }
+
+        body {
+            font-family: 'Roboto', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+            margin: 0;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+
+        .app-shell {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: rgba(15, 23, 42, 0.9);
+            border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+            backdrop-filter: blur(12px);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .header-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 16px 24px;
+        }
+
+        .title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            flex: 1;
+        }
+
+        nav {
+            display: flex;
+            gap: 12px;
+        }
+
+        .nav-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 16px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            font-weight: 500;
+            color: #e2e8f0;
+            background: rgba(148, 163, 184, 0.15);
+            text-decoration: none;
+            transition: background 0.2s ease, border-color 0.2s ease;
+        }
+
+        .nav-button:hover,
+        .nav-button:focus-visible {
+            background: rgba(148, 163, 184, 0.3);
+            border-color: rgba(148, 163, 184, 0.4);
+        }
+
+        .nav-button.active {
+            background: #38bdf8;
+            color: #0f172a;
+        }
+
+        main {
+            flex: 1;
+            padding: 32px 24px 48px;
+        }
+
+        .content-wrapper {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 32px;
+        }
+
+        .section {
+            background: rgba(15, 23, 42, 0.9);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 20px 50px rgba(15, 23, 42, 0.3);
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .section-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .section-actions {
+            margin-left: auto;
+            display: flex;
+            gap: 12px;
+        }
+
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 999px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            background: rgba(56, 189, 248, 0.15);
+            color: #38bdf8;
+            transition: background 0.2s ease, transform 0.2s ease;
+        }
+
+        .button:hover,
+        .button:focus-visible {
+            background: rgba(56, 189, 248, 0.3);
+            transform: translateY(-1px);
+        }
+
+        .button.primary {
+            background: linear-gradient(135deg, #38bdf8, #818cf8);
+            color: #0f172a;
+        }
+
+        .button.danger {
+            background: rgba(248, 113, 113, 0.2);
+            color: #f87171;
+        }
+
+        .button.secondary {
+            background: rgba(148, 163, 184, 0.15);
+            color: #cbd5f5;
+        }
+
+        .translations-toolbar {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .search-input {
+            flex: 1;
+            min-width: 200px;
+            padding: 10px 16px;
+            border-radius: 999px;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            background: rgba(15, 23, 42, 0.6);
+            color: inherit;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        thead th {
+            text-align: left;
+            font-weight: 600;
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.3);
+        }
+
+        tbody tr {
+            border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+            transition: background 0.2s ease;
+        }
+
+        tbody tr:hover {
+            background: rgba(148, 163, 184, 0.08);
+        }
+
+        td {
+            padding: 12px 16px;
+        }
+
+        .table-input {
+            width: 100%;
+            padding: 8px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            background: rgba(15, 23, 42, 0.6);
+            color: inherit;
+        }
+
+        .category-grid {
+            display: grid;
+            gap: 20px;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        }
+
+        .category-card {
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 14px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: rgba(15, 23, 42, 0.6);
+        }
+
+        .category-header {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .category-header input {
+            flex: 1;
+            min-width: 140px;
+        }
+
+        .category-header .id-input {
+            max-width: 140px;
+        }
+
+        .tag-textarea {
+            min-height: 120px;
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            background: rgba(15, 23, 42, 0.6);
+            color: inherit;
+            resize: vertical;
+        }
+
+        .helper-text {
+            font-size: 0.85rem;
+            color: rgba(226, 232, 240, 0.7);
+        }
+
+        .status-bar {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 20px;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            color: inherit;
+            box-shadow: 0 18px 35px rgba(15, 23, 42, 0.35);
+            min-width: 260px;
+            text-align: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+
+        .status-bar.visible {
+            opacity: 1;
+            pointer-events: auto;
+            transform: translate(-50%, -8px);
+        }
+
+        .status-bar.success {
+            border-color: rgba(56, 189, 248, 0.4);
+            color: #38bdf8;
+        }
+
+        .status-bar.error {
+            border-color: rgba(248, 113, 113, 0.4);
+            color: #f87171;
+        }
+
+        .empty-state {
+            border: 1px dashed rgba(148, 163, 184, 0.3);
+            border-radius: 12px;
+            padding: 32px;
+            text-align: center;
+            color: rgba(226, 232, 240, 0.6);
+        }
+
+        @media (max-width: 768px) {
+            .header-inner {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            nav {
+                width: 100%;
+                flex-wrap: wrap;
+            }
+
+            .section {
+                padding: 20px;
+            }
+
+            table {
+                display: block;
+                overflow-x: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-shell">
+        <header>
+            <div class="header-inner">
+                <div class="title">タグ管理</div>
+                <nav>
+                    <a href="/" class="nav-button">ホーム</a>
+                    <a href="/tags" class="nav-button">タグ</a>
+                    <a href="/recommendations" class="nav-button">おすすめ</a>
+                    <a href="/history" class="nav-button">履歴</a>
+                    <a href="/tag-editor" class="nav-button active">タグ管理</a>
+                </nav>
+            </div>
+        </header>
+        <main>
+            <div class="content-wrapper">
+                <section class="section" id="translationsSection">
+                    <div class="section-header">
+                        <div class="section-title">タグ翻訳</div>
+                        <div class="section-actions">
+                            <button class="button secondary" id="addTranslationButton">行を追加</button>
+                            <button class="button primary" id="saveTranslationsButton">翻訳を保存</button>
+                        </div>
+                    </div>
+                    <div class="translations-toolbar">
+                        <input type="search" class="search-input" id="translationSearch" placeholder="タグ名または翻訳で検索" aria-label="翻訳の検索" />
+                        <span id="translationCount"></span>
+                    </div>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width: 35%">タグ</th>
+                                    <th>翻訳</th>
+                                    <th style="width: 90px">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="translationsTableBody"></tbody>
+                        </table>
+                        <div class="empty-state" id="translationsEmptyState" hidden>
+                            登録された翻訳がありません。「行を追加」から新しい翻訳を作成してください。
+                        </div>
+                    </div>
+                </section>
+                <section class="section" id="categoriesSection">
+                    <div class="section-header">
+                        <div class="section-title">タグカテゴリ</div>
+                        <div class="section-actions">
+                            <button class="button secondary" id="addCategoryButton">カテゴリを追加</button>
+                            <button class="button primary" id="saveCategoriesButton">カテゴリを保存</button>
+                        </div>
+                    </div>
+                    <p class="helper-text">
+                        各カテゴリのタグは改行で区切って入力してください。翻訳は自動的に適用されます。
+                    </p>
+                    <div class="category-grid" id="categoriesContainer"></div>
+                    <div class="empty-state" id="categoriesEmptyState" hidden>
+                        カテゴリが登録されていません。「カテゴリを追加」から新しいカテゴリを作成してください。
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+    <div class="status-bar" id="statusBar" role="status" aria-live="polite"></div>
+    <script src="/static/tracking.js" defer></script>
+    <script src="/static/tag-editor.js" defer></script>
+</body>
+</html>
