@@ -197,52 +197,15 @@ RANKING_FILES = {
 
 async def _load_ranking_ids(ranking_type: str) -> List[int]:
     """
-    ランキング情報をデータベースまたはファイルから読み込む
+    ランキングデータファイルからギャラリーIDを読み込む
     ranking_type: 'daily', 'weekly', 'monthly', 'yearly', 'all_time'
     """
     if ranking_type not in RANKING_FILES:
         raise ValueError(f"Invalid ranking type: {ranking_type}")
-
-    async def _read_from_db() -> List[int]:
-        try:
-            async with get_db_session() as db:
-                stmt = text(
-                    """
-                    SELECT gallery_id
-                    FROM gallery_rankings
-                    WHERE ranking_type = :ranking_type
-                    ORDER BY score DESC, view_count DESC, last_updated DESC, gallery_id DESC
-                    """
-                )
-                result = await db.execute(stmt, {"ranking_type": ranking_type})
-                rows = result.fetchall()
-        except Exception as exc:
-            logger.warning("ランキングデータのDB読込に失敗: %s", exc)
-            return []
-
-        ids: List[int] = []
-        for row in rows:
-            try:
-                gallery_id = (
-                    row[0]
-                    if isinstance(row, (list, tuple))
-                    else row.gallery_id
-                    if hasattr(row, "gallery_id")
-                    else None
-                )
-                if isinstance(gallery_id, int):
-                    ids.append(gallery_id)
-            except Exception:
-                continue
-        return ids
-
-    db_ids = await _read_from_db()
-    if db_ids:
-        return db_ids
-
+    
     file_path = RANKING_FILES[ranking_type]
-
-    def _read_ids() -> List[int]:
+    
+    def _read_ids():
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return [int(line.strip()) for line in f if line.strip().isdigit()]
@@ -252,7 +215,7 @@ async def _load_ranking_ids(ranking_type: str) -> List[int]:
         except Exception as e:
             logger.error(f"ランキングファイル読み込みエラー: {e}")
             return []
-
+    
     return await asyncio.to_thread(_read_ids)
 
 
@@ -1606,10 +1569,7 @@ async def search_galleries_get(
                     
                     placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
                     params = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
-
-                    order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
-                    order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
-
+                    
                     query = f"""
                         SELECT
                             g.gallery_id,
@@ -1623,7 +1583,7 @@ async def search_galleries_get(
                             g.created_at_unix
                         FROM galleries AS g
                         WHERE g.gallery_id IN ({placeholders})
-                        ORDER BY {order_case}
+                        ORDER BY g.gallery_id DESC
                     """
                     
                     result = await db.execute(text(query), params)
@@ -2246,8 +2206,6 @@ async def get_rankings(
         async with get_db_session() as db:
             placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
             params = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
-            order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
-            order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
             
             # タグフィルタリング用のWHERE句を構築
             tag_filter_clause = ""
@@ -2272,7 +2230,7 @@ async def get_rankings(
                     g.created_at_unix
                 FROM galleries AS g
                 WHERE g.gallery_id IN ({placeholders}) {tag_filter_clause}
-                ORDER BY {order_case}
+                ORDER BY g.gallery_id DESC
             """
             
             result = await db.execute(text(query), params)
