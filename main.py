@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import Column, Computed, Integer, String, Text, select
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -173,6 +173,9 @@ def _build_headers(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
 TOKEN_SPLIT_RE = re.compile(r"[ \t\u3000\-\_/\.]+")
 _STATIC_FILE_CACHE: Dict[str, Tuple[float, str]] = {}
 
+TAG_TRANSLATIONS_FILE = Path("static/tag-translations.json")
+TAG_CATEGORIES_FILE = Path("static/tag-categories.json")
+
 
 def _load_static_file(path: str) -> str:
     """静的ファイルをキャッシュして返す"""
@@ -192,6 +195,30 @@ def _serve_cached_html(path: str) -> HTMLResponse:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=500, detail=f"{path} not found") from exc
     return HTMLResponse(content=content)
+
+
+async def _read_json_file(path: Path, default: Any) -> Any:
+    def _load() -> Any:
+        if not path.exists():
+            return default
+        content = path.read_text(encoding="utf-8")
+        if not content.strip():
+            return default
+        return json.loads(content)
+
+    try:
+        return await asyncio.to_thread(_load)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"Invalid JSON format in {path.name}") from exc
+
+
+async def _write_json_file(path: Path, data: Any, *, sort_keys: bool = False) -> None:
+    def _dump() -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(data, ensure_ascii=False, indent=4, sort_keys=sort_keys)
+        path.write_text(text + "\n", encoding="utf-8")
+
+    await asyncio.to_thread(_dump)
 
 class MultipartDownloadError(Exception):
     """Raised when multi-part download cannot be completed."""
@@ -1212,6 +1239,19 @@ class MultipartDownloadRequest(BaseModel):
     as_attachment: bool = False
     filename: Optional[str] = None
 
+class TagTranslationsUpdateRequest(BaseModel):
+    translations: Dict[str, str] = Field(default_factory=dict)
+
+
+class TagCategoryModel(BaseModel):
+    id: str
+    label: str
+    tags: List[str] = Field(default_factory=list)
+
+
+class TagCategoriesUpdateRequest(BaseModel):
+    categories: List[TagCategoryModel] = Field(default_factory=list)
+
 class SearchRequest(BaseModel):
     title: Optional[str] = None
     tag: Optional[str] = None
@@ -1272,6 +1312,11 @@ async def read_recommendations():
 @app.get("/history", response_class=HTMLResponse)
 async def read_history():
     return _serve_cached_html("template/history.html")
+
+
+@app.get("/tag-editor", response_class=HTMLResponse)
+async def read_tag_editor():
+    return _serve_cached_html("template/tag-editor.html")
 
 @app.post("/search")
 async def search_galleries_endpoint(request: SearchRequest):
@@ -1739,6 +1784,99 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
 @app.get("/tags", response_class=HTMLResponse)
 async def read_tags():
     return _serve_cached_html("template/tags.html")
+
+
+@app.get("/api/tag-translations")
+async def get_tag_translations() -> Dict[str, Any]:
+    data = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
+    if not isinstance(data, Mapping):
+        raise HTTPException(status_code=500, detail="タグ翻訳データの形式が正しくありません")
+
+    translations: Dict[str, str] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            continue
+        translations[key] = value if isinstance(value, str) else ""
+    return {"translations": translations}
+
+
+@app.post("/api/tag-translations")
+async def update_tag_translations(request: TagTranslationsUpdateRequest) -> Dict[str, Any]:
+    processed: Dict[str, str] = {}
+    seen: Set[str] = set()
+
+    for raw_key, raw_value in request.translations.items():
+        tag = (raw_key or "").strip()
+        if not tag:
+            continue
+        normalised = tag.lower()
+        if normalised in seen:
+            raise HTTPException(status_code=400, detail=f"タグが重複しています: {tag}")
+        seen.add(normalised)
+        translation = (raw_value or "").strip()
+        processed[tag] = translation
+
+    await _write_json_file(TAG_TRANSLATIONS_FILE, processed, sort_keys=True)
+    return {"status": "ok", "count": len(processed)}
+
+
+@app.get("/api/tag-categories")
+async def get_tag_categories() -> Dict[str, Any]:
+    data = await _read_json_file(TAG_CATEGORIES_FILE, [])
+    if not isinstance(data, list):
+        raise HTTPException(status_code=500, detail="タグカテゴリデータの形式が正しくありません")
+
+    categories: List[Dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, Mapping):
+            continue
+        raw_tags = item.get("tags", [])
+        if isinstance(raw_tags, list):
+            tags = [tag for tag in raw_tags if isinstance(tag, str)]
+        else:
+            tags = []
+        categories.append(
+            {
+                "id": str(item.get("id", "")),
+                "label": str(item.get("label", "")),
+                "tags": tags,
+            }
+        )
+
+    return {"categories": categories}
+
+
+@app.post("/api/tag-categories")
+async def update_tag_categories(request: TagCategoriesUpdateRequest) -> Dict[str, Any]:
+    processed: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+
+    for category in request.categories:
+        cat_id = category.id.strip()
+        if not cat_id:
+            raise HTTPException(status_code=400, detail="カテゴリIDを入力してください")
+        normalised_id = cat_id.lower()
+        if normalised_id in seen_ids:
+            raise HTTPException(status_code=400, detail=f"カテゴリIDが重複しています: {cat_id}")
+        seen_ids.add(normalised_id)
+
+        label = category.label.strip() or cat_id
+        deduped_tags: List[str] = []
+        seen_tags: Set[str] = set()
+        for raw_tag in category.tags:
+            tag = (raw_tag or "").strip()
+            if not tag:
+                continue
+            normalised_tag = tag.lower()
+            if normalised_tag in seen_tags:
+                continue
+            seen_tags.add(normalised_tag)
+            deduped_tags.append(tag)
+
+        processed.append({"id": cat_id, "label": label, "tags": deduped_tags})
+
+    await _write_json_file(TAG_CATEGORIES_FILE, processed)
+    return {"status": "ok", "count": len(processed)}
 
 # =========================
 # トラッキング系
