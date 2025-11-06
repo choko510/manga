@@ -291,6 +291,12 @@
             color: var(--text-secondary);
         }
 
+        .tag-description {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
         .tag-actions {
             display: flex;
             gap: 8px;
@@ -419,6 +425,7 @@
             tagToCategory: new Map(),
             fallbackCategoryId: null,
             collapsedCategories: new Set(),
+            tagUsageCache: null,
         };
 
         document.addEventListener('DOMContentLoaded', () => {
@@ -433,6 +440,41 @@
                 loadTags(true);
             })().catch((error) => console.error('初期化エラー', error));
         });
+
+        function normaliseTagValue(value) {
+            return (value || '').toString().trim().toLowerCase();
+        }
+
+        function refreshUsageCache() {
+            state.tagUsageCache = typeof MangaApp.getTagUsageCounts === 'function'
+                ? MangaApp.getTagUsageCounts()
+                : {};
+            return state.tagUsageCache;
+        }
+
+        function getUsageScore(tagName) {
+            const cache = state.tagUsageCache || refreshUsageCache();
+            const norm = normaliseTagValue(tagName);
+            const raw = cache[norm];
+            const numeric = Number.isFinite(raw) ? raw : Number.parseInt(raw, 10);
+            return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+        }
+
+        function sortTagsForGroup(items) {
+            const sorted = Array.isArray(items) ? [...items] : [];
+            sorted.sort((a, b) => {
+                const usageDiff = getUsageScore(b.tag) - getUsageScore(a.tag);
+                if (usageDiff !== 0) {
+                    return usageDiff;
+                }
+                const countDiff = (b.count || 0) - (a.count || 0);
+                if (countDiff !== 0) {
+                    return countDiff;
+                }
+                return (a.tag || '').localeCompare(b.tag || '');
+            });
+            return sorted;
+        }
 
         function setupEventHandlers() {
             const themeToggle = document.getElementById('themeToggle');
@@ -468,6 +510,11 @@
                 updateHiddenTagsSummary();
                 state.offset = 0;
                 loadTags(true);
+            });
+
+            document.addEventListener('manga:tag-usage-change', () => {
+                refreshUsageCache();
+                renderTags(state.allTags);
             });
         }
 
@@ -575,6 +622,8 @@
 
             container.innerHTML = '';
 
+            refreshUsageCache();
+
             if (!Array.isArray(allTags) || !allTags.length) {
                 document.getElementById('errorMessage').style.display = 'none';
                 return;
@@ -667,7 +716,7 @@
                 return [{
                     id: 'search',
                     label: '検索結果',
-                    items: allTags,
+                    items: sortTagsForGroup(allTags),
                 }];
             }
 
@@ -675,7 +724,7 @@
                 return [{
                     id: 'all',
                     label: 'すべてのタグ',
-                    items: allTags,
+                    items: sortTagsForGroup(allTags),
                 }];
             }
 
@@ -707,7 +756,13 @@
                 targetGroup.items.push(tagInfo);
             });
 
-            return Array.from(groupMap.values()).filter((group) => group.items.length);
+            return Array.from(groupMap.values())
+                .map((group) => ({
+                    id: group.id,
+                    label: group.label,
+                    items: sortTagsForGroup(group.items),
+                }))
+                .filter((group) => group.items.length);
         }
 
         function createTagCard(tagInfo) {
@@ -715,6 +770,9 @@
             card.className = 'tag-card';
             const tagName = tagInfo.tag || '';
             const jpName = MangaApp.translateTag(tagName);
+            const descriptionText = typeof MangaApp.getTagDescription === 'function'
+                ? MangaApp.getTagDescription(tagName)
+                : '';
 
             const title = document.createElement('h3');
             title.className = 'tag-name';
@@ -734,6 +792,9 @@
             searchButton.className = 'primary-button';
             searchButton.textContent = '検索';
             searchButton.addEventListener('click', () => {
+                if (typeof MangaApp.recordTagUsage === 'function') {
+                    MangaApp.recordTagUsage([tagName]);
+                }
                 window.location.href = `/?tag=${encodeURIComponent(tagName)}`;
             });
 
@@ -741,6 +802,9 @@
             addButton.className = 'ghost-button';
             addButton.textContent = '追加';
             addButton.addEventListener('click', () => {
+                if (typeof MangaApp.recordTagUsage === 'function') {
+                    MangaApp.recordTagUsage([tagName]);
+                }
                 state.selectedTags.add(tagName);
                 renderSelectedTags();
             });
@@ -765,6 +829,12 @@
             actions.appendChild(hideButton);
 
             card.appendChild(title);
+            if (descriptionText) {
+                const description = document.createElement('p');
+                description.className = 'tag-description';
+                description.textContent = descriptionText;
+                card.appendChild(description);
+            }
             card.appendChild(count);
             card.appendChild(actions);
             return card;

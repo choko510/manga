@@ -3,14 +3,17 @@
         hiddenTags: 'manga_hidden_tags',
         liked: 'manga_liked_galleries',
         history: 'manga_view_history',
-        theme: 'manga_theme'
+        theme: 'manga_theme',
+        tagUsage: 'manga_tag_usage'
     };
 
     let translationPromise = null;
     let translations = {};
     let hiddenTagSet = null;
     let likedSet = null;
+    let tagUsageMap = null;
     const galleryThumbnailCache = new Map();
+    const TAG_USAGE_LIMIT = 200;
 
     function normaliseTag(tag) {
         return (tag || '').toString().trim().toLowerCase();
@@ -29,8 +32,13 @@
             })
             .then((data) => {
                 translations = {};
-                Object.keys(data || {}).forEach((key) => {
-                    translations[normaliseTag(key)] = data[key];
+                Object.entries(data || {}).forEach(([key, value]) => {
+                    const norm = normaliseTag(key);
+                    if (!norm) {
+                        return;
+                    }
+                    const record = parseTranslationRecord(value);
+                    translations[norm] = record;
                 });
                 return translations;
             })
@@ -41,13 +49,44 @@
         return translationPromise;
     }
 
+    function parseTranslationRecord(value) {
+        if (value && typeof value === 'object') {
+            const translation = typeof value.translation === 'string' ? value.translation : '';
+            const description = typeof value.description === 'string' ? value.description : '';
+            return { translation, description };
+        }
+        if (typeof value === 'string') {
+            return { translation: value, description: '' };
+        }
+        return { translation: '', description: '' };
+    }
+
+    function getTagMetadata(tag) {
+        if (!tag) {
+            return { translation: '', description: '' };
+        }
+        const entry = translations[normaliseTag(tag)];
+        if (entry && typeof entry === 'object') {
+            return {
+                translation: typeof entry.translation === 'string' ? entry.translation : '',
+                description: typeof entry.description === 'string' ? entry.description : '',
+            };
+        }
+        return { translation: '', description: '' };
+    }
+
     function translateTag(tag) {
         if (!tag) return '';
-        const key = normaliseTag(tag);
-        if (translations[key]) {
-            return translations[key];
+        const metadata = getTagMetadata(tag);
+        return metadata.translation || tag;
+    }
+
+    function getTagDescription(tag) {
+        if (!tag) {
+            return '';
         }
-        return tag;
+        const metadata = getTagMetadata(tag);
+        return metadata.description || '';
     }
 
     function getHiddenTags() {
@@ -102,6 +141,15 @@
         document.dispatchEvent(new CustomEvent('manga:likes-change', {
             detail: { likes: Array.from(getLikedSet()) }
         }));
+    }
+
+    function replaceLikes(ids) {
+        if (Array.isArray(ids)) {
+            likedSet = new Set(ids);
+        } else {
+            likedSet = new Set();
+        }
+        persistLikes();
     }
 
     function isLiked(galleryId) {
@@ -409,9 +457,155 @@
         return nextTheme;
     }
 
+    function getTagUsageMap() {
+        if (tagUsageMap && typeof tagUsageMap === 'object') {
+            return tagUsageMap;
+        }
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.tagUsage);
+            if (!raw) {
+                tagUsageMap = {};
+            } else {
+                const parsed = JSON.parse(raw);
+                tagUsageMap = parsed && typeof parsed === 'object' ? pruneTagUsageMap(parsed) : {};
+            }
+        } catch (error) {
+            tagUsageMap = {};
+        }
+        return tagUsageMap;
+    }
+
+    function pruneTagUsageMap(map) {
+        const entries = Object.entries(map || {}).filter(([, value]) => {
+            const numeric = Number.isFinite(value) ? value : Number.parseInt(value, 10);
+            return Number.isFinite(numeric) && numeric > 0;
+        });
+        entries.sort((a, b) => {
+            const valueA = Number.isFinite(a[1]) ? a[1] : Number.parseInt(a[1], 10) || 0;
+            const valueB = Number.isFinite(b[1]) ? b[1] : Number.parseInt(b[1], 10) || 0;
+            return valueB - valueA;
+        });
+        const limited = entries.slice(0, TAG_USAGE_LIMIT);
+        const sanitised = {};
+        limited.forEach(([key, value]) => {
+            const numeric = Number.isFinite(value) ? value : Number.parseInt(value, 10) || 0;
+            if (numeric > 0) {
+                sanitised[key] = numeric;
+            }
+        });
+        return sanitised;
+    }
+
+    function persistTagUsage(map) {
+        tagUsageMap = map;
+        try {
+            localStorage.setItem(STORAGE_KEYS.tagUsage, JSON.stringify(map));
+        } catch (error) {
+            /* noop */
+        }
+    }
+
+    function dispatchTagUsageChange(map) {
+        document.dispatchEvent(new CustomEvent('manga:tag-usage-change', {
+            detail: { usage: { ...map } }
+        }));
+    }
+
+    function recordTagUsage(tags) {
+        const values = Array.isArray(tags) ? tags : [tags];
+        if (!values.length) {
+            return;
+        }
+        const baseMap = { ...getTagUsageMap() };
+        let changed = false;
+        values.forEach((value) => {
+            const norm = normaliseTag(value);
+            if (!norm) {
+                return;
+            }
+            const currentRaw = baseMap[norm];
+            const numeric = Number.isFinite(currentRaw) ? currentRaw : Number.parseInt(currentRaw, 10);
+            const current = Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+            baseMap[norm] = current + 1;
+            changed = true;
+        });
+        if (!changed) {
+            return;
+        }
+        const pruned = pruneTagUsageMap(baseMap);
+        persistTagUsage(pruned);
+        dispatchTagUsageChange(pruned);
+    }
+
+    function getTagUsageCounts() {
+        const map = getTagUsageMap();
+        const result = {};
+        Object.entries(map || {}).forEach(([key, value]) => {
+            const numeric = Number.isFinite(value) ? value : Number.parseInt(value, 10);
+            if (Number.isFinite(numeric) && numeric > 0) {
+                result[key] = numeric;
+            }
+        });
+        return result;
+    }
+
+    function replaceTagUsage(map) {
+        if (!map || typeof map !== 'object') {
+            persistTagUsage({});
+            dispatchTagUsageChange({});
+            return;
+        }
+        const base = {};
+        Object.entries(map).forEach(([key, value]) => {
+            const norm = normaliseTag(key);
+            const numeric = Number.isFinite(value) ? value : Number.parseInt(value, 10);
+            if (norm && Number.isFinite(numeric) && numeric > 0) {
+                base[norm] = numeric;
+            }
+        });
+        const pruned = pruneTagUsageMap(base);
+        persistTagUsage(pruned);
+        dispatchTagUsageChange(pruned);
+    }
+
+    function exportUserData() {
+        return {
+            history: getHistory(),
+            hidden_tags: getHiddenTags(),
+            likes: Array.from(getLikedSet()),
+            tag_usage: getTagUsageCounts(),
+        };
+    }
+
+    function importUserData(data) {
+        if (!data || typeof data !== 'object') {
+            return false;
+        }
+        let changed = false;
+        if (Array.isArray(data.history)) {
+            saveHistory(data.history);
+            changed = true;
+        }
+        if (Array.isArray(data.hidden_tags)) {
+            saveHiddenTags(data.hidden_tags);
+            changed = true;
+        }
+        if (Array.isArray(data.likes)) {
+            replaceLikes(data.likes);
+            changed = true;
+        }
+        if (data.tag_usage && typeof data.tag_usage === 'object') {
+            replaceTagUsage(data.tag_usage);
+            changed = true;
+        }
+        return changed;
+    }
+
     window.MangaApp = {
         ensureTranslations: loadTranslations,
         translateTag,
+        getTagDescription,
+        getTagMetadata,
         getHiddenTags,
         saveHiddenTags,
         isTagHidden,
@@ -430,5 +624,9 @@
         getThumbnailUrl,
         buildThumbnailStyle,
         fetchGalleryThumbnail,
+        recordTagUsage,
+        getTagUsageCounts,
+        exportUserData,
+        importUserData,
     };
 })();

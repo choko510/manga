@@ -163,6 +163,85 @@
             justify-content: flex-end;
         }
 
+        .transfer-section {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .transfer-grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            background: var(--bg-card);
+            border-radius: var(--radius-card);
+            padding: 20px;
+            box-shadow: var(--shadow-card);
+        }
+
+        .transfer-column {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .transfer-input {
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            border-radius: var(--radius-pill);
+            padding: 10px 16px;
+            background-color: var(--bg-card);
+            color: var(--text-primary);
+        }
+
+        .transfer-action {
+            align-self: flex-start;
+        }
+
+        .transfer-result {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .transfer-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .transfer-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .transfer-output {
+            padding: 8px 12px;
+            border-radius: 12px;
+            background-color: rgba(148, 163, 184, 0.15);
+            font-family: 'Roboto Mono', monospace;
+            word-break: break-all;
+        }
+
+        .transfer-status {
+            font-size: 13px;
+            min-height: 20px;
+            color: var(--text-secondary);
+        }
+
+        .transfer-status.success {
+            color: #22d3ee;
+        }
+
+        .transfer-status.error {
+            color: #f87171;
+        }
+
+        .transfer-hint {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
         .section-title {
             margin: 0;
             font-size: 1.4rem;
@@ -432,6 +511,41 @@
     </header>
 
     <main class="content-area">
+        <section class="transfer-section" id="transferSection">
+            <div class="section-header">
+                <h2 class="section-title">データ引き継ぎ</h2>
+                <div class="section-actions">
+                    <button id="generateTransferButton" class="ghost-button" type="button">引き継ぎコードを発行</button>
+                    <button id="copyTransferUrlButton" class="ghost-button" type="button" disabled>URLをコピー</button>
+                </div>
+            </div>
+            <div class="transfer-grid">
+                <div class="transfer-column">
+                    <label for="transferCodeInput">引き継ぎコード</label>
+                    <input id="transferCodeInput" class="transfer-input" type="text" placeholder="例: abc123de" autocomplete="off" inputmode="latin" />
+                    <button id="restoreFromCodeButton" class="primary-button transfer-action" type="button">コードから復元</button>
+                </div>
+                <div class="transfer-column">
+                    <div class="transfer-result" id="transferResult" hidden>
+                        <div class="transfer-field">
+                            <span class="transfer-label">発行されたコード</span>
+                            <code class="transfer-output" id="transferCodeDisplay"></code>
+                        </div>
+                        <div class="transfer-field">
+                            <span class="transfer-label">復元用URL</span>
+                            <span class="transfer-output" id="transferUrlDisplay"></span>
+                        </div>
+                        <div class="transfer-field">
+                            <span class="transfer-label">有効期限</span>
+                            <span class="transfer-output" id="transferExpiryDisplay"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <p class="transfer-hint">プライベートブラウザをご利用の場合は、コードまたはURLを保存して履歴や設定を引き継いでください。</p>
+            <div class="transfer-status" id="transferStatus" role="status" aria-live="polite"></div>
+        </section>
+
         <section class="continue-section" id="continueSection" aria-live="polite">
             <div class="section-header">
                 <h2 class="section-title">続きを読む</h2>

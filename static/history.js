@@ -317,6 +317,240 @@
         themeToggle.innerHTML = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
     }
 
+    function normaliseTransferCode(value) {
+        return (value || '').toString().trim().toLowerCase();
+    }
+
+    function setTransferStatus(elements, message, type = 'info') {
+        const status = elements.transferStatus;
+        if (!status) {
+            return;
+        }
+        status.textContent = message || '';
+        status.classList.remove('success', 'error');
+        if (type === 'success') {
+            status.classList.add('success');
+        } else if (type === 'error') {
+            status.classList.add('error');
+        }
+    }
+
+    function clearTransferResult(elements) {
+        if (elements.transferResult) {
+            elements.transferResult.hidden = true;
+        }
+        if (elements.transferCodeDisplay) {
+            elements.transferCodeDisplay.textContent = '';
+        }
+        if (elements.transferUrlDisplay) {
+            elements.transferUrlDisplay.textContent = '';
+        }
+        if (elements.transferExpiryDisplay) {
+            elements.transferExpiryDisplay.textContent = '';
+        }
+        if (elements.copyTransferUrlButton) {
+            elements.copyTransferUrlButton.disabled = true;
+            elements.copyTransferUrlButton.dataset.url = '';
+        }
+        setTransferStatus(elements, '');
+    }
+
+    function formatExpiry(value) {
+        if (!value) {
+            return '---';
+        }
+        try {
+            const date = new Date(value);
+            if (!Number.isNaN(date.getTime())) {
+                return date.toLocaleString('ja-JP');
+            }
+        } catch (error) {
+            /* ignore */
+        }
+        return value;
+    }
+
+    function showTransferResult(elements, data) {
+        if (!elements.transferResult) {
+            return;
+        }
+        const code = data?.code || '';
+        const restoreUrl = data?.restore_url || (code ? `${window.location.origin}/history?transfer=${encodeURIComponent(code)}` : '');
+        const expiry = data?.expires_at || '';
+
+        if (elements.transferCodeDisplay) {
+            elements.transferCodeDisplay.textContent = code;
+        }
+        if (elements.transferUrlDisplay) {
+            elements.transferUrlDisplay.textContent = restoreUrl;
+        }
+        if (elements.transferExpiryDisplay) {
+            elements.transferExpiryDisplay.textContent = formatExpiry(expiry);
+        }
+        if (elements.copyTransferUrlButton) {
+            elements.copyTransferUrlButton.disabled = !restoreUrl;
+            elements.copyTransferUrlButton.dataset.url = restoreUrl;
+        }
+        elements.transferResult.hidden = !(code || restoreUrl);
+    }
+
+    function toggleTransferLoading(elements, isLoading) {
+        const targets = [
+            elements.generateTransferButton,
+            elements.restoreFromCodeButton,
+            elements.copyTransferUrlButton,
+        ];
+        targets.forEach((button) => {
+            if (button) {
+                button.disabled = Boolean(isLoading);
+            }
+        });
+        if (!isLoading && elements.copyTransferUrlButton) {
+            const hasUrl = Boolean(elements.transferUrlDisplay?.textContent);
+            elements.copyTransferUrlButton.disabled = !hasUrl;
+        }
+    }
+
+    async function copyTransferUrl(elements) {
+        if (!elements.copyTransferUrlButton) {
+            return;
+        }
+        const url = elements.transferUrlDisplay?.textContent?.trim();
+        if (!url) {
+            setTransferStatus(elements, 'コピーできるURLがありません', 'error');
+            return;
+        }
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(url);
+            } else {
+                const temp = document.createElement('textarea');
+                temp.value = url;
+                temp.style.position = 'fixed';
+                temp.style.opacity = '0';
+                document.body.appendChild(temp);
+                temp.select();
+                document.execCommand('copy');
+                document.body.removeChild(temp);
+            }
+            setTransferStatus(elements, 'URLをコピーしました', 'success');
+        } catch (error) {
+            console.error('copy error', error);
+            setTransferStatus(elements, 'URLのコピーに失敗しました', 'error');
+        }
+    }
+
+    async function generateTransferSnapshot(elements) {
+        if (typeof MangaApp.exportUserData !== 'function') {
+            setTransferStatus(elements, 'エクスポート機能が利用できません', 'error');
+            return;
+        }
+        try {
+            toggleTransferLoading(elements, true);
+            clearTransferResult(elements);
+            setTransferStatus(elements, '引き継ぎデータを作成しています…');
+            const payload = MangaApp.exportUserData();
+            const response = await fetch('/api/history/snapshots', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!response.ok) {
+                throw new Error('引き継ぎコードの発行に失敗しました');
+            }
+            const data = await response.json();
+            const code = data?.code || '';
+            if (elements.transferCodeInput) {
+                elements.transferCodeInput.value = code;
+            }
+            showTransferResult(elements, {
+                code,
+                restore_url: data?.restore_url,
+                expires_at: data?.expires_at,
+            });
+            setTransferStatus(elements, '引き継ぎコードを発行しました', 'success');
+        } catch (error) {
+            console.error('snapshot error', error);
+            setTransferStatus(elements, error.message || '引き継ぎコードの発行に失敗しました', 'error');
+            clearTransferResult(elements);
+        } finally {
+            toggleTransferLoading(elements, false);
+        }
+    }
+
+    async function restoreFromCode(elements, state, code, options = {}) {
+        const normalised = normaliseTransferCode(code || elements.transferCodeInput?.value);
+        if (!normalised) {
+            setTransferStatus(elements, 'コードを入力してください', 'error');
+            return;
+        }
+        try {
+            toggleTransferLoading(elements, true);
+            setTransferStatus(elements, 'データを復元しています…');
+            const response = await fetch(`/api/history/snapshots/${encodeURIComponent(normalised)}`);
+            if (!response.ok) {
+                if (response.status === 404) {
+                    throw new Error('指定されたコードが見つかりませんでした');
+                }
+                if (response.status === 410) {
+                    throw new Error('スナップショットの有効期限が切れています');
+                }
+                throw new Error('データの復元に失敗しました');
+            }
+            const data = await response.json();
+            if (typeof MangaApp.importUserData === 'function') {
+                MangaApp.importUserData(data);
+            }
+            if (elements.transferCodeInput) {
+                elements.transferCodeInput.value = normalised;
+            }
+            showTransferResult(elements, {
+                code: normalised,
+                restore_url: `${window.location.origin}/history?transfer=${encodeURIComponent(normalised)}`,
+                expires_at: data?.expires_at,
+            });
+            state.selected.clear();
+            updateSelectionUI(elements, state);
+            renderHistory(elements, state);
+            const historyCount = Array.isArray(data?.history) ? data.history.length : 0;
+            const message = historyCount
+                ? `データを復元しました（履歴 ${historyCount} 件）`
+                : 'データを復元しました';
+            setTransferStatus(elements, message, 'success');
+        } catch (error) {
+            console.error('restore error', error);
+            setTransferStatus(elements, error.message || 'データの復元に失敗しました', 'error');
+        } finally {
+            toggleTransferLoading(elements, false);
+        }
+    }
+
+    function setupTransferHandlers(elements, state) {
+        if (elements.generateTransferButton) {
+            elements.generateTransferButton.addEventListener('click', () => {
+                generateTransferSnapshot(elements);
+            });
+        }
+        if (elements.restoreFromCodeButton) {
+            elements.restoreFromCodeButton.addEventListener('click', () => {
+                restoreFromCode(elements, state, elements.transferCodeInput?.value);
+            });
+        }
+        if (elements.transferCodeInput) {
+            elements.transferCodeInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    restoreFromCode(elements, state, elements.transferCodeInput.value);
+                }
+            });
+        }
+        if (elements.copyTransferUrlButton) {
+            elements.copyTransferUrlButton.addEventListener('click', () => {
+                copyTransferUrl(elements);
+            });
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         const state = {
             selected: new Set(),
@@ -331,6 +565,15 @@
             selectAllButton: document.getElementById('historySelectAllButton'),
             deleteSelectedButton: document.getElementById('historyDeleteSelectedButton'),
             themeToggle: document.getElementById('themeToggle'),
+            generateTransferButton: document.getElementById('generateTransferButton'),
+            copyTransferUrlButton: document.getElementById('copyTransferUrlButton'),
+            transferCodeInput: document.getElementById('transferCodeInput'),
+            restoreFromCodeButton: document.getElementById('restoreFromCodeButton'),
+            transferStatus: document.getElementById('transferStatus'),
+            transferResult: document.getElementById('transferResult'),
+            transferCodeDisplay: document.getElementById('transferCodeDisplay'),
+            transferUrlDisplay: document.getElementById('transferUrlDisplay'),
+            transferExpiryDisplay: document.getElementById('transferExpiryDisplay'),
         };
 
         MangaApp.applyThemeToDocument(document);
@@ -394,6 +637,23 @@
 
         const render = () => renderHistory(elements, state);
         render();
+
+        setupTransferHandlers(elements, state);
+        clearTransferResult(elements);
+
+        const params = new URLSearchParams(window.location.search);
+        const transferCode = params.get('transfer');
+        if (transferCode) {
+            if (elements.transferCodeInput) {
+                elements.transferCodeInput.value = transferCode;
+            }
+            restoreFromCode(elements, state, transferCode).finally(() => {
+                params.delete('transfer');
+                const newQuery = params.toString();
+                const newUrl = `${window.location.pathname}${newQuery ? `?${newQuery}` : ''}${window.location.hash}`;
+                window.history.replaceState({}, '', newUrl);
+            });
+        }
 
         document.addEventListener('manga:history-change', render);
         document.addEventListener('manga:theme-change', (event) => {
