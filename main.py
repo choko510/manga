@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 import aiohttp
@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, Computed, Integer, String, Text, select
+from sqlalchemy import Column, Computed, Index, Integer, String, Text, select
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -22,6 +22,8 @@ import re
 import shlex
 import json
 import time
+import secrets
+import string
 from datetime import datetime, timedelta
 from lib import ImageUriResolver
 import logging
@@ -140,6 +142,20 @@ class UserEvent(TrackingBase):
     scroll_speed = Column(Integer)     # ピクセル/秒
     timestamp = Column(String)
 
+
+class UserSnapshot(TrackingBase):
+    __tablename__ = 'user_snapshots'
+
+    code = Column(String, primary_key=True)
+    payload = Column(Text, nullable=False)
+    created_at = Column(String, nullable=False)
+    expires_at = Column(String, nullable=False)
+    last_accessed = Column(String, nullable=False)
+
+    __table_args__ = (
+        Index('idx_user_snapshots_expires_at', 'expires_at'),
+    )
+
 # ---- ランキング ----
 class GalleryRanking(Base):
     __tablename__ = 'gallery_rankings'
@@ -185,6 +201,58 @@ _STATIC_FILE_CACHE: Dict[str, Tuple[float, str]] = {}
 
 TAG_TRANSLATIONS_FILE = Path("static/tag-translations.json")
 TAG_CATEGORIES_FILE = Path("static/tag-categories.json")
+SNAPSHOT_EXPIRY_DAYS = 30
+
+
+def _generate_snapshot_code(length: int = 8) -> str:
+    alphabet = string.ascii_lowercase + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _normalise_tag(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _sanitize_snapshot_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not isinstance(history, list):
+        return []
+    sanitized: List[Dict[str, Any]] = []
+    for entry in history[:200]:
+        if isinstance(entry, Mapping):
+            sanitized.append(dict(entry))
+    return sanitized
+
+
+def _sanitize_string_list(values: List[str]) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    result: List[str] = []
+    for item in values:
+        if isinstance(item, str):
+            cleaned = item.strip()
+            if cleaned:
+                result.append(cleaned)
+        elif isinstance(item, (int, float)):
+            result.append(str(item))
+    return result[:200]
+
+
+def _sanitize_tag_usage(usage: Dict[str, int]) -> Dict[str, int]:
+    if not isinstance(usage, Mapping):
+        return {}
+    sanitized: Dict[str, int] = {}
+    for key, value in usage.items():
+        normalised = _normalise_tag(str(key))
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            count = 0
+        if normalised and count > 0:
+            sanitized[normalised] = count
+    if len(sanitized) <= 200:
+        return sanitized
+    sorted_items = sorted(sanitized.items(), key=lambda item: item[1], reverse=True)[:200]
+    return {key: value for key, value in sorted_items}
 
 # ランキングデータファイル
 RANKING_FILES = {
@@ -1340,7 +1408,7 @@ class MultipartDownloadRequest(BaseModel):
     filename: Optional[str] = None
 
 class TagTranslationsUpdateRequest(BaseModel):
-    translations: Dict[str, str] = Field(default_factory=dict)
+    translations: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TagCategoryModel(BaseModel):
@@ -1351,6 +1419,21 @@ class TagCategoryModel(BaseModel):
 
 class TagCategoriesUpdateRequest(BaseModel):
     categories: List[TagCategoryModel] = Field(default_factory=list)
+
+
+class SnapshotCreateRequest(BaseModel):
+    history: List[Dict[str, Any]] = Field(default_factory=list)
+    hidden_tags: List[str] = Field(default_factory=list)
+    likes: List[str] = Field(default_factory=list)
+    tag_usage: Dict[str, int] = Field(default_factory=dict)
+
+
+class SnapshotDataResponse(BaseModel):
+    history: List[Dict[str, Any]] = Field(default_factory=list)
+    hidden_tags: List[str] = Field(default_factory=list)
+    likes: List[str] = Field(default_factory=list)
+    tag_usage: Dict[str, int] = Field(default_factory=dict)
+    expires_at: Optional[str] = None
 
 class SearchRequest(BaseModel):
     title: Optional[str] = None
@@ -1996,17 +2079,26 @@ async def get_tag_translations() -> Dict[str, Any]:
     if not isinstance(data, Mapping):
         raise HTTPException(status_code=500, detail="タグ翻訳データの形式が正しくありません")
 
-    translations: Dict[str, str] = {}
+    translations: Dict[str, Dict[str, str]] = {}
     for key, value in data.items():
         if not isinstance(key, str):
             continue
-        translations[key] = value if isinstance(value, str) else ""
+        translation = ""
+        description = ""
+        if isinstance(value, Mapping):
+            raw_translation = value.get("translation", "")
+            raw_description = value.get("description", "")
+            translation = str(raw_translation).strip()
+            description = str(raw_description).strip()
+        elif isinstance(value, str):
+            translation = value.strip()
+        translations[key] = {"translation": translation, "description": description}
     return {"translations": translations}
 
 
 @app.post("/api/tag-translations")
 async def update_tag_translations(request: TagTranslationsUpdateRequest) -> Dict[str, Any]:
-    processed: Dict[str, str] = {}
+    processed: Dict[str, Dict[str, str]] = {}
     seen: Set[str] = set()
 
     for raw_key, raw_value in request.translations.items():
@@ -2017,8 +2109,23 @@ async def update_tag_translations(request: TagTranslationsUpdateRequest) -> Dict
         if normalised in seen:
             raise HTTPException(status_code=400, detail=f"タグが重複しています: {tag}")
         seen.add(normalised)
-        translation = (raw_value or "").strip()
-        processed[tag] = translation
+
+        translation = ""
+        description = ""
+        if isinstance(raw_value, Mapping):
+            translation = str(raw_value.get("translation", "")).strip()
+            description = str(raw_value.get("description", "")).strip()
+        else:
+            translation = str(raw_value or "").strip()
+
+        entry: Dict[str, str] = {}
+        if translation:
+            entry["translation"] = translation
+        else:
+            entry["translation"] = ""
+        if description:
+            entry["description"] = description
+        processed[tag] = entry
 
     await _write_json_file(TAG_TRANSLATIONS_FILE, processed, sort_keys=True)
     return {"status": "ok", "count": len(processed)}
@@ -2081,6 +2188,126 @@ async def update_tag_categories(request: TagCategoriesUpdateRequest) -> Dict[str
 
     await _write_json_file(TAG_CATEGORIES_FILE, processed)
     return {"status": "ok", "count": len(processed)}
+
+# =========================
+# ユーザーデータ引き継ぎ
+# =========================
+
+
+async def _store_snapshot(db: AsyncSession, payload: Dict[str, Any], *, code: Optional[str] = None) -> UserSnapshot:
+    now = datetime.utcnow()
+    created_at = now.isoformat()
+    expires_at = (now + timedelta(days=SNAPSHOT_EXPIRY_DAYS)).isoformat()
+    payload_json = json.dumps(payload, ensure_ascii=False)
+
+    snapshot_code = _normalise_tag(code or "")
+    if snapshot_code:
+        stmt = select(UserSnapshot).where(UserSnapshot.code == snapshot_code)
+        result = await db.execute(stmt)
+        existing = result.scalars().first()
+    else:
+        existing = None
+
+    if existing:
+        existing.payload = payload_json
+        existing.last_accessed = created_at
+        existing.expires_at = expires_at
+        await db.commit()
+        await db.refresh(existing)
+        return existing
+
+    for _ in range(5):
+        snapshot_code = _generate_snapshot_code()
+        stmt = select(UserSnapshot).where(UserSnapshot.code == snapshot_code)
+        result = await db.execute(stmt)
+        if result.scalar() is None:
+            break
+    else:
+        raise HTTPException(status_code=500, detail="引き継ぎコードの生成に失敗しました")
+
+    snapshot = UserSnapshot(
+        code=snapshot_code,
+        payload=payload_json,
+        created_at=created_at,
+        expires_at=expires_at,
+        last_accessed=created_at,
+    )
+    db.add(snapshot)
+    await db.commit()
+    await db.refresh(snapshot)
+    return snapshot
+
+
+@app.post("/api/history/snapshots")
+async def create_history_snapshot(request: SnapshotCreateRequest, http_request: Request) -> Dict[str, Any]:
+    payload = {
+        "version": 1,
+        "history": _sanitize_snapshot_history(request.history),
+        "hidden_tags": _sanitize_string_list(request.hidden_tags),
+        "likes": _sanitize_string_list(request.likes),
+        "tag_usage": _sanitize_tag_usage(request.tag_usage),
+    }
+
+    try:
+        async with get_tracking_db_session() as db:
+            snapshot = await _store_snapshot(db, payload)
+            base_url = str(http_request.base_url).rstrip('/')
+            restore_url = f"{base_url}/history?transfer={snapshot.code}"
+            return {
+                "status": "ok",
+                "code": snapshot.code,
+                "restore_url": restore_url,
+                "expires_at": snapshot.expires_at,
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"スナップショットの保存に失敗しました: {exc}") from exc
+
+
+@app.get("/api/history/snapshots/{code}")
+async def load_history_snapshot(code: str) -> SnapshotDataResponse:
+    normalised = _normalise_tag(code)
+    if not normalised:
+        raise HTTPException(status_code=400, detail="コードが不正です")
+
+    try:
+        async with get_tracking_db_session() as db:
+            stmt = select(UserSnapshot).where(UserSnapshot.code == normalised)
+            result = await db.execute(stmt)
+            snapshot = result.scalars().first()
+            if not snapshot:
+                raise HTTPException(status_code=404, detail="スナップショットが見つかりません")
+
+            try:
+                payload = json.loads(snapshot.payload)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=500, detail="スナップショットデータが破損しています") from exc
+
+            expires_at = snapshot.expires_at
+            if expires_at:
+                try:
+                    expiry = datetime.fromisoformat(expires_at)
+                    if expiry < datetime.utcnow():
+                        raise HTTPException(status_code=410, detail="スナップショットの有効期限が切れています")
+                except ValueError:
+                    pass
+
+            snapshot.last_accessed = datetime.utcnow().isoformat()
+            await db.commit()
+
+            data = SnapshotDataResponse(
+                history=_sanitize_snapshot_history(payload.get("history", [])),
+                hidden_tags=_sanitize_string_list(payload.get("hidden_tags", [])),
+                likes=_sanitize_string_list(payload.get("likes", [])),
+                tag_usage=_sanitize_tag_usage(payload.get("tag_usage", {})),
+                expires_at=expires_at,
+            )
+            return data
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"スナップショットの読み込みに失敗しました: {exc}") from exc
 
 # =========================
 # トラッキング系

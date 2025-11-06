@@ -8,6 +8,17 @@
     let cardObserver = null;
     const searchCache = new Map();
 
+    function extractTagsFromQuery(query) {
+        if (!query) {
+            return [];
+        }
+        return query
+            .split(/[,\s]+/)
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0)
+            .map((value) => (value.startsWith('-') ? value.slice(1) : value));
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         const elements = {
             searchInput: document.getElementById('searchInput'),
@@ -272,6 +283,13 @@
         try {
             const data = await fetchSearchResults(currentQuery, currentAfterCreatedAt, currentMinPages, currentMaxPages, sortBy);
             const { results, hasMore, nextAfterCreatedAt } = data;
+
+            if (reset && typeof MangaApp.recordTagUsage === 'function' && currentQuery) {
+                const tags = extractTagsFromQuery(currentQuery);
+                if (tags.length) {
+                    MangaApp.recordTagUsage(tags);
+                }
+            }
 
             if (reset && results.length === 0) {
                 elements.cardGrid.innerHTML = '<p>検索結果が見つかりませんでした。</p>';

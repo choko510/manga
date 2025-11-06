@@ -52,7 +52,7 @@ function showProgress(current, total, message = '処理中...') {
         translationCount.textContent = `${visibleRows} 件表示 / 全 ${state.translations.length} 件`;
     }
 
-    function createTranslationRow(entry = { tag: '', translation: '' }) {
+    function createTranslationRow(entry = { tag: '', translation: '', description: '' }) {
         const tr = document.createElement('tr');
         tr.dataset.tag = entry.tag || '';
 
@@ -64,6 +64,7 @@ function showProgress(current, total, message = '処理中...') {
         tagInput.placeholder = 'タグ (英語)';
         tagInput.addEventListener('input', () => {
             tr.dataset.tag = tagInput.value;
+            entry.tag = tagInput.value;
         });
         tagCell.appendChild(tagInput);
 
@@ -73,7 +74,21 @@ function showProgress(current, total, message = '処理中...') {
         translationInput.className = 'table-input';
         translationInput.value = entry.translation || '';
         translationInput.placeholder = '翻訳 (日本語)';
+        translationInput.addEventListener('input', () => {
+            entry.translation = translationInput.value;
+        });
         translationCell.appendChild(translationInput);
+
+        const descriptionCell = document.createElement('td');
+        const descriptionInput = document.createElement('input');
+        descriptionInput.type = 'text';
+        descriptionInput.className = 'table-input';
+        descriptionInput.value = entry.description || '';
+        descriptionInput.placeholder = '説明 (任意)';
+        descriptionInput.addEventListener('input', () => {
+            entry.description = descriptionInput.value;
+        });
+        descriptionCell.appendChild(descriptionInput);
 
         const actionCell = document.createElement('td');
         const deleteButton = document.createElement('button');
@@ -90,9 +105,10 @@ function showProgress(current, total, message = '処理中...') {
 
         tr.appendChild(tagCell);
         tr.appendChild(translationCell);
+        tr.appendChild(descriptionCell);
         tr.appendChild(actionCell);
 
-        tr._inputs = { tagInput, translationInput };
+        tr._inputs = { tagInput, translationInput, descriptionInput };
         return tr;
     }
 
@@ -204,21 +220,34 @@ function showProgress(current, total, message = '処理中...') {
         return card;
     }
 
+    function getTagMetadata(tag) {
+        const normalised = normaliseTag(tag);
+        const entry = state.translations.find((t) => normaliseTag(t.tag) === normalised);
+        if (entry) {
+            return {
+                translation: entry.translation || '',
+                description: entry.description || '',
+            };
+        }
+        return { translation: '', description: '' };
+    }
+
     function createTagElement(tag) {
         const tagElement = document.createElement('div');
         tagElement.className = 'tag-element';
-        
+
         const tagText = document.createElement('span');
         tagText.className = 'tag-text';
-        
-        // 翻訳を適用して表示
-        const translation = getTagTranslation(tag);
+
+        const metadata = getTagMetadata(tag);
+        const translation = metadata.translation;
+        const description = metadata.description;
         if (translation) {
             tagText.textContent = `${translation} (${tag})`;
-            tagElement.title = `${tag} - ${translation}`;
+            tagElement.title = description ? `${tag} - ${translation}\n${description}` : `${tag} - ${translation}`;
         } else {
             tagText.textContent = tag;
-            tagElement.title = tag;
+            tagElement.title = description ? `${tag}\n${description}` : tag;
         }
         
         const removeButton = document.createElement('button');
@@ -234,18 +263,14 @@ function showProgress(current, total, message = '処理中...') {
         return tagElement;
     }
 
-    function getTagTranslation(tag) {
-        const translation = state.translations.find(t => normaliseTag(t.tag) === normaliseTag(tag));
-        return translation ? translation.translation : '';
-    }
-
     function addTagToCategory(tag, container, category) {
         // 重複チェック
         const existingTags = Array.from(container.querySelectorAll('.tag-text')).map(el =>
             el.textContent.split(' (')[0] // 翻訳がある場合は翻訳部分のみ取得
         );
-        
-        const translation = getTagTranslation(tag);
+
+        const metadata = getTagMetadata(tag);
+        const translation = metadata.translation;
         const displayText = translation ? `${translation} (${tag})` : tag;
         
         if (existingTags.includes(displayText)) {
@@ -269,18 +294,24 @@ function showProgress(current, total, message = '処理中...') {
         input.addEventListener('input', function() {
             const value = this.value.trim();
             closeAllLists();
-            
+
             if (!value) return;
-            
+
             // 利用可能なタグ（既に追加されているものを除く）
             const existingTags = Array.from(container.querySelectorAll('.tag-text')).map(el =>
                 el.textContent.split(' (')[1]?.replace(')', '') || el.textContent
             );
-            
+
+            const searchLower = value.toLowerCase();
             const availableTags = state.translations
                 .filter(t => !existingTags.includes(t.tag))
-                .filter(t => t.tag.toLowerCase().includes(value.toLowerCase()) ||
-                            t.translation.toLowerCase().includes(value.toLowerCase()))
+                .filter(t => {
+                    const translation = (t.translation || '').toLowerCase();
+                    const description = (t.description || '').toLowerCase();
+                    return t.tag.toLowerCase().includes(searchLower) ||
+                        translation.includes(searchLower) ||
+                        description.includes(searchLower);
+                })
                 .slice(0, 10); // 最大10件まで表示
                 
             if (availableTags.length === 0) return;
@@ -292,9 +323,10 @@ function showProgress(current, total, message = '処理中...') {
             availableTags.forEach((item, index) => {
                 const itemElement = document.createElement('div');
                 itemElement.className = 'autocomplete-item';
-                
-                // 翻訳と元のタグを表示
-                itemElement.innerHTML = `<strong>${item.translation || item.tag}</strong> (${item.tag})`;
+
+                const primary = item.translation || item.tag;
+                const description = item.description ? `<div class="autocomplete-desc">${item.description}</div>` : '';
+                itemElement.innerHTML = `<strong>${primary}</strong> (${item.tag})${description}`;
                 
                 itemElement.addEventListener('click', function() {
                     addTagToCategory(item.tag, container, container.closest('.category-card')._category);
@@ -393,11 +425,12 @@ function showProgress(current, total, message = '処理中...') {
         const keyword = (translationSearchInput?.value || '').toLowerCase();
         if (!translationsTableBody) return;
         translationsTableBody.querySelectorAll('tr').forEach((row) => {
-            const { tagInput, translationInput } = row._inputs || {};
+            const { tagInput, translationInput, descriptionInput } = row._inputs || {};
             if (!tagInput || !translationInput) return;
             const tagText = tagInput.value.toLowerCase();
             const translationText = translationInput.value.toLowerCase();
-            const match = !keyword || tagText.includes(keyword) || translationText.includes(keyword);
+            const descriptionText = descriptionInput ? descriptionInput.value.toLowerCase() : '';
+            const match = !keyword || tagText.includes(keyword) || translationText.includes(keyword) || descriptionText.includes(keyword);
             row.hidden = !match;
         });
         updateTranslationCount();
@@ -417,10 +450,17 @@ function showProgress(current, total, message = '処理中...') {
             }
             const translationsData = await translationsResponse.json();
             const categoriesData = await categoriesResponse.json();
-            state.translations = Object.entries(translationsData.translations || {}).map(([tag, translation]) => ({
-                tag,
-                translation: translation ?? '',
-            }));
+            state.translations = Object.entries(translationsData.translations || {}).map(([tag, value]) => {
+                let translation = '';
+                let description = '';
+                if (value && typeof value === 'object') {
+                    translation = value.translation || '';
+                    description = value.description || '';
+                } else if (typeof value === 'string') {
+                    translation = value;
+                }
+                return { tag, translation, description };
+            });
             state.categories = Array.isArray(categoriesData.categories)
                 ? categoriesData.categories.map((item) => ({
                       id: item.id || '',
@@ -442,10 +482,11 @@ function showProgress(current, total, message = '処理中...') {
         const result = {};
         const duplicates = new Map();
         for (const row of rows) {
-            const { tagInput, translationInput } = row._inputs || {};
+            const { tagInput, translationInput, descriptionInput } = row._inputs || {};
             if (!tagInput || !translationInput) continue;
             const rawTag = tagInput.value.trim();
             const rawTranslation = translationInput.value.trim();
+            const rawDescription = descriptionInput ? descriptionInput.value.trim() : '';
             if (!rawTag) {
                 continue;
             }
@@ -454,7 +495,10 @@ function showProgress(current, total, message = '処理中...') {
                 throw new Error(`重複しているタグがあります: "${rawTag}" と "${duplicates.get(normalised)}"`);
             }
             duplicates.set(normalised, rawTag);
-            result[rawTag] = rawTranslation;
+            result[rawTag] = {
+                translation: rawTranslation,
+                description: rawDescription,
+            };
         }
         return result;
     }
@@ -537,7 +581,7 @@ function showProgress(current, total, message = '処理中...') {
     }
 
     addTranslationButton?.addEventListener('click', () => {
-        const entry = { tag: '', translation: '' };
+        const entry = { tag: '', translation: '', description: '' };
         state.translations.push(entry);
         const row = createTranslationRow(entry);
         translationsTableBody?.prepend(row);
@@ -584,7 +628,8 @@ function showProgress(current, total, message = '処理中...') {
                 const tagInfo = newTags[i];
                 const entry = {
                     tag: tagInfo.tag,
-                    translation: '' // 翻訳は空のまま
+                    translation: '',
+                    description: '',
                 };
                 state.translations.push(entry);
                 const row = createTranslationRow(entry);
