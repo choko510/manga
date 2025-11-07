@@ -9,6 +9,8 @@
 
     let translationPromise = null;
     let translations = {};
+    const aliasIndex = new Map();
+    const canonicalTags = new Map();
     let hiddenTagSet = null;
     let likedSet = null;
     let tagUsageMap = null;
@@ -32,6 +34,8 @@
             })
             .then((data) => {
                 translations = {};
+                aliasIndex.clear();
+                canonicalTags.clear();
                 Object.entries(data || {}).forEach(([key, value]) => {
                     const norm = normaliseTag(key);
                     if (!norm) {
@@ -39,40 +43,83 @@
                     }
                     const record = parseTranslationRecord(value);
                     translations[norm] = record;
+                    canonicalTags.set(norm, key);
+                    registerAlias(key, key);
+                    if (record.translation) {
+                        registerAlias(record.translation, key);
+                    }
+                    if (Array.isArray(record.aliases)) {
+                        record.aliases.forEach((alias) => registerAlias(alias, key));
+                    }
                 });
                 return translations;
             })
             .catch(() => {
                 translations = {};
+                aliasIndex.clear();
+                canonicalTags.clear();
                 return translations;
             });
         return translationPromise;
+    }
+
+    function registerAlias(alias, canonicalTag) {
+        const norm = normaliseTag(alias);
+        if (!norm) {
+            return;
+        }
+        let targets = aliasIndex.get(norm);
+        if (!targets) {
+            targets = new Set();
+            aliasIndex.set(norm, targets);
+        }
+        targets.add(canonicalTag);
     }
 
     function parseTranslationRecord(value) {
         if (value && typeof value === 'object') {
             const translation = typeof value.translation === 'string' ? value.translation : '';
             const description = typeof value.description === 'string' ? value.description : '';
-            return { translation, description };
+            const aliases = [];
+            if (Array.isArray(value.aliases)) {
+                const seen = new Set();
+                value.aliases.forEach((alias) => {
+                    if (typeof alias !== 'string') {
+                        return;
+                    }
+                    const trimmed = alias.trim();
+                    if (!trimmed) {
+                        return;
+                    }
+                    const norm = normaliseTag(trimmed);
+                    if (!norm || seen.has(norm)) {
+                        return;
+                    }
+                    seen.add(norm);
+                    aliases.push(trimmed);
+                });
+            }
+            return { translation, description, aliases };
         }
         if (typeof value === 'string') {
-            return { translation: value, description: '' };
+            return { translation: value, description: '', aliases: [] };
         }
-        return { translation: '', description: '' };
+        return { translation: '', description: '', aliases: [] };
     }
 
     function getTagMetadata(tag) {
         if (!tag) {
-            return { translation: '', description: '' };
+            return { translation: '', description: '', aliases: [] };
         }
         const entry = translations[normaliseTag(tag)];
         if (entry && typeof entry === 'object') {
             return {
                 translation: typeof entry.translation === 'string' ? entry.translation : '',
                 description: typeof entry.description === 'string' ? entry.description : '',
+                aliases: Array.isArray(entry.aliases) ? entry.aliases : [],
             };
         }
-        return { translation: '', description: '' };
+        return { translation: '', description: '', aliases: [] };
     }
 
     function translateTag(tag) {
@@ -87,6 +134,64 @@
         }
         const metadata = getTagMetadata(tag);
         return metadata.description || '';
+    }
+
+    function getTagAliases(tag) {
+        if (!tag) {
+            return [];
+        }
+        const metadata = getTagMetadata(tag);
+        return Array.isArray(metadata.aliases) ? metadata.aliases : [];
+    }
+
+    function resolveTagKeyword(keyword) {
+        if (!keyword) {
+            return [];
+        }
+        const norm = normaliseTag(keyword);
+        if (!norm) {
+            return [];
+        }
+        const results = new Set();
+        const direct = canonicalTags.get(norm);
+        if (direct) {
+            results.add(direct);
+        }
+        const aliases = aliasIndex.get(norm);
+        if (aliases) {
+            aliases.forEach((value) => results.add(value));
+        }
+        return Array.from(results);
+    }
+
+    function resolveTagQueryString(query) {
+        if (!query) {
+            return '';
+        }
+        const segments = query.split(/[,\s]+/).filter((segment) => segment.length > 0);
+        const resolved = [];
+        const seen = new Set();
+        segments.forEach((segment) => {
+            const isNegated = segment.startsWith('-');
+            const base = isNegated ? segment.slice(1) : segment;
+            const replacements = resolveTagKeyword(base);
+            if (!replacements.length) {
+                if (!seen.has(segment)) {
+                    seen.add(segment);
+                    resolved.push(segment);
+                }
+                return;
+            }
+            replacements.forEach((replacement) => {
+                const token = isNegated ? `-${replacement}` : replacement;
+                if (seen.has(token)) {
+                    return;
+                }
+                seen.add(token);
+                resolved.push(token);
+            });
+        });
+        return resolved.join(' ');
     }
 
     function getHiddenTags() {
@@ -606,6 +711,9 @@
         translateTag,
         getTagDescription,
         getTagMetadata,
+        getTagAliases,
+        resolveTagKeyword,
+        resolveTagQueryString,
         getHiddenTags,
         saveHiddenTags,
         isTagHidden,

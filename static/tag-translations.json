@@ -1,105 +1,351 @@
 {
-    "ahegao": "アへ顔",
-    "anal": "アナル",
-    "anal intercourse": "アナルセックス",
-    "anthology": "アンソロジー",
-    "bbm": "太った男性",
-    "beauty mark": "ほくろ",
-    "big areolae": "でかい乳輪",
-    "big ass": "でかい尻",
-    "big breasts": "巨乳",
-    "big penis": "巨根",
-    "bikini": "ビキニ",
-    "blindfold": "目隠し",
-    "blowjob": "フェラチオ",
-    "bondage": "束縛",
-    "bukkake": "ぶっかけ",
-    "bunny girl": "バニーガール",
-    "catgirl": "キャットガール",
-    "cheating": "浮気",
-    "collar": "首輪",
-    "condom": "コンドーム",
-    "crossdressing": "女装",
-    "dark skin": "黒い肌",
-    "defloration": "",
-    "digital": "",
-    "dilf": "熟女モノ",
-    "double penetration": "二穴責め",
-    "elf": "エルフ",
-    "exhibitionism": "露出",
-    "females only": "女性のみ",
-    "femdom": "女性優位",
-    "ffm threesome": "女女男の3P",
-    "fingering": "手マン",
-    "first person perspective": "主観",
-    "footjob": "足コキ",
-    "full censorship": "性器完全検閲",
-    "full color": "フルカラー",
-    "furry": "ケモノ",
-    "futanari": "ふたなり",
-    "gag": "猿轡",
-    "glasses": "眼鏡",
-    "gloves": "手袋",
-    "group": "複数人",
-    "hairy": "毛深い",
-    "handjob": "手コキ",
-    "harem": "ハーレム",
-    "horns": "男性器",
-    "huge breasts": "爆乳",
-    "impregnation": "妊娠",
-    "incest": "近親相姦",
-    "inflation": "膨張",
-    "kemonomimi": "ケモミミ",
-    "kissing": "キス",
-    "lactation": "授乳",
-    "lingerie": "ランジェリー",
-    "loli": "ロリ",
-    "maid": "メイド",
-    "males only": "男性のみ",
-    "masturbation": "オナニー",
-    "milf": "熟女",
-    "mind break": "精神崩壊",
-    "mind control": "洗脳",
-    "mmf threesome": "男男女の3P",
-    "mosaic censorship": "モザイク有り",
-    "multi-work series": "シリーズもの",
-    "muscle": "筋肉",
-    "nakadashi": "中だし",
-    "netorare": "寝取られ",
-    "no penetration": "挿入なし",
-    "paizuri": "パイズリ",
-    "pantyhose": "パンティーストッキング",
-    "piercing": "ピアス",
-    "ponytail": "ポニーテール",
-    "pregnant": "処女喪失",
-    "rape": "レイプ",
-    "scat": "スカトロジー",
-    "schoolboy uniform": "男子学生の制服",
-    "schoolgirl uniform": "女子学生の制服",
-    "sex toys": "おもちゃ",
-    "shota": "ショタ",
-    "shotacon": "ショタコン",
-    "sister": "姉か妹",
-    "sole female": "女性単独",
-    "sole male": "男性単独",
-    "stockings": "ストッキング",
-    "stomach deformation": "腹ボコ",
-    "story arc": "ストーリーアーク",
-    "sweating": "発汗",
-    "swimsuit": "水着",
-    "tail": "しっぽ",
-    "tankoubon": "単行本",
-    "teacher": "教師",
-    "tentacles": "触手",
-    "tomgirl": "男の娘",
-    "tsundere": "ツンデレ",
-    "twintails": "ツインテール",
-    "uncensored": "無修正",
-    "unusual pupils": "珍しい瞳",
-    "urination": "排尿",
-    "variant set": "差分",
-    "very long hair": "長い髪",
-    "x-ray": "断面図",
-    "yaoi": "薔薇",
-    "yuri": "百合"
+    "ahegao": {
+        "aliases": [
+            "あへがお",
+            "変顔"
+        ],
+        "translation": "アへ顔"
+    },
+    "anal": {
+        "aliases": [
+            "アナニー"
+        ],
+        "translation": "アナル"
+    },
+    "anal intercourse": {
+        "translation": "アナルセックス"
+    },
+    "anthology": {
+        "translation": "アンソロジー"
+    },
+    "bbm": {
+        "translation": "太った男性"
+    },
+    "beauty mark": {
+        "translation": "ほくろ"
+    },
+    "big areolae": {
+        "translation": "でかい乳輪"
+    },
+    "big ass": {
+        "translation": "でかい尻"
+    },
+    "big breasts": {
+        "aliases": [
+            "oppai",
+            "おっぱい"
+        ],
+        "translation": "巨乳"
+    },
+    "big penis": {
+        "translation": "巨根"
+    },
+    "bikini": {
+        "aliases": [
+            "水着"
+        ],
+        "translation": "ビキニ"
+    },
+    "blindfold": {
+        "aliases": [
+            "アイマスク"
+        ],
+        "translation": "目隠し"
+    },
+    "blowjob": {
+        "translation": "フェラチオ"
+    },
+    "bondage": {
+        "aliases": [
+            "縛り",
+            "SM"
+        ],
+        "translation": "束縛"
+    },
+    "bukkake": {
+        "aliases": [
+            "ぶっかけ",
+            "ぶっ掛け"
+        ],
+        "translation": "ぶっかけ"
+    },
+    "bunny girl": {
+        "aliases": [
+            "バニー",
+            "うさぎコス"
+        ],
+        "translation": "バニーガール"
+    },
+    "catgirl": {
+        "aliases": [
+            "ネコミミ",
+            "猫耳"
+        ],
+        "translation": "キャットガール"
+    },
+    "cheating": {
+        "aliases": [
+            "寝取られ",
+            "不倫"
+        ],
+        "translation": "浮気"
+    },
+    "collar": {
+        "aliases": [
+            "チョーカー"
+        ],
+        "translation": "首輪"
+    },
+    "condom": {
+        "translation": "コンドーム"
+    },
+    "crossdressing": {
+        "translation": "女装"
+    },
+    "dark skin": {
+        "translation": "黒い肌"
+    },
+    "defloration": {
+        "translation": ""
+    },
+    "digital": {
+        "translation": ""
+    },
+    "dilf": {
+        "translation": "熟女モノ"
+    },
+    "double penetration": {
+        "translation": "二穴責め"
+    },
+    "elf": {
+        "translation": "エルフ"
+    },
+    "exhibitionism": {
+        "translation": "露出"
+    },
+    "females only": {
+        "translation": "女性のみ"
+    },
+    "femdom": {
+        "translation": "女性優位"
+    },
+    "ffm threesome": {
+        "translation": "女女男の3P"
+    },
+    "fingering": {
+        "translation": "手マン"
+    },
+    "first person perspective": {
+        "translation": "主観"
+    },
+    "footjob": {
+        "translation": "足コキ"
+    },
+    "full censorship": {
+        "translation": "性器完全検閲"
+    },
+    "full color": {
+        "translation": "フルカラー"
+    },
+    "furry": {
+        "translation": "ケモノ"
+    },
+    "futanari": {
+        "translation": "ふたなり"
+    },
+    "gag": {
+        "translation": "猿轡"
+    },
+    "glasses": {
+        "translation": "眼鏡"
+    },
+    "gloves": {
+        "translation": "手袋"
+    },
+    "group": {
+        "translation": "複数人"
+    },
+    "hairy": {
+        "translation": "毛深い"
+    },
+    "handjob": {
+        "translation": "手コキ"
+    },
+    "harem": {
+        "translation": "ハーレム"
+    },
+    "horns": {
+        "translation": "男性器"
+    },
+    "huge breasts": {
+        "translation": "爆乳"
+    },
+    "impregnation": {
+        "translation": "妊娠"
+    },
+    "incest": {
+        "translation": "近親相姦"
+    },
+    "inflation": {
+        "translation": "膨張"
+    },
+    "kemonomimi": {
+        "translation": "ケモミミ"
+    },
+    "kissing": {
+        "translation": "キス"
+    },
+    "lactation": {
+        "translation": "授乳"
+    },
+    "lingerie": {
+        "translation": "ランジェリー"
+    },
+    "loli": {
+        "translation": "ロリ"
+    },
+    "maid": {
+        "translation": "メイド"
+    },
+    "males only": {
+        "translation": "男性のみ"
+    },
+    "masturbation": {
+        "translation": "オナニー"
+    },
+    "milf": {
+        "translation": "熟女"
+    },
+    "mind break": {
+        "translation": "精神崩壊"
+    },
+    "mind control": {
+        "translation": "洗脳"
+    },
+    "mmf threesome": {
+        "translation": "男男女の3P"
+    },
+    "mosaic censorship": {
+        "translation": "モザイク有り"
+    },
+    "multi-work series": {
+        "translation": "シリーズもの"
+    },
+    "muscle": {
+        "translation": "筋肉"
+    },
+    "nakadashi": {
+        "translation": "中だし"
+    },
+    "netorare": {
+        "translation": "寝取られ"
+    },
+    "no penetration": {
+        "translation": "挿入なし"
+    },
+    "paizuri": {
+        "translation": "パイズリ"
+    },
+    "pantyhose": {
+        "translation": "パンティーストッキング"
+    },
+    "piercing": {
+        "translation": "ピアス"
+    },
+    "ponytail": {
+        "translation": "ポニーテール"
+    },
+    "pregnant": {
+        "translation": "処女喪失"
+    },
+    "rape": {
+        "translation": "レイプ"
+    },
+    "scat": {
+        "translation": "スカトロジー"
+    },
+    "schoolboy uniform": {
+        "translation": "男子学生の制服"
+    },
+    "schoolgirl uniform": {
+        "translation": "女子学生の制服"
+    },
+    "sex toys": {
+        "translation": "おもちゃ"
+    },
+    "shota": {
+        "translation": "ショタ"
+    },
+    "shotacon": {
+        "translation": "ショタコン"
+    },
+    "sister": {
+        "translation": "姉か妹"
+    },
+    "sole female": {
+        "translation": "女性単独"
+    },
+    "sole male": {
+        "translation": "男性単独"
+    },
+    "stockings": {
+        "translation": "ストッキング"
+    },
+    "stomach deformation": {
+        "translation": "腹ボコ"
+    },
+    "story arc": {
+        "translation": "ストーリーアーク"
+    },
+    "sweating": {
+        "translation": "発汗"
+    },
+    "swimsuit": {
+        "translation": "水着"
+    },
+    "tail": {
+        "translation": "しっぽ"
+    },
+    "tankoubon": {
+        "translation": "単行本"
+    },
+    "teacher": {
+        "translation": "教師"
+    },
+    "tentacles": {
+        "translation": "触手"
+    },
+    "tomgirl": {
+        "translation": "男の娘"
+    },
+    "tsundere": {
+        "translation": "ツンデレ"
+    },
+    "twintails": {
+        "translation": "ツインテール"
+    },
+    "uncensored": {
+        "translation": "無修正"
+    },
+    "unusual pupils": {
+        "translation": "珍しい瞳"
+    },
+    "urination": {
+        "translation": "排尿"
+    },
+    "variant set": {
+        "translation": "差分"
+    },
+    "very long hair": {
+        "translation": "長い髪"
+    },
+    "x-ray": {
+        "translation": "断面図"
+    },
+    "yaoi": {
+        "translation": "薔薇"
+    },
+    "yuri": {
+        "translation": "百合"
+    }
 }

@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import aiohttp
 import asyncio
@@ -200,6 +200,9 @@ TOKEN_SPLIT_RE = re.compile(r"[ \t\u3000\-\_/\.]+")
 _STATIC_FILE_CACHE: Dict[str, Tuple[float, str]] = {}
 
 TAG_TRANSLATIONS_FILE = Path("static/tag-translations.json")
+TAG_TRANSLATIONS_HISTORY_DIR = Path("data/tag-translations-history")
+TAG_TRANSLATIONS_VERSIONS_FILE = TAG_TRANSLATIONS_HISTORY_DIR / "versions.json"
+TAG_TRANSLATIONS_HISTORY_LIMIT = 100
 TAG_CATEGORIES_FILE = Path("static/tag-categories.json")
 SNAPSHOT_EXPIRY_DAYS = 30
 
@@ -253,6 +256,178 @@ def _sanitize_tag_usage(usage: Dict[str, int]) -> Dict[str, int]:
         return sanitized
     sorted_items = sorted(sanitized.items(), key=lambda item: item[1], reverse=True)[:200]
     return {key: value for key, value in sorted_items}
+
+
+class TagTranslationsState:
+    def __init__(self) -> None:
+        self._version: Optional[str] = None
+        self._condition = asyncio.Condition()
+
+    async def get_version(self) -> Optional[str]:
+        if self._version is None:
+            self._version = await _load_current_tag_translation_version()
+        return self._version
+
+    async def set_version(self, version: str) -> None:
+        self._version = version
+        async with self._condition:
+            self._condition.notify_all()
+
+    async def wait_for_update(self, since: Optional[str], timeout: float = 30.0) -> Tuple[Optional[str], bool]:
+        current = await self.get_version()
+        if current != since:
+            return current, True
+        try:
+            async with self._condition:
+                await asyncio.wait_for(self._condition.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
+        current = await self.get_version()
+        return current, current != since
+
+
+tag_translations_state = TagTranslationsState()
+tag_translations_lock = asyncio.Lock()
+
+
+def _sanitize_alias_list(values: Any) -> List[str]:
+    if isinstance(values, str):
+        candidates = [values]
+    elif isinstance(values, list):
+        candidates = values
+    else:
+        return []
+
+    result: List[str] = []
+    seen: Set[str] = set()
+    for item in candidates:
+        if isinstance(item, (int, float)):
+            candidate = str(item)
+        elif isinstance(item, str):
+            candidate = item
+        else:
+            continue
+        cleaned = candidate.strip()
+        if not cleaned:
+            continue
+        normalised = _normalise_tag(cleaned)
+        if not normalised or normalised in seen:
+            continue
+        seen.add(normalised)
+        result.append(cleaned)
+    return result[:50]
+
+
+def _normalize_translation_entry(value: Any) -> Dict[str, Any]:
+    translation = ""
+    description = ""
+    aliases: List[str] = []
+    if isinstance(value, Mapping):
+        translation = str(value.get("translation", "")).strip()
+        description = str(value.get("description", "")).strip()
+        aliases = _sanitize_alias_list(value.get("aliases", []))
+    elif isinstance(value, str):
+        translation = value.strip()
+    return {
+        "translation": translation,
+        "description": description,
+        "aliases": aliases,
+    }
+
+
+def _generate_tag_translation_version_id() -> str:
+    return datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+
+
+async def _load_tag_translation_versions() -> List[Dict[str, Any]]:
+    raw = await _read_json_file(TAG_TRANSLATIONS_VERSIONS_FILE, [])
+    if not isinstance(raw, list):
+        return []
+    versions: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        version = str(item.get("version", "")).strip()
+        created_at = str(item.get("created_at", "")).strip()
+        reason = str(item.get("reason", "")).strip()
+        auto = bool(item.get("auto", False))
+        restored_from = str(item.get("restored_from", "")).strip()
+        parent_version = str(item.get("parent_version", "")).strip()
+        if not version:
+            continue
+        entry: Dict[str, Any] = {"version": version}
+        if created_at:
+            entry["created_at"] = created_at
+        if reason:
+            entry["reason"] = reason
+        if parent_version:
+            entry["parent_version"] = parent_version
+        if restored_from:
+            entry["restored_from"] = restored_from
+        if auto:
+            entry["auto"] = True
+        versions.append(entry)
+    versions.sort(key=lambda item: item.get("created_at", "") or item["version"])
+    return versions[-TAG_TRANSLATIONS_HISTORY_LIMIT:]
+
+
+async def _write_tag_translation_versions(entries: List[Dict[str, Any]]) -> None:
+    await _write_json_file(TAG_TRANSLATIONS_VERSIONS_FILE, entries, sort_keys=True)
+
+
+async def _load_current_tag_translation_version() -> Optional[str]:
+    versions = await _load_tag_translation_versions()
+    if not versions:
+        return None
+    return versions[-1].get("version")
+
+
+async def _record_tag_translation_version(
+    data: Dict[str, Dict[str, Any]],
+    *,
+    reason: str,
+    auto: bool,
+    parent_version: Optional[str] = None,
+    restored_from: Optional[str] = None,
+) -> Dict[str, Any]:
+    TAG_TRANSLATIONS_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    version_id = _generate_tag_translation_version_id()
+    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    entry: Dict[str, Any] = {
+        "version": version_id,
+        "created_at": timestamp,
+        "reason": reason,
+    }
+    if auto:
+        entry["auto"] = True
+    if parent_version:
+        entry["parent_version"] = parent_version
+    if restored_from:
+        entry["restored_from"] = restored_from
+
+    versions = await _load_tag_translation_versions()
+    versions.append(entry)
+    versions = versions[-TAG_TRANSLATIONS_HISTORY_LIMIT:]
+
+    snapshot_path = TAG_TRANSLATIONS_HISTORY_DIR / f"{version_id}.json"
+    await _write_json_file(snapshot_path, data, sort_keys=True)
+    await _write_tag_translation_versions(versions)
+    await tag_translations_state.set_version(version_id)
+    return entry
+
+
+async def _ensure_tag_translation_history_initialized(
+    data: Dict[str, Dict[str, Any]]
+) -> Optional[str]:
+    versions = await _load_tag_translation_versions()
+    if versions:
+        return versions[-1].get("version")
+    entry = await _record_tag_translation_version(
+        data,
+        reason="initial",
+        auto=False,
+    )
+    return entry.get("version")
 
 # ランキングデータファイル
 RANKING_FILES = {
@@ -1409,6 +1584,13 @@ class MultipartDownloadRequest(BaseModel):
 
 class TagTranslationsUpdateRequest(BaseModel):
     translations: Dict[str, Any] = Field(default_factory=dict)
+    base_version: Optional[str] = None
+    message: Optional[str] = None
+    auto_save: bool = False
+
+
+class TagTranslationsRollbackRequest(BaseModel):
+    version: str
 
 
 class TagCategoryModel(BaseModel):
@@ -2075,60 +2257,211 @@ async def read_tags():
 
 @app.get("/api/tag-translations")
 async def get_tag_translations() -> Dict[str, Any]:
-    data = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
-    if not isinstance(data, Mapping):
-        raise HTTPException(status_code=500, detail="タグ翻訳データの形式が正しくありません")
+    async with tag_translations_lock:
+        raw_data = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
+        if not isinstance(raw_data, Mapping):
+            raise HTTPException(status_code=500, detail="タグ翻訳データの形式が正しくありません")
 
-    translations: Dict[str, Dict[str, str]] = {}
-    for key, value in data.items():
-        if not isinstance(key, str):
-            continue
-        translation = ""
-        description = ""
-        if isinstance(value, Mapping):
-            raw_translation = value.get("translation", "")
-            raw_description = value.get("description", "")
-            translation = str(raw_translation).strip()
-            description = str(raw_description).strip()
-        elif isinstance(value, str):
-            translation = value.strip()
-        translations[key] = {"translation": translation, "description": description}
-    return {"translations": translations}
+        storage: Dict[str, Dict[str, Any]] = {}
+        response: Dict[str, Dict[str, Any]] = {}
+
+        for raw_key, raw_value in raw_data.items():
+            tag = str(raw_key or "").strip()
+            if not tag:
+                continue
+            normalized = _normalize_translation_entry(raw_value)
+            record: Dict[str, Any] = {"translation": normalized["translation"]}
+            if normalized["description"]:
+                record["description"] = normalized["description"]
+            if normalized["aliases"]:
+                record["aliases"] = normalized["aliases"]
+            storage[tag] = record
+            response[tag] = {
+                "translation": normalized["translation"],
+                "description": normalized["description"],
+                "aliases": normalized["aliases"],
+            }
+
+        if raw_data != storage:
+            await _write_json_file(TAG_TRANSLATIONS_FILE, storage, sort_keys=True)
+
+        version = await _ensure_tag_translation_history_initialized(storage)
+        if version:
+            await tag_translations_state.set_version(version)
+        else:
+            version = await tag_translations_state.get_version()
+
+    return {"translations": response, "version": version}
 
 
 @app.post("/api/tag-translations")
 async def update_tag_translations(request: TagTranslationsUpdateRequest) -> Dict[str, Any]:
-    processed: Dict[str, Dict[str, str]] = {}
-    seen: Set[str] = set()
+    async with tag_translations_lock:
+        current_raw = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
+        if not isinstance(current_raw, Mapping):
+            raise HTTPException(status_code=500, detail="タグ翻訳データの形式が正しくありません")
 
-    for raw_key, raw_value in request.translations.items():
-        tag = (raw_key or "").strip()
-        if not tag:
-            continue
-        normalised = tag.lower()
-        if normalised in seen:
-            raise HTTPException(status_code=400, detail=f"タグが重複しています: {tag}")
-        seen.add(normalised)
+        current_storage: Dict[str, Dict[str, Any]] = {}
+        current_response: Dict[str, Dict[str, Any]] = {}
 
-        translation = ""
-        description = ""
-        if isinstance(raw_value, Mapping):
-            translation = str(raw_value.get("translation", "")).strip()
-            description = str(raw_value.get("description", "")).strip()
+        for raw_key, raw_value in current_raw.items():
+            tag = str(raw_key or "").strip()
+            if not tag:
+                continue
+            normalized = _normalize_translation_entry(raw_value)
+            record: Dict[str, Any] = {"translation": normalized["translation"]}
+            if normalized["description"]:
+                record["description"] = normalized["description"]
+            if normalized["aliases"]:
+                record["aliases"] = normalized["aliases"]
+            current_storage[tag] = record
+            current_response[tag] = normalized
+
+        if current_storage != current_raw:
+            await _write_json_file(TAG_TRANSLATIONS_FILE, current_storage, sort_keys=True)
+
+        current_version = await _load_current_tag_translation_version()
+        if current_version is None:
+            current_version = await _ensure_tag_translation_history_initialized(current_storage)
+        if current_version:
+            await tag_translations_state.set_version(current_version)
+
+        if request.base_version and current_version and request.base_version != current_version:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "タグ翻訳データが他のユーザーによって更新されました。",
+                    "version": current_version,
+                    "translations": current_response,
+                },
+            )
+
+        processed: Dict[str, Dict[str, Any]] = {}
+        response_payload: Dict[str, Dict[str, Any]] = {}
+        seen_tags: Set[str] = set()
+        alias_map: Dict[str, str] = {}
+
+        for raw_key, raw_value in request.translations.items():
+            tag = str(raw_key or "").strip()
+            if not tag:
+                continue
+            normalised_tag = _normalise_tag(tag)
+            if normalised_tag in seen_tags:
+                raise HTTPException(status_code=400, detail=f"タグが重複しています: {tag}")
+            seen_tags.add(normalised_tag)
+
+            normalized = _normalize_translation_entry(raw_value)
+            record: Dict[str, Any] = {"translation": normalized["translation"]}
+            if normalized["description"]:
+                record["description"] = normalized["description"]
+            if normalized["aliases"]:
+                record["aliases"] = normalized["aliases"]
+                for alias in normalized["aliases"]:
+                    alias_norm = _normalise_tag(alias)
+                    if not alias_norm:
+                        continue
+                    owner = alias_map.get(alias_norm)
+                    if owner and owner != tag:
+                        raise HTTPException(status_code=400, detail=f"検索キーワードが重複しています: {alias}")
+                    alias_map[alias_norm] = tag
+
+            processed[tag] = record
+            response_payload[tag] = normalized
+
+        await _write_json_file(TAG_TRANSLATIONS_FILE, processed, sort_keys=True)
+
+        reason = (request.message or "").strip()
+        if reason:
+            reason = reason[:200]
         else:
-            translation = str(raw_value or "").strip()
+            reason = "auto-save" if request.auto_save else "manual"
 
-        entry: Dict[str, str] = {}
-        if translation:
-            entry["translation"] = translation
-        else:
-            entry["translation"] = ""
-        if description:
-            entry["description"] = description
-        processed[tag] = entry
+        entry = await _record_tag_translation_version(
+            processed,
+            reason=reason,
+            auto=request.auto_save,
+            parent_version=current_version,
+        )
+        new_version = entry.get("version")
 
-    await _write_json_file(TAG_TRANSLATIONS_FILE, processed, sort_keys=True)
-    return {"status": "ok", "count": len(processed)}
+    return {
+        "status": "ok",
+        "count": len(processed),
+        "version": new_version,
+        "translations": response_payload,
+    }
+
+
+@app.get("/api/tag-translations/versions")
+async def get_tag_translation_versions() -> Dict[str, Any]:
+    async with tag_translations_lock:
+        versions = await _load_tag_translation_versions()
+    versions_sorted = sorted(
+        versions,
+        key=lambda item: item.get("created_at", "") or item["version"],
+        reverse=True,
+    )
+    return {"versions": versions_sorted}
+
+
+@app.get("/api/tag-translations/updates")
+async def wait_for_tag_translation_updates(
+    since: Optional[str] = Query(default=None),
+    timeout: float = Query(default=25.0, ge=5.0, le=120.0),
+) -> Dict[str, Any]:
+    version, changed = await tag_translations_state.wait_for_update(since, timeout)
+    return {"version": version, "changed": changed}
+
+
+@app.post("/api/tag-translations/rollback")
+async def rollback_tag_translations(request: TagTranslationsRollbackRequest) -> Dict[str, Any]:
+    async with tag_translations_lock:
+        versions = await _load_tag_translation_versions()
+        version_ids = {entry.get("version") for entry in versions}
+        if request.version not in version_ids:
+            raise HTTPException(status_code=404, detail="指定されたバージョンが見つかりません")
+
+        snapshot_path = TAG_TRANSLATIONS_HISTORY_DIR / f"{request.version}.json"
+        if not snapshot_path.exists():
+            raise HTTPException(status_code=404, detail="スナップショットが見つかりません")
+
+        snapshot_raw = await _read_json_file(snapshot_path, {})
+        if not isinstance(snapshot_raw, Mapping):
+            raise HTTPException(status_code=500, detail="スナップショットの形式が正しくありません")
+
+        storage: Dict[str, Dict[str, Any]] = {}
+        response_payload: Dict[str, Dict[str, Any]] = {}
+        for raw_key, raw_value in snapshot_raw.items():
+            tag = str(raw_key or "").strip()
+            if not tag:
+                continue
+            normalized = _normalize_translation_entry(raw_value)
+            record: Dict[str, Any] = {"translation": normalized["translation"]}
+            if normalized["description"]:
+                record["description"] = normalized["description"]
+            if normalized["aliases"]:
+                record["aliases"] = normalized["aliases"]
+            storage[tag] = record
+            response_payload[tag] = normalized
+
+        await _write_json_file(TAG_TRANSLATIONS_FILE, storage, sort_keys=True)
+
+        current_version = await _load_current_tag_translation_version()
+        entry = await _record_tag_translation_version(
+            storage,
+            reason="rollback",
+            auto=False,
+            parent_version=current_version,
+            restored_from=request.version,
+        )
+        new_version = entry.get("version")
+
+    return {
+        "status": "ok",
+        "version": new_version,
+        "restored_from": request.version,
+        "translations": response_payload,
+    }
 
 
 @app.get("/api/tag-categories")
