@@ -10,6 +10,9 @@
     const autoSaveStateText = document.getElementById('autoSaveStateText');
     const versionList = document.getElementById('versionList');
     const versionsEmptyState = document.getElementById('versionsEmptyState');
+    const versionHistoryModal = document.getElementById('versionHistoryModal');
+    const closeVersionHistoryModal = document.getElementById('closeVersionHistoryModal');
+    const openVersionHistoryButton = document.getElementById('openVersionHistoryButton');
 
     const addTranslationButton = document.getElementById('addTranslationButton');
     const autoAddButton = document.getElementById('autoAddButton');
@@ -148,18 +151,7 @@ function showProgress(current, total, message = '処理中...') {
         });
         translationCell.appendChild(translationInput);
 
-        const aliasesCell = document.createElement('td');
-        const aliasesInput = document.createElement('input');
-        aliasesInput.type = 'text';
-        aliasesInput.className = 'table-input';
-        aliasesInput.value = Array.isArray(entry.aliases) ? entry.aliases.join(', ') : '';
-        aliasesInput.placeholder = '例: 代替タグ, ニックネーム';
-        aliasesInput.addEventListener('input', () => {
-            entry.aliases = parseAliases(aliasesInput.value);
-            markDirty();
-        });
-        aliasesCell.appendChild(aliasesInput);
-
+        // 説明列
         const descriptionCell = document.createElement('td');
         const descriptionInput = document.createElement('input');
         descriptionInput.type = 'text';
@@ -171,6 +163,19 @@ function showProgress(current, total, message = '処理中...') {
             markDirty();
         });
         descriptionCell.appendChild(descriptionInput);
+
+        // あいまい検索キーワード列
+        const aliasesCell = document.createElement('td');
+        const aliasesInput = document.createElement('input');
+        aliasesInput.type = 'text';
+        aliasesInput.className = 'table-input';
+        aliasesInput.value = Array.isArray(entry.aliases) ? entry.aliases.join(', ') : '';
+        aliasesInput.placeholder = '例: 代替タグ, ニックネーム';
+        aliasesInput.addEventListener('input', () => {
+            entry.aliases = parseAliases(aliasesInput.value);
+            markDirty();
+        });
+        aliasesCell.appendChild(aliasesInput);
 
         const actionCell = document.createElement('td');
         const deleteButton = document.createElement('button');
@@ -188,8 +193,8 @@ function showProgress(current, total, message = '処理中...') {
 
         tr.appendChild(tagCell);
         tr.appendChild(translationCell);
-        tr.appendChild(aliasesCell);
         tr.appendChild(descriptionCell);
+        tr.appendChild(aliasesCell);
         tr.appendChild(actionCell);
 
         tr._inputs = { tagInput, translationInput, aliasesInput, descriptionInput };
@@ -290,6 +295,24 @@ function showProgress(current, total, message = '処理中...') {
         });
     }
 
+    function openVersionHistory() {
+        if (!versionHistoryModal) return;
+        versionHistoryModal.hidden = false;
+        versionHistoryModal.style.display = 'flex';
+        versionHistoryModal.setAttribute('aria-modal', 'true');
+        versionHistoryModal.setAttribute('role', 'dialog');
+        // モーダルを開くたびに最新状態を取得
+        refreshVersions({ silent: true }).catch(() => {});
+    }
+
+    function closeVersionHistory() {
+        if (!versionHistoryModal) return;
+        versionHistoryModal.hidden = true;
+        versionHistoryModal.style.display = 'none';
+        versionHistoryModal.removeAttribute('aria-modal');
+        versionHistoryModal.removeAttribute('role');
+    }
+
     async function refreshVersions({ silent = false } = {}) {
         if (!versionList) return;
         try {
@@ -341,6 +364,49 @@ function showProgress(current, total, message = '処理中...') {
         }
     }
 
+    function setupVersionHistoryModalEvents() {
+        if (!versionHistoryModal) {
+            return;
+        }
+
+        // 初期状態は必ず非表示にしておく（テンプレ上の hidden が無視されても防御）
+        versionHistoryModal.hidden = true;
+        versionHistoryModal.style.display = 'none';
+
+        if (openVersionHistoryButton) {
+            openVersionHistoryButton.addEventListener('click', () => {
+                openVersionHistory();
+            });
+        }
+
+        if (closeVersionHistoryModal) {
+            closeVersionHistoryModal.addEventListener('click', () => {
+                closeVersionHistory();
+            });
+        }
+
+        // 背景クリックで閉じる
+        versionHistoryModal.addEventListener('click', (event) => {
+            if (event.target === versionHistoryModal) {
+                closeVersionHistory();
+            }
+        });
+
+        // ESCキーで閉じる
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !versionHistoryModal.hidden) {
+                closeVersionHistory();
+            }
+        });
+    }
+
+    // 初期化: バージョン履歴モーダルのイベントをセットアップ
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', setupVersionHistoryModalEvents);
+    } else {
+        setupVersionHistoryModalEvents();
+    }
+
     async function startUpdateListener() {
         if (state.updateListenerActive) return;
         state.updateListenerActive = true;
@@ -377,6 +443,52 @@ function showProgress(current, total, message = '処理中...') {
     function createCategoryCard(category = { id: '', label: '', tags: [] }) {
         const card = document.createElement('div');
         card.className = 'category-card';
+        card.dataset.categoryId = category.id || '';
+
+        // ドラッグで並び替え可能にする
+        card.draggable = true;
+
+        card.addEventListener('dragstart', (event) => {
+            card.classList.add('dragging');
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', card.dataset.categoryId || '');
+        });
+
+        card.addEventListener('dragend', () => {
+            card.classList.remove('dragging');
+            syncCategoryOrderFromDOM();
+        });
+
+        card.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            const dragging = categoriesContainer.querySelector('.category-card.dragging');
+            if (!dragging || dragging === card) return;
+
+            const bounding = card.getBoundingClientRect();
+            const offset = event.clientY - bounding.top;
+            const shouldInsertAfter = offset > bounding.height / 2;
+
+            if (shouldInsertAfter) {
+                if (card.nextSibling !== dragging) {
+                    card.after(dragging);
+                }
+            } else {
+                if (card.previousSibling !== dragging) {
+                    card.before(dragging);
+                }
+            }
+        });
+
+        card.addEventListener('drop', (event) => {
+            event.preventDefault();
+            const dragging = categoriesContainer.querySelector('.category-card.dragging');
+            if (dragging && dragging !== card) {
+                // dragover 内ですでに DOM の位置は調整されているので、ここでは順序同期のみ
+                dragging.classList.remove('dragging');
+                syncCategoryOrderFromDOM();
+            }
+        });
 
         const header = document.createElement('div');
         header.className = 'category-header';
@@ -426,6 +538,32 @@ function showProgress(current, total, message = '処理中...') {
 
         const buttonRow = document.createElement('div');
         buttonRow.className = 'section-actions';
+
+        // 上下移動ボタン
+        const moveUpButton = document.createElement('button');
+        moveUpButton.type = 'button';
+        moveUpButton.className = 'button secondary';
+        moveUpButton.textContent = '↑ 上へ';
+        moveUpButton.addEventListener('click', () => {
+            const prev = card.previousElementSibling;
+            if (prev && prev.classList.contains('category-card')) {
+                categoriesContainer.insertBefore(card, prev);
+                syncCategoryOrderFromDOM();
+            }
+        });
+
+        const moveDownButton = document.createElement('button');
+        moveDownButton.type = 'button';
+        moveDownButton.className = 'button secondary';
+        moveDownButton.textContent = '↓ 下へ';
+        moveDownButton.addEventListener('click', () => {
+            const next = card.nextElementSibling;
+            if (next && next.classList.contains('category-card')) {
+                categoriesContainer.insertBefore(next, card);
+                syncCategoryOrderFromDOM();
+            }
+        });
+
         const deleteButton = document.createElement('button');
         deleteButton.type = 'button';
         deleteButton.className = 'button danger';

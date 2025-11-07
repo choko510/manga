@@ -111,6 +111,25 @@
                 performSearch(elements, true);
             }
         });
+
+        // Fuse.js + 共通タグサーチによるオートコンプリート
+        if (window.TagSearch && elements.searchInput) {
+            TagSearch.initAutocomplete(elements.searchInput, {
+                minLength: 1,
+                limit: 12,
+                onSelect(tag, meta) {
+                    // 選択されたタグを検索クエリに追記し、即検索実行
+                    const current = elements.searchInput.value.trim();
+                    const label = meta && (meta.translation || meta.tag)
+                        ? `${meta.translation || ''} (${tag})`
+                        : tag;
+                    const next = current ? `${current} ${label}` : label;
+                    elements.searchInput.value = next;
+                    performSearch(elements, true);
+                },
+            });
+        }
+
         elements.minPagesSelect.addEventListener('change', () => {
             currentMinPages = parseInt(elements.minPagesSelect.value, 10) || 0;
             ensureValidPageRange(elements);

@@ -413,6 +413,8 @@
 
     <script src="/static/tracking.js" defer></script>
     <script src="/static/app.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/fuse.js@6.6.2/dist/fuse.min.js" defer></script>
+    <script src="/static/tags-search.js" defer></script>
     <script>
         const state = {
             offset: 0,
@@ -484,28 +486,60 @@
                 updateThemeToggleIcon(themeToggle, theme);
             });
 
-            document.getElementById('searchButton').addEventListener('click', () => {
-                state.search = document.getElementById('tagSearchInput').value.trim();
-                state.offset = 0;
-                loadTags(true);
-            });
-            document.getElementById('tagSearchInput').addEventListener('keypress', (event) => {
-                if (event.key === 'Enter') {
-                    state.search = document.getElementById('tagSearchInput').value.trim();
+            const searchInput = document.getElementById('tagSearchInput');
+            const searchButtonEl = document.getElementById('searchButton');
+
+            // 共通Fuseベースのオートコンプリート
+            if (window.TagSearch && searchInput) {
+                TagSearch.initAutocomplete(searchInput, {
+                    minLength: 1,
+                    limit: 12,
+                    onSelect(tag, meta) {
+                        // 候補選択時はそのタグで検索条件を確定
+                        state.search = tag;
+                        searchInput.value =
+                            meta && (meta.translation || meta.tag)
+                                ? `${meta.translation || ''} (${tag})`
+                                : tag;
+                        state.offset = 0;
+                        loadTags(true);
+                    },
+                });
+            }
+
+            if (searchButtonEl) {
+                searchButtonEl.addEventListener('click', () => {
+                    state.search = searchInput.value.trim();
                     state.offset = 0;
                     loadTags(true);
-                }
-            });
-            document.getElementById('loadMoreButton').addEventListener('click', () => loadTags());
-            
-            const searchButton = document.getElementById('searchSelectedButton');
-            searchButton.addEventListener('click', () => {
-                if (state.selectedTags.size > 0) {
-                    const tags = Array.from(state.selectedTags).join(',');
-                    window.location.href = `/?tag=${encodeURIComponent(tags)}`;
-                }
-            });
-            
+                });
+            }
+
+            if (searchInput) {
+                searchInput.addEventListener('keypress', (event) => {
+                    if (event.key === 'Enter') {
+                        state.search = searchInput.value.trim();
+                        state.offset = 0;
+                        loadTags(true);
+                    }
+                });
+            }
+
+            const loadMoreBtn = document.getElementById('loadMoreButton');
+            if (loadMoreBtn) {
+                loadMoreBtn.addEventListener('click', () => loadTags());
+            }
+
+            const selectedSearchButton = document.getElementById('searchSelectedButton');
+            if (selectedSearchButton) {
+                selectedSearchButton.addEventListener('click', () => {
+                    if (state.selectedTags.size > 0) {
+                        const tags = Array.from(state.selectedTags).join(',');
+                        window.location.href = `/?tag=${encodeURIComponent(tags)}`;
+                    }
+                });
+            }
+
             document.addEventListener('manga:hidden-tags-change', () => {
                 updateHiddenTagsSummary();
                 state.offset = 0;

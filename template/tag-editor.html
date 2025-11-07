@@ -476,6 +476,72 @@
             color: rgba(226, 232, 240, 0.6);
         }
 
+        /* Version history modal */
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 80px;
+            z-index: 50;
+        }
+
+        .modal {
+            width: min(900px, 100% - 32px);
+            max-height: calc(100vh - 160px);
+            background: rgba(15, 23, 42, 0.98);
+            border-radius: 18px;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            box-shadow: 0 24px 70px rgba(15, 23, 42, 0.6);
+            padding: 24px 24px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 4px;
+        }
+
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .modal-close {
+            margin-left: auto;
+            width: 32px;
+            height: 32px;
+            border-radius: 999px;
+            border: none;
+            cursor: pointer;
+            background: rgba(148, 163, 184, 0.18);
+            color: #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            line-height: 1;
+            transition: background 0.2s ease, transform 0.15s ease;
+        }
+
+        .modal-close:hover,
+        .modal-close:focus-visible {
+            background: rgba(56, 189, 248, 0.3);
+            transform: translateY(-1px);
+        }
+
+        .modal .version-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+
         @media (max-width: 768px) {
             header {
                 position: static;
@@ -539,10 +605,10 @@
                         <table>
                             <thead>
                                 <tr>
-                                    <th style="width: 24%">タグ</th>
-                                    <th style="width: 24%">翻訳</th>
-                                    <th style="width: 28%">あいまい検索キーワード</th>
+                                    <th style="width: 18%">タグ</th>
+                                    <th style="width: 18%">翻訳</th>
                                     <th>説明</th>
+                                    <th style="width: 20%">あいまい検索キーワード</th>
                                     <th style="width: 90px">操作</th>
                                 </tr>
                             </thead>
@@ -553,25 +619,27 @@
                         </div>
                     </div>
                 </section>
-                <section class="section" id="versionHistorySection">
-                    <div class="section-header">
-                        <div class="section-title">バージョン履歴</div>
-                        <div class="section-actions">
-                            <button class="button secondary" id="refreshVersionsButton">履歴を再読み込み</button>
+                <!-- バージョン履歴モーダル -->
+                <div class="modal-backdrop" id="versionHistoryModal" hidden>
+                    <div class="modal">
+                        <div class="modal-header">
+                            <h2 class="modal-title">バージョン履歴</h2>
+                            <button class="modal-close" type="button" id="closeVersionHistoryModal" aria-label="閉じる">×</button>
+                        </div>
+                        <p class="helper-text">
+                            変更は自動保存され、最新100件まで履歴が保持されます。ロールバックすると新しいバージョンとして保存されます。
+                        </p>
+                        <div class="version-list" id="versionList"></div>
+                        <div class="empty-state" id="versionsEmptyState" hidden>
+                            表示できる履歴がありません。
                         </div>
                     </div>
-                    <p class="helper-text">
-                        変更は自動保存され、最新100件まで履歴が保持されます。ロールバックすると新しいバージョンとして保存されます。
-                    </p>
-                    <div class="version-list" id="versionList"></div>
-                    <div class="empty-state" id="versionsEmptyState" hidden>
-                        表示できる履歴がありません。
-                    </div>
-                </section>
+                </div>
                 <section class="section" id="categoriesSection">
                     <div class="section-header">
                         <div class="section-title">タグカテゴリ</div>
                         <div class="section-actions">
+                            <button class="button secondary" id="openVersionHistoryButton">履歴を表示</button>
                             <button class="button secondary" id="addCategoryButton">カテゴリを追加</button>
                             <button class="button primary" id="saveCategoriesButton">カテゴリを保存</button>
                         </div>

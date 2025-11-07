@@ -2189,13 +2189,20 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
     try:
         async with get_db_session() as db:
             params: Dict[str, Any] = {"limit": limit, "offset": offset}
+
             if search:
-                params["search"] = f"%{search.lower()}%"
+                # 大文字小文字を問わず部分一致させるため、検索語と列の両方をlowerで比較
+                normalized = search.strip()
+                params["search"] = f"%{normalized.lower()}%"
                 query = (
-                    "SELECT tag, count FROM tag_stats WHERE tag LIKE :search "
+                    "SELECT tag, count FROM tag_stats "
+                    "WHERE LOWER(tag) LIKE :search "
                     "ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
                 )
-                total_sql = "SELECT COUNT(*) FROM tag_stats WHERE tag LIKE :search"
+                total_sql = (
+                    "SELECT COUNT(*) FROM tag_stats "
+                    "WHERE LOWER(tag) LIKE :search"
+                )
             else:
                 query = (
                     "SELECT tag, count FROM tag_stats "
