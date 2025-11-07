@@ -171,6 +171,86 @@
             color: inherit;
         }
 
+        .status-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(148, 163, 184, 0.12);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            font-size: 0.85rem;
+            color: rgba(226, 232, 240, 0.85);
+            transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+        }
+
+        .status-chip.success {
+            background: rgba(56, 189, 248, 0.18);
+            border-color: rgba(56, 189, 248, 0.35);
+            color: #38bdf8;
+        }
+
+        .status-chip.warning {
+            background: rgba(251, 191, 36, 0.18);
+            border-color: rgba(251, 191, 36, 0.35);
+            color: #fbbf24;
+        }
+
+        .status-chip.error {
+            background: rgba(248, 113, 113, 0.18);
+            border-color: rgba(248, 113, 113, 0.35);
+            color: #f87171;
+        }
+
+        .auto-save-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .auto-save-indicator span {
+            font-size: 0.85rem;
+            color: rgba(226, 232, 240, 0.7);
+        }
+
+        .version-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .version-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 18px;
+            border-radius: 12px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+        }
+
+        .version-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .version-meta strong {
+            font-weight: 600;
+        }
+
+        .version-meta span {
+            font-size: 0.85rem;
+            color: rgba(226, 232, 240, 0.68);
+        }
+
+        .version-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -450,13 +530,18 @@
                     <div class="translations-toolbar">
                         <input type="search" class="search-input" id="translationSearch" placeholder="タグ名または翻訳で検索" aria-label="翻訳の検索" />
                         <span id="translationCount"></span>
+                        <div class="auto-save-indicator">
+                            <span id="currentVersionBadge" class="status-chip" aria-live="polite">バージョン: -</span>
+                            <span id="autoSaveStateText">変更は自動保存されます</span>
+                        </div>
                     </div>
                     <div class="table-wrapper">
                         <table>
                             <thead>
                                 <tr>
-                                    <th style="width: 28%">タグ</th>
-                                    <th style="width: 28%">翻訳</th>
+                                    <th style="width: 24%">タグ</th>
+                                    <th style="width: 24%">翻訳</th>
+                                    <th style="width: 28%">あいまい検索キーワード</th>
                                     <th>説明</th>
                                     <th style="width: 90px">操作</th>
                                 </tr>
@@ -466,6 +551,21 @@
                         <div class="empty-state" id="translationsEmptyState" hidden>
                             登録された翻訳がありません。「行を追加」から新しい翻訳を作成してください。
                         </div>
+                    </div>
+                </section>
+                <section class="section" id="versionHistorySection">
+                    <div class="section-header">
+                        <div class="section-title">バージョン履歴</div>
+                        <div class="section-actions">
+                            <button class="button secondary" id="refreshVersionsButton">履歴を再読み込み</button>
+                        </div>
+                    </div>
+                    <p class="helper-text">
+                        変更は自動保存され、最新100件まで履歴が保持されます。ロールバックすると新しいバージョンとして保存されます。
+                    </p>
+                    <div class="version-list" id="versionList"></div>
+                    <div class="empty-state" id="versionsEmptyState" hidden>
+                        表示できる履歴がありません。
                     </div>
                 </section>
                 <section class="section" id="categoriesSection">

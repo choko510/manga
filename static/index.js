@@ -2,6 +2,7 @@
     const LIMIT = 20;
     let currentAfterCreatedAt = null;
     let currentQuery = '';
+    let currentResolvedQuery = '';
     let currentMinPages = 0;
     let currentMaxPages = null;
     let isLoading = false;
@@ -268,6 +269,9 @@
         if (reset) {
             currentAfterCreatedAt = null;
             currentQuery = elements.searchInput.value.trim();
+            currentResolvedQuery = typeof MangaApp.resolveTagQueryString === 'function'
+                ? MangaApp.resolveTagQueryString(currentQuery)
+                : currentQuery;
             currentMinPages = parseInt(elements.minPagesSelect.value, 10) || 0;
             const maxVal = parseInt(elements.maxPagesSelect.value, 10);
             currentMaxPages = Number.isFinite(maxVal) ? maxVal : null;
@@ -281,11 +285,18 @@
         showLoading(elements, true);
 
         try {
-            const data = await fetchSearchResults(currentQuery, currentAfterCreatedAt, currentMinPages, currentMaxPages, sortBy);
+            const data = await fetchSearchResults(
+                currentResolvedQuery,
+                currentQuery,
+                currentAfterCreatedAt,
+                currentMinPages,
+                currentMaxPages,
+                sortBy
+            );
             const { results, hasMore, nextAfterCreatedAt } = data;
 
             if (reset && typeof MangaApp.recordTagUsage === 'function' && currentQuery) {
-                const tags = extractTagsFromQuery(currentQuery);
+                const tags = extractTagsFromQuery(currentResolvedQuery || currentQuery);
                 if (tags.length) {
                     MangaApp.recordTagUsage(tags);
                 }
@@ -328,16 +339,17 @@
             showLoading(elements, false);
         }
     }
-async function fetchSearchResults(query, afterCreatedAt, minPages, maxPages, sortBy = 'created_at') {
-    const cacheKey = `${query}|${afterCreatedAt ?? 'start'}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
+async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minPages, maxPages, sortBy = 'created_at') {
+    const cacheKey = `${resolvedQuery}|${userQuery}|${afterCreatedAt ?? 'start'}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
     if (searchCache.has(cacheKey)) {
         return searchCache.get(cacheKey);
     }
 
     const params = new URLSearchParams();
     params.append('limit', LIMIT.toString());
-    if (query) {
-        params.append('tag', query);
+    const queryForRequest = resolvedQuery || userQuery;
+    if (queryForRequest) {
+        params.append('tag', queryForRequest);
     }
     if (afterCreatedAt) {
         params.append('after_created_at', afterCreatedAt);
