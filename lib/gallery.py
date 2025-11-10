@@ -121,14 +121,10 @@ def get_gallery(gallery_id: int) -> Gallery:
             if isinstance(entry, dict):
                 gallery.files.append(
                     Image(
-                        index=index,
                         hash=str(entry.get("hash", "")),
-                        name=str(entry.get("name", "")),
                         has_avif=entry.get("hasavif") == 1,
                         has_webp=entry.get("haswebp", 0) != 0,
                         has_jxl=entry.get("hasjxl") == 1,
-                        width=int(entry.get("width", 0)),
-                        height=int(entry.get("height", 0)),
                     )
                 )
 

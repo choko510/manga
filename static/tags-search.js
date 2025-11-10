@@ -273,9 +273,10 @@
             listEl.className = 'tag-autocomplete-list';
             listEl.style.position = 'absolute';
             listEl.style.zIndex = '9999';
-            listEl.style.background = '#fff';
-            listEl.style.border = '1px solid #e5e7eb';
-            listEl.style.boxShadow = '0 10px 25px rgba(15,23,42,0.15)';
+            listEl.style.background = 'var(--bg-card, #111827)';
+            listEl.style.color = 'var(--text-primary, #f9fafb)';
+            listEl.style.border = '1px solid rgba(148, 163, 184, 0.35)';
+            listEl.style.boxShadow = '0 10px 25px rgba(15,23,42,0.35)';
             listEl.style.borderRadius = '10px';
             listEl.style.marginTop = '4px';
             listEl.style.padding = '4px 0';
@@ -329,7 +330,7 @@
 
                 const right = document.createElement('div');
                 right.style.fontSize = '11px';
-                right.style.color = '#9ca3af';
+                right.style.color = 'var(--text-secondary, #9ca3af)';
                 right.textContent = item.tag;
 
                 primary.appendChild(left);
@@ -339,7 +340,7 @@
                 if (item.description) {
                     const desc = document.createElement('div');
                     desc.style.fontSize = '11px';
-                    desc.style.color = '#6b7280';
+                    desc.style.color = 'var(--text-secondary, #9ca3af)';
                     desc.textContent = item.description;
                     el.appendChild(desc);
                 }
@@ -363,14 +364,18 @@
             if (!listEl) return;
             const children = listEl.querySelectorAll('.tag-autocomplete-item');
             if (!children.length) return;
-            children.forEach((c) => (c.style.background = 'transparent'));
+            children.forEach((c) => {
+                c.style.background = 'transparent';
+                c.style.color = 'inherit';
+            });
             if (index < 0 || index >= children.length) {
                 currentIndex = -1;
                 return;
             }
             currentIndex = index;
             const active = children[index];
-            active.style.background = 'rgba(37,99,235,0.06)';
+            active.style.background = 'rgba(37,99,235,0.16)';
+            active.style.color = 'var(--accent, #60a5fa)';
             active.scrollIntoView({ block: 'nearest' });
         }
 

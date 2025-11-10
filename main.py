@@ -85,6 +85,127 @@ def get_tracking_db_session() -> AsyncSession:
 Base = declarative_base()
 TrackingBase = declarative_base()
 
+
+async def init_main_db() -> None:
+    """
+    アプリ初回起動時用:
+    - galleriesテーブルが存在しない場合: 現在のモデル定義通りで作成
+    - 既存テーブルにpage_count列が無い場合: files(JSON)中のhash数を元にpage_count列を追加・更新
+    """
+    async with engine.begin() as conn:
+        # 1. テーブル作成（存在しない場合のみ）
+        await conn.run_sync(Base.metadata.create_all)
+
+        # 2. 不足している列を追加
+        #    - page_count: INTEGER
+        #    - created_at_unix: INTEGER (存在しない場合のみ追加)
+        res = await conn.execute(text("PRAGMA table_info(galleries)"))
+        columns = [row[1] for row in res.fetchall()]
+        if "page_count" not in columns:
+            await conn.execute(text("ALTER TABLE galleries ADD COLUMN page_count INTEGER"))
+        if "created_at_unix" not in columns:
+            await conn.execute(text("ALTER TABLE galleries ADD COLUMN created_at_unix INTEGER"))
+
+        # 3. page_count / created_at_unix の補完
+        #    - page_count: files(JSON配列)中の hash を数える
+        #    - created_at_unix: created_at(ISO8601想定) をUNIX秒に変換して保存
+        #    - いずれも JSONパース・日時パース失敗は best-effort でスキップ
+        import json as _json
+        from datetime import datetime
+
+        # 3-1. page_count が NULL の行を補完
+        result = await conn.execute(
+            text(
+                "SELECT gallery_id, files "
+                "FROM galleries "
+                "WHERE page_count IS NULL "
+                "AND files IS NOT NULL "
+                "LIMIT 1000"
+            )
+        )
+        rows = result.fetchall()
+        for gallery_id, files_json in rows:
+            try:
+                if not files_json:
+                    continue
+
+                data = _json.loads(files_json)
+                if not isinstance(data, list):
+                    continue
+
+                count = 0
+                for item in data:
+                    if isinstance(item, dict):
+                        h = item.get("hash")
+                        if isinstance(h, str) and h:
+                            count += 1
+
+                await conn.execute(
+                    text("UPDATE galleries SET page_count = :cnt WHERE gallery_id = :gid"),
+                    {"cnt": count, "gid": gallery_id},
+                )
+            except Exception:
+                continue
+
+        # 3-2. created_at_unix 列が存在する場合のみ補完処理を行う
+        #      - 新しいDBには列が無いケースがあるため、PRAGMAで存在確認してから実行する。
+        pragma_res = await conn.execute(text("PRAGMA table_info(galleries)"))
+        gallery_columns = [row[1] for row in pragma_res.fetchall()]
+        if "created_at_unix" in gallery_columns:
+            result = await conn.execute(
+                text(
+                    "SELECT gallery_id, created_at "
+                    "FROM galleries "
+                    "WHERE (created_at_unix IS NULL OR created_at_unix = 0) "
+                    "AND created_at IS NOT NULL "
+                    "LIMIT 1000"
+                )
+            )
+            rows = result.fetchall()
+            for gallery_id, created_at in rows:
+                try:
+                    if not created_at:
+                        continue
+
+                    s = str(created_at).strip()
+                    if not s:
+                        continue
+
+                    iso = s.replace(" ", "T")
+                    dt = None
+                    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+                        try:
+                            dt = datetime.strptime(iso, fmt)
+                            break
+                        except ValueError:
+                            continue
+                    if dt is None:
+                        try:
+                            dt = datetime.fromisoformat(iso)
+                        except ValueError:
+                            dt = None
+                    if dt is None:
+                        continue
+
+                    unix_ts = int(dt.timestamp())
+                    if unix_ts <= 0:
+                        continue
+
+                    await conn.execute(
+                        text("UPDATE galleries SET created_at_unix = :ts WHERE gallery_id = :gid"),
+                        {"ts": unix_ts, "gid": gallery_id},
+                    )
+                except Exception:
+                    continue
+
+
+async def init_tracking_db() -> None:
+    """
+    アプリ初回起動時用: トラッキング用テーブル群を作成（存在しない場合のみ）。
+    """
+    async with tracking_engine.begin() as conn:
+        await conn.run_sync(TrackingBase.metadata.create_all)
+
 class Gallery(Base):
     __tablename__ = 'galleries'
     gallery_id = Column(Integer, primary_key=True)
@@ -94,10 +215,7 @@ class Gallery(Base):
     files = Column(Text)
     manga_type = Column(String)
     created_at = Column(String) # ISO8601 文字列想定
-    page_count = Column(
-        Integer,
-        Computed("json_array_length(CASE WHEN json_valid(files) THEN files ELSE '[]' END)", persisted=True),
-    )
+    page_count = Column(Integer, nullable=True)
     created_at_unix = Column(
         Integer,
         Computed("CAST(strftime('%s', created_at) AS INTEGER)", persisted=True),
@@ -152,10 +270,6 @@ class UserSnapshot(TrackingBase):
     expires_at = Column(String, nullable=False)
     last_accessed = Column(String, nullable=False)
 
-    __table_args__ = (
-        Index('idx_user_snapshots_expires_at', 'expires_at'),
-    )
-
 # ---- ランキング ----
 class GalleryRanking(Base):
     __tablename__ = 'gallery_rankings'
@@ -171,6 +285,13 @@ class GalleryRanking(Base):
 # =========================
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    # 初回起動時にDBスキーマとpage_countを整備
+    await init_main_db()
+    await init_tracking_db()
 
 # =========================
 # HTTP ヘッダ
@@ -1040,8 +1161,8 @@ async def search_galleries_fast(
         where_clauses: List[str] = []
         cte_segment: Optional[str] = None
 
-        # doujinshi only
-        where_clauses.append("g.manga_type = 'doujinshi'")
+        # doujinshi & manga only
+        where_clauses.append("g.manga_type IN ('doujinshi', 'manga')")
 
         if after_created_at is not None or after_gallery_id is not None:
             if after_created_at is not None:
@@ -1547,11 +1668,7 @@ async def geturl(gi: Dict[str, Any]) -> List[str]:
     urls: List[str] = []
     for idx, f in enumerate(files):
         image = SimpleNamespace(
-            index=idx,
             hash=(f.get("hash") or "").lower(),
-            name=f.get("name"),
-            width=f.get("width"),
-            height=f.get("height"),
             has_avif=bool(f.get("hasavif")),
             has_webp=True,
             has_jxl=False,
@@ -1702,17 +1819,33 @@ async def search_galleries_endpoint(request: SearchRequest):
 
             for result in results:
                 try:
-                    files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
-                    files_list = files_data if isinstance(files_data, list) else []
-                    gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
+                    raw_files = result.get("files")
+                    # 文字列なら JSON としてパース、辞書/リストならそのまま使用
+                    if isinstance(raw_files, str):
+                        files_data = json.loads(raw_files)
+                    else:
+                        files_data = raw_files
+
+                    if isinstance(files_data, list):
+                        files_list = files_data
+                    else:
+                        files_list = []
+
+                    gallery_info = {
+                        "gallery_id": result["gallery_id"],
+                        "files": files_data,  # geturl 側で旧/新両形式に対応させる前提
+                    }
+
                     result["image_urls"] = await geturl(gallery_info)
+
                     stored_pages = result.get("page_count")
                     if not isinstance(stored_pages, int) or stored_pages < 0:
                         result["page_count"] = len(files_list)
-                except (json.JSONDecodeError, TypeError) as e:
-                    logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
+                except (json.JSONDecodeError, TypeError, KeyError) as e:
+                    logger.error(f"files 解析エラー: {e}, gallery_id: {result.get('gallery_id')}")
                     result["image_urls"] = []
                     result["page_count"] = 0
+                # レスポンスからは生の files は隠す
                 if "files" in result:
                     del result["files"]
 
@@ -2186,36 +2319,101 @@ async def get_gallery(gallery_id: int):
 # -------------------------
 @app.get("/api/tags")
 async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = None):
+    """
+    tag-translations.json を用いて:
+      - 日本語訳やエイリアスから英語タグへ正規化して検索可能にする
+      - 英語タグ指定時も従来通り部分一致検索
+    """
     try:
         async with get_db_session() as db:
             params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
+            # ベースクエリと WHERE 条件を動的に組み立てる
+            where_clauses = []
+            search_param: Optional[str] = None
+
             if search:
-                # 大文字小文字を問わず部分一致させるため、検索語と列の両方をlowerで比較
-                normalized = search.strip()
-                params["search"] = f"%{normalized.lower()}%"
+                raw = search.strip()
+                if raw:
+                    # tag-translations.json を読み込み、日本語訳・エイリアス -> 英語タグ の逆引きマップを構築
+                    try:
+                        translations_data = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
+                    except Exception:
+                        translations_data = {}
+
+                    reverse_map: Dict[str, str] = {}
+
+                    if isinstance(translations_data, Mapping):
+                        for eng_tag, entry in translations_data.items():
+                            if not eng_tag:
+                                continue
+                            eng_tag_str = str(eng_tag).strip()
+                            if not eng_tag_str:
+                                continue
+
+                            # entry は string or {translation, aliases, ...}
+                            if isinstance(entry, Mapping):
+                                # translation
+                                t = str(entry.get("translation") or "").strip().lower()
+                                if t and t not in reverse_map:
+                                    reverse_map[t] = eng_tag_str
+
+                                # aliases
+                                aliases = entry.get("aliases")
+                                if isinstance(aliases, list):
+                                    for alias in aliases:
+                                        a = str(alias or "").strip().lower()
+                                        if a and a not in reverse_map:
+                                            reverse_map[a] = eng_tag_str
+                            else:
+                                # 素の文字列の場合も一応対応
+                                t = str(entry or "").strip().lower()
+                                if t and t not in reverse_map:
+                                    reverse_map[t] = eng_tag_str
+
+                    # 入力値を正規化してマッピング
+                    key = raw.lower()
+                    mapped = reverse_map.get(key)
+
+                    if mapped:
+                        # 日本語訳/エイリアスに完全一致した場合は、その英語タグに対して部分一致検索
+                        search_param = f"%{mapped.lower()}%"
+                    else:
+                        # 一致しない場合は従来通り、入力値自体で部分一致 (英語タグ直接入力など)
+                        search_param = f"%{raw.lower()}%"
+
+                    where_clauses.append("LOWER(tag) LIKE :search")
+                    params["search"] = search_param
+
+            base_query = "SELECT tag, count FROM tag_stats"
+            base_total = "SELECT COUNT(*) FROM tag_stats"
+
+            if where_clauses:
+                where_sql = " WHERE " + " AND ".join(where_clauses)
                 query = (
-                    "SELECT tag, count FROM tag_stats "
-                    "WHERE LOWER(tag) LIKE :search "
-                    "ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
+                    base_query
+                    + where_sql
+                    + " ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
                 )
-                total_sql = (
-                    "SELECT COUNT(*) FROM tag_stats "
-                    "WHERE LOWER(tag) LIKE :search"
-                )
+                total_sql = base_total + where_sql
             else:
                 query = (
-                    "SELECT tag, count FROM tag_stats "
-                    "ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
+                    base_query
+                    + " ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
                 )
-                total_sql = "SELECT COUNT(*) FROM tag_stats"
+                total_sql = base_total
 
             total_result = await db.execute(text(total_sql), params)
             total_count = total_result.scalar()
             rows_result = await db.execute(text(query), params)
             rows = rows_result.fetchall()
             tags = [{"tag": r.tag, "count": r.count} for r in rows]
-            return {"tags": tags, "total": total_count, "has_more": (offset + limit) < (total_count or 0)}
+
+            return {
+                "tags": tags,
+                "total": total_count,
+                "has_more": (offset + limit) < (total_count or 0),
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"タグ情報の取得エラー: {str(e)}")
 @app.get("/api/popular-tags")

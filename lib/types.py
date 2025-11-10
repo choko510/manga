@@ -82,14 +82,10 @@ class Tag:
 
 @dataclass(slots=True)
 class Image:
-    index: int
     hash: str
-    name: str
     has_avif: bool
     has_webp: bool
     has_jxl: bool
-    width: int
-    height: int
 
 
 @dataclass(slots=True)

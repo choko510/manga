@@ -384,11 +384,13 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
         params.append('exclude_tag', hiddenTags.join(','));
     }
 
-    // ランキングソートの場合はタグ検索かどうかで処理を分岐
+    // ランキングソートの場合:
+    // - タグまたはクエリ入力あり: 通常の検索API(/search)を使用し sort_by パラメータで並び替え
+    // - タグ無し: ランキングAPI(/api/rankings)を使用
     let response;
     if (sortBy !== 'created_at' && ['daily', 'weekly', 'monthly', 'yearly', 'all_time'].includes(sortBy)) {
-        if (query) {
-            // タグ検索の場合は通常の検索APIを使用し、パラメータにソート順を追加
+        if (queryForRequest) {
+            // タグ検索（クエリあり）の場合は通常の検索APIを使用し、パラメータにソート順を追加
             params.append('sort_by', sortBy);
             response = await fetch(`/search?${params.toString()}`);
         } else {
@@ -399,6 +401,7 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
             response = await fetch(`/api/rankings?${rankingParams.toString()}`);
         }
     } else {
+        // 通常の新着順検索
         response = await fetch(`/search?${params.toString()}`);
     }
     if (!response.ok) {
@@ -410,13 +413,23 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
     let filtered, hasMore, nextAfterCreatedAt;
     
     if (sortBy !== 'created_at' && ['daily', 'weekly', 'monthly', 'yearly', 'all_time'].includes(sortBy)) {
-        // ランキングAPIのレスポンスを処理
-        filtered = data.rankings || [];
-        hasMore = Boolean(data.has_more);
-        const lastItem = filtered[filtered.length - 1];
-        nextAfterCreatedAt = null; // ランキングでは使用しない
+        if (queryForRequest) {
+            // タグ/クエリありランキングソート:
+            // /search のレスポンス形式 { results, has_more, ... } をそのまま利用
+            filtered = data.results || [];
+            hasMore = Boolean(data.has_more);
+            const lastItem = filtered[filtered.length - 1];
+            nextAfterCreatedAt = lastItem ? lastItem.created_at : null;
+        } else {
+            // タグ無しランキングソート:
+            // /api/rankings のレスポンス形式 { rankings, has_more, ... } に対応
+            filtered = data.rankings || [];
+            hasMore = Boolean(data.has_more);
+            const lastItem = filtered[filtered.length - 1];
+            nextAfterCreatedAt = null; // ランキングでは使用しない
+        }
     } else {
-        // 検索APIのレスポンスを処理
+        // 通常の検索APIレスポンスを処理
         filtered = data.results || [];
         hasMore = Boolean(data.has_more);
         const lastItem = filtered[filtered.length - 1];

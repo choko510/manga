@@ -451,17 +451,20 @@ function showProgress(current, total, message = '処理中...') {
         card.addEventListener('dragstart', (event) => {
             card.classList.add('dragging');
             event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setData('text/plain', card.dataset.categoryId || '');
+            // HTML5 DnDにはデータセットが必須なブラウザもあるためダミーを設定
+            event.dataTransfer.setData('text/plain', card.dataset.categoryId || card._category?.id || '');
         });
 
         card.addEventListener('dragend', () => {
             card.classList.remove('dragging');
-            syncCategoryOrderFromDOM();
+            updateCategoryOrderFromDOM();
         });
 
         card.addEventListener('dragover', (event) => {
             event.preventDefault();
+            // dragover中のデフォルト動作を抑止しないとdropが発火しないブラウザがある
             event.dataTransfer.dropEffect = 'move';
+
             const dragging = categoriesContainer.querySelector('.category-card.dragging');
             if (!dragging || dragging === card) return;
 
@@ -471,11 +474,11 @@ function showProgress(current, total, message = '処理中...') {
 
             if (shouldInsertAfter) {
                 if (card.nextSibling !== dragging) {
-                    card.after(dragging);
+                    card.parentNode.insertBefore(dragging, card.nextSibling);
                 }
             } else {
                 if (card.previousSibling !== dragging) {
-                    card.before(dragging);
+                    card.parentNode.insertBefore(dragging, card);
                 }
             }
         });
@@ -484,9 +487,9 @@ function showProgress(current, total, message = '処理中...') {
             event.preventDefault();
             const dragging = categoriesContainer.querySelector('.category-card.dragging');
             if (dragging && dragging !== card) {
-                // dragover 内ですでに DOM の位置は調整されているので、ここでは順序同期のみ
                 dragging.classList.remove('dragging');
-                syncCategoryOrderFromDOM();
+                // drop発火時点でのDOM順序をstate.categoriesへ反映
+                updateCategoryOrderFromDOM();
             }
         });
 
@@ -539,16 +542,27 @@ function showProgress(current, total, message = '処理中...') {
         const buttonRow = document.createElement('div');
         buttonRow.className = 'section-actions';
 
-        // 上下移動ボタン
+        // 並び順変更ボタン（ドラッグ＆ドロップが使えない環境向けの明示的な操作）
+        const moveTopButton = document.createElement('button');
+        moveTopButton.type = 'button';
+        moveTopButton.className = 'button secondary';
+        moveTopButton.textContent = '先頭へ';
+        moveTopButton.addEventListener('click', () => {
+            if (!categoriesContainer) return;
+            categoriesContainer.insertBefore(card, categoriesContainer.firstChild);
+            updateCategoryOrderFromDOM();
+        });
+
         const moveUpButton = document.createElement('button');
         moveUpButton.type = 'button';
         moveUpButton.className = 'button secondary';
         moveUpButton.textContent = '↑ 上へ';
         moveUpButton.addEventListener('click', () => {
+            if (!categoriesContainer) return;
             const prev = card.previousElementSibling;
             if (prev && prev.classList.contains('category-card')) {
                 categoriesContainer.insertBefore(card, prev);
-                syncCategoryOrderFromDOM();
+                updateCategoryOrderFromDOM();
             }
         });
 
@@ -557,12 +571,30 @@ function showProgress(current, total, message = '処理中...') {
         moveDownButton.className = 'button secondary';
         moveDownButton.textContent = '↓ 下へ';
         moveDownButton.addEventListener('click', () => {
+            if (!categoriesContainer) return;
             const next = card.nextElementSibling;
             if (next && next.classList.contains('category-card')) {
-                categoriesContainer.insertBefore(next, card);
-                syncCategoryOrderFromDOM();
+                // 自分の次にある next の次の位置に自分を移動 = 実質1つ下へ
+                categoriesContainer.insertBefore(card, next.nextSibling);
+                updateCategoryOrderFromDOM();
             }
         });
+
+        const moveBottomButton = document.createElement('button');
+        moveBottomButton.type = 'button';
+        moveBottomButton.className = 'button secondary';
+        moveBottomButton.textContent = '末尾へ';
+        moveBottomButton.addEventListener('click', () => {
+            if (!categoriesContainer) return;
+            categoriesContainer.appendChild(card);
+            updateCategoryOrderFromDOM();
+        });
+
+        // ボタンを表示順に追加
+        buttonRow.appendChild(moveTopButton);
+        buttonRow.appendChild(moveUpButton);
+        buttonRow.appendChild(moveDownButton);
+        buttonRow.appendChild(moveBottomButton);
 
         const deleteButton = document.createElement('button');
         deleteButton.type = 'button';
@@ -605,6 +637,8 @@ function showProgress(current, total, message = '処理中...') {
         });
 
         card._inputs = { idInput, labelInput, tagInput, tagDisplayContainer };
+        // カードとカテゴリオブジェクトの関連を双方向に保持
+        card._category = category;
         return card;
     }
 
@@ -793,9 +827,35 @@ function showProgress(current, total, message = '処理中...') {
             const card = createCategoryCard(category);
             // カテゴリオブジェクトへの参照を保存
             card._category = category;
+            // DOM 上からも id を参照できるようにしておく
+            card.dataset.categoryId = category.id || '';
             categoriesContainer.appendChild(card);
         });
         updateEmptyStates();
+    }
+
+    function updateCategoryOrderFromDOM() {
+        if (!categoriesContainer || !Array.isArray(state.categories)) return;
+
+        const cards = Array.from(categoriesContainer.querySelectorAll('.category-card'));
+
+        // DOM 上の順番に従って、そのまま state.categories を並べ替える
+        const newOrder = [];
+        cards.forEach((card) => {
+            const category = card._category;
+            if (category) {
+                newOrder.push(category);
+            }
+        });
+
+        // 念のため、DOM に無い残りのカテゴリがあれば末尾に追加
+        state.categories.forEach((cat) => {
+            if (!newOrder.includes(cat)) {
+                newOrder.push(cat);
+            }
+        });
+
+        state.categories = newOrder;
     }
 
     function updateEmptyStates() {

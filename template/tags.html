@@ -93,7 +93,7 @@
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            padding: 10px 20px;
+            padding: 10px 10px;
             border-radius: var(--radius-pill);
             background: var(--bg-card);
             color: var(--text-secondary);
@@ -511,6 +511,7 @@
                 searchButtonEl.addEventListener('click', () => {
                     state.search = searchInput.value.trim();
                     state.offset = 0;
+                    // 検索実行時も選択済みタグは維持するため、clearSelectedTagsしない
                     loadTags(true);
                 });
             }
@@ -520,6 +521,7 @@
                     if (event.key === 'Enter') {
                         state.search = searchInput.value.trim();
                         state.offset = 0;
+                        // Enter検索でも選択済みタグは維持
                         loadTags(true);
                     }
                 });
@@ -608,7 +610,9 @@
                 state.offset = 0;
                 state.allTags = [];
                 clearCategoryContainer();
-                state.selectedTags.clear();
+                // reset時に必ずしも選択済みタグを消したくないケースがあるため、
+                // 検索条件変更時など、呼び出し側で必要な場合のみ明示的にクリアする運用に変更
+                // ここでは selectedTags は維持し、カテゴリーの開閉状態のみリセットする
                 state.collapsedCategories.clear();
                 renderSelectedTags();
             }
