@@ -6,6 +6,7 @@ import asyncio
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
 from pydantic import BaseModel, Field
@@ -24,6 +25,7 @@ import json
 import time
 import secrets
 import string
+import random
 from datetime import datetime, timedelta
 from lib import ImageUriResolver
 import logging
@@ -79,6 +81,25 @@ def get_db_session() -> AsyncSession:
 def get_tracking_db_session() -> AsyncSession:
     return TrackingSessionLocal()
 
+
+_TABLE_EXISTS_CACHE: Dict[str, bool] = {}
+
+
+async def _table_exists(db_session: AsyncSession, table_name: str) -> bool:
+    cached = _TABLE_EXISTS_CACHE.get(table_name)
+    if cached is not None:
+        return cached
+    try:
+        result = await db_session.execute(
+            text("SELECT 1 FROM sqlite_master WHERE type='table' AND name = :name LIMIT 1"),
+            {"name": table_name},
+        )
+        exists = result.first() is not None
+    except Exception:
+        exists = False
+    _TABLE_EXISTS_CACHE[table_name] = exists
+    return exists
+
 # =========================
 # モデル
 # =========================
@@ -105,6 +126,8 @@ async def init_main_db() -> None:
             await conn.execute(text("ALTER TABLE galleries ADD COLUMN page_count INTEGER"))
         if "created_at_unix" not in columns:
             await conn.execute(text("ALTER TABLE galleries ADD COLUMN created_at_unix INTEGER"))
+        if "artists" not in columns:
+            await conn.execute(text("ALTER TABLE galleries ADD COLUMN artists TEXT"))
 
         # 3. page_count / created_at_unix の補完
         #    - page_count: files(JSON配列)中の hash を数える
@@ -213,6 +236,7 @@ class Gallery(Base):
     tags = Column(Text)         # JSON 文字列
     characters = Column(Text)
     files = Column(Text)
+    artists = Column(Text)
     manga_type = Column(String)
     created_at = Column(String) # ISO8601 文字列想定
     page_count = Column(Integer, nullable=True)
@@ -1090,6 +1114,7 @@ _GALLERY_FIELD_NAMES: Tuple[str, ...] = (
     "japanese_title",
     "tags",
     "characters",
+    "artists",
     "manga_type",
     "created_at",
     "page_count",
@@ -1275,6 +1300,7 @@ async def search_galleries(
         Gallery.tags,
         Gallery.characters,
         Gallery.files,
+        Gallery.artists,
         Gallery.manga_type,
         Gallery.created_at,
         Gallery.page_count,
@@ -1340,14 +1366,158 @@ def _normalize_tag_value(tag_value: Any) -> Optional[str]:
     return None
 
 
-async def build_session_tag_profile(
+def _normalize_artist_value(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized or None
+    return None
+
+
+def _parse_string_list_field(value: Any) -> List[str]:
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                items = parsed
+            else:
+                items = [part.strip() for part in stripped.split(",") if part.strip()]
+        except json.JSONDecodeError:
+            items = [part.strip() for part in stripped.split(",") if part.strip()]
+    else:
+        return []
+
+    results: List[str] = []
+    for item in items:
+        if isinstance(item, str):
+            cleaned = item.strip()
+            if cleaned:
+                results.append(cleaned)
+    return results
+
+
+def _take_top_entries(mapping: Mapping[Any, float], limit: int) -> Dict[Any, float]:
+    if limit <= 0:
+        return {}
+    filtered: List[Tuple[Any, float]] = []
+    for key, value in mapping.items():
+        if value is None:
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if numeric <= 0:
+            continue
+        filtered.append((key, numeric))
+    filtered.sort(key=lambda item: item[1], reverse=True)
+    limited = filtered[:limit]
+    return {key: round(weight, 6) for key, weight in limited}
+
+
+@dataclass
+class SessionPreferenceProfile:
+    tag_weights: Dict[str, float] = field(default_factory=dict)
+    negative_tag_weights: Dict[str, float] = field(default_factory=dict)
+    artist_weights: Dict[str, float] = field(default_factory=dict)
+    gallery_affinity: Dict[int, float] = field(default_factory=dict)
+
+    def is_empty(self) -> bool:
+        return not (self.tag_weights or self.negative_tag_weights or self.artist_weights or self.gallery_affinity)
+
+    def merge(self, other: "SessionPreferenceProfile") -> None:
+        if not isinstance(other, SessionPreferenceProfile):
+            return
+        self._merge_map(self.tag_weights, other.tag_weights)
+        self._merge_map(self.negative_tag_weights, other.negative_tag_weights)
+        self._merge_map(self.artist_weights, other.artist_weights)
+        self._merge_map(self.gallery_affinity, other.gallery_affinity)
+
+    def boost_tags(self, tags: Mapping[str, float], *, weight_multiplier: float = 1.0) -> None:
+        for tag, weight in tags.items():
+            normalized = _normalize_tag_value(tag)
+            if not normalized:
+                continue
+            try:
+                numeric = float(weight) * float(weight_multiplier)
+            except (TypeError, ValueError):
+                continue
+            if numeric <= 0:
+                continue
+            self.tag_weights[normalized] = self.tag_weights.get(normalized, 0.0) + numeric
+
+    def penalise_tags(self, tags: Mapping[str, float], *, weight_multiplier: float = 1.0) -> None:
+        for tag, weight in tags.items():
+            normalized = _normalize_tag_value(tag)
+            if not normalized:
+                continue
+            try:
+                numeric = float(weight) * float(weight_multiplier)
+            except (TypeError, ValueError):
+                continue
+            if numeric <= 0:
+                continue
+            self.negative_tag_weights[normalized] = self.negative_tag_weights.get(normalized, 0.0) + numeric
+
+    def boost_artists(self, artists: Mapping[str, float], *, weight_multiplier: float = 1.0) -> None:
+        for artist, weight in artists.items():
+            normalized = _normalize_artist_value(artist)
+            if not normalized:
+                continue
+            try:
+                numeric = float(weight) * float(weight_multiplier)
+            except (TypeError, ValueError):
+                continue
+            if numeric <= 0:
+                continue
+            self.artist_weights[normalized] = self.artist_weights.get(normalized, 0.0) + numeric
+
+    def boost_galleries(self, galleries: Mapping[int, float], *, weight_multiplier: float = 1.0) -> None:
+        for gallery_id, weight in galleries.items():
+            try:
+                gid = int(gallery_id)
+                numeric = float(weight) * float(weight_multiplier)
+            except (TypeError, ValueError):
+                continue
+            if numeric <= 0:
+                continue
+            self.gallery_affinity[gid] = self.gallery_affinity.get(gid, 0.0) + numeric
+
+    def prune(self, *, max_tags: int = 40, max_negative_tags: int = 20, max_artists: int = 25, max_galleries: int = 40) -> None:
+        if self.tag_weights:
+            self.tag_weights = _take_top_entries(self.tag_weights, max_tags)
+        if self.negative_tag_weights:
+            self.negative_tag_weights = _take_top_entries(self.negative_tag_weights, max_negative_tags)
+        if self.artist_weights:
+            self.artist_weights = _take_top_entries(self.artist_weights, max_artists)
+        if self.gallery_affinity:
+            self.gallery_affinity = _take_top_entries(self.gallery_affinity, max_galleries)
+
+    @staticmethod
+    def _merge_map(target: Dict[Any, float], source: Mapping[Any, float]) -> None:
+        for key, value in source.items():
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if numeric <= 0:
+                continue
+            target[key] = target.get(key, 0.0) + numeric
+
+
+async def build_session_profile(
     db_session: AsyncSession,
     session_id: str,
     lookback_days: int = SESSION_TAG_LOOKBACK_DAYS,
     max_page_views: int = SESSION_TAG_MAX_PAGE_VIEWS,
-) -> Dict[str, float]:
+) -> SessionPreferenceProfile:
+    profile = SessionPreferenceProfile()
     if not session_id:
-        return {}
+        return profile
 
     try:
         async with get_tracking_db_session() as tracking_db:
@@ -1361,15 +1531,17 @@ async def build_session_tag_profile(
             page_views = result.scalars().all()
     except Exception as exc:
         logger.error("セッションプロファイル取得エラー: %s", exc)
-        return {}
+        return profile
 
     if not page_views:
-        return {}
+        return profile
 
     from datetime import timezone
+
     now = datetime.now(timezone.utc)
-    gallery_scores: Dict[int, float] = {}
     lookback_seconds = max(lookback_days, 1) * 86400
+    positive_scores: Dict[int, float] = {}
+    penalty_scores: Dict[int, float] = {}
 
     for view in page_views:
         gallery_id = _extract_gallery_id_from_page_url(getattr(view, "page_url", None))
@@ -1383,7 +1555,6 @@ async def build_session_tag_profile(
             try:
                 start = datetime.fromisoformat(view.view_start)
                 end = datetime.fromisoformat(view.view_end)
-                # タイムゾーン情報がない場合はUTCと仮定
                 if start.tzinfo is None:
                     start = start.replace(tzinfo=timezone.utc)
                 if end.tzinfo is None:
@@ -1392,15 +1563,10 @@ async def build_session_tag_profile(
             except ValueError:
                 duration_seconds = None
 
-        duration_weight = 1.0
-        if duration_seconds and duration_seconds > 0:
-            duration_weight += min(duration_seconds / 120.0, 3.0)
-
         recency_weight = 1.0
         if getattr(view, "view_start", None):
             try:
                 view_time = datetime.fromisoformat(view.view_start)
-                # タイムゾーン情報がない場合はUTCと仮定
                 if view_time.tzinfo is None:
                     view_time = view_time.replace(tzinfo=timezone.utc)
                 age_seconds = max((now - view_time).total_seconds(), 0.0)
@@ -1410,49 +1576,179 @@ async def build_session_tag_profile(
             except ValueError:
                 recency_weight = 1.0
 
-        weight = duration_weight * recency_weight
-        gallery_scores[gallery_id] = gallery_scores.get(gallery_id, 0.0) + weight
+        engagement_bonus = 0.0
+        if duration_seconds and duration_seconds > 0:
+            engagement_bonus = min(duration_seconds / 90.0, 2.5)
 
-    if not gallery_scores:
-        return {}
+        positive_weight = (1.0 + engagement_bonus) * recency_weight
+        if duration_seconds is not None:
+            if duration_seconds < 8:
+                penalty = recency_weight * (1.2 - min(duration_seconds / 8.0, 1.0))
+                penalty_scores[gallery_id] = penalty_scores.get(gallery_id, 0.0) + penalty
+                positive_weight *= 0.25
+            elif duration_seconds < 20:
+                penalty = recency_weight * (0.8 - min(duration_seconds / 20.0, 0.8))
+                penalty_scores[gallery_id] = penalty_scores.get(gallery_id, 0.0) + penalty
+                positive_weight *= 0.6
+            elif duration_seconds < 45:
+                positive_weight *= 0.85
+        positive_scores[gallery_id] = positive_scores.get(gallery_id, 0.0) + positive_weight
 
-    gallery_ids = list(gallery_scores.keys())
+    gallery_ids = list({*positive_scores.keys(), *penalty_scores.keys()})
+    if not gallery_ids:
+        return profile
+
     try:
-        stmt = select(Gallery.gallery_id, Gallery.tags).where(Gallery.gallery_id.in_(gallery_ids))
+        stmt = select(Gallery.gallery_id, Gallery.tags, Gallery.artists).where(Gallery.gallery_id.in_(gallery_ids))
         result = await db_session.execute(stmt)
         gallery_rows = result.all()
     except Exception as exc:
-        logger.error("ギャラリータグ取得エラー: %s", exc)
+        logger.error("ギャラリー情報取得エラー: %s", exc)
+        return profile
+
+    for row in gallery_rows:
+        if hasattr(row, "gallery_id"):
+            gid = row.gallery_id
+            raw_tags = row.tags
+            raw_artists = getattr(row, "artists", None)
+        else:
+            gid = row[0]
+            raw_tags = row[1]
+            raw_artists = row[2] if len(row) > 2 else None
+
+        positive = positive_scores.get(gid, 0.0)
+        penalty = penalty_scores.get(gid, 0.0)
+
+        tags = [_normalize_tag_value(tag) for tag in _parse_string_list_field(raw_tags)]
+        tags = [tag for tag in tags if tag]
+        artists = [_normalize_artist_value(name) for name in _parse_string_list_field(raw_artists)]
+        artists = [artist for artist in artists if artist]
+
+        if positive > 0:
+            weight = positive
+            if penalty > 0:
+                weight = max(positive - penalty * 0.4, positive * 0.3)
+            profile.boost_tags({tag: weight for tag in tags})
+            profile.boost_artists({artist: weight for artist in artists})
+            profile.boost_galleries({gid: weight})
+
+        if penalty > positive and tags:
+            profile.penalise_tags({tag: penalty - positive for tag in tags})
+
+    profile.prune()
+    return profile
+
+
+async def build_session_tag_profile(
+    db_session: AsyncSession,
+    session_id: str,
+    lookback_days: int = SESSION_TAG_LOOKBACK_DAYS,
+    max_page_views: int = SESSION_TAG_MAX_PAGE_VIEWS,
+) -> Dict[str, float]:
+    profile = await build_session_profile(
+        db_session,
+        session_id,
+        lookback_days=lookback_days,
+        max_page_views=max_page_views,
+    )
+    return profile.tag_weights
+
+
+async def build_liked_profile(
+    db_session: AsyncSession,
+    liked_gallery_ids: Set[int],
+    *,
+    base_weight: float = 5.0,
+) -> SessionPreferenceProfile:
+    profile = SessionPreferenceProfile()
+    if not liked_gallery_ids:
+        return profile
+
+    try:
+        stmt = select(Gallery.gallery_id, Gallery.tags, Gallery.artists).where(Gallery.gallery_id.in_(liked_gallery_ids))
+        result = await db_session.execute(stmt)
+        rows = result.all()
+    except Exception as exc:
+        logger.error("いいねギャラリー取得エラー: %s", exc)
+        return profile
+
+    for row in rows:
+        if hasattr(row, "gallery_id"):
+            gid = row.gallery_id
+            raw_tags = row.tags
+            raw_artists = getattr(row, "artists", None)
+        else:
+            gid = row[0]
+            raw_tags = row[1]
+            raw_artists = row[2] if len(row) > 2 else None
+
+        tags = [_normalize_tag_value(tag) for tag in _parse_string_list_field(raw_tags)]
+        tags = [tag for tag in tags if tag]
+        artists = [_normalize_artist_value(name) for name in _parse_string_list_field(raw_artists)]
+        artists = [artist for artist in artists if artist]
+
+        if tags:
+            profile.boost_tags({tag: base_weight for tag in tags})
+        if artists:
+            profile.boost_artists({artist: base_weight * 0.8 for artist in artists})
+        profile.boost_galleries({gid: base_weight})
+
+    profile.prune()
+    return profile
+
+
+def _parse_user_preferred_terms(raw: Optional[str]) -> Dict[str, float]:
+    if not raw:
         return {}
 
-    tag_weights: Dict[str, float] = {}
-    for row in gallery_rows:
-        raw_tags = row.tags if hasattr(row, 'tags') else row[1]
-        try:
-            tags_data = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
-        except (TypeError, json.JSONDecodeError):
-            tags_data = []
+    parsed: Any
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        parsed = None
 
-        if not isinstance(tags_data, list):
-            continue
-
-        gallery_weight = gallery_scores.get(row[0] if isinstance(row, tuple) else row.gallery_id, 0.0)
-        if gallery_weight <= 0:
-            continue
-
-        for tag_value in tags_data:
+    result: Dict[str, float] = {}
+    if isinstance(parsed, list):
+        for entry in parsed:
+            if isinstance(entry, Mapping):
+                tag_value = entry.get("tag") or entry.get("value") or entry.get("name")
+                weight_value = entry.get("weight") or entry.get("count") or entry.get("score") or 1.0
+            else:
+                tag_value = entry
+                weight_value = 1.0
             normalized = _normalize_tag_value(tag_value)
             if not normalized:
                 continue
-            tag_weights[normalized] = tag_weights.get(normalized, 0.0) + gallery_weight
+            try:
+                numeric = float(weight_value)
+            except (TypeError, ValueError):
+                numeric = 1.0
+            if numeric <= 0:
+                continue
+            result[normalized] = result.get(normalized, 0.0) + numeric
+    elif isinstance(parsed, Mapping):
+        for key, value in parsed.items():
+            normalized = _normalize_tag_value(key)
+            if not normalized:
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                numeric = 1.0
+            if numeric <= 0:
+                continue
+            result[normalized] = result.get(normalized, 0.0) + numeric
+    else:
+        tokens = str(raw).split(",")
+        for token in tokens:
+            normalized = _normalize_tag_value(token)
+            if not normalized:
+                continue
+            result[normalized] = result.get(normalized, 0.0) + 1.0
 
-    if not tag_weights:
+    if not result:
         return {}
-
-    max_weight = max(tag_weights.values())
-    if max_weight <= 0:
-        return {}
-    return {tag: weight / max_weight for tag, weight in tag_weights.items() if weight > 0}
+    return _take_top_entries(result, 30)
 
 
 # =================================================================================
@@ -1461,17 +1757,18 @@ async def build_session_tag_profile(
 RECOMMENDATION_CANDIDATE_MULTIPLIER = 10
 RECOMMENDATION_CANDIDATE_MAX = 200
 
+
 async def get_recommended_galleries(
     db_session: AsyncSession,
     gallery_id: Optional[int] = None,
     limit: int = 8,
     exclude_tag: Optional[str] = None,
-    session_tag_weights: Optional[Mapping[str, float]] = None,
+    session_profile: Optional[SessionPreferenceProfile] = None,
 ) -> List[Dict[str, Any]]:
     """
     高速化されたおすすめギャラリー取得関数。
     - 重いJOINとGROUP BYを避け、軽量なクエリで関連候補を絞り込む。
-    - 2段階のフェッチ戦略でDB負荷を軽減。
+    - 個人プロファイルを用いて好みを学習し、スコアリングを強化。
     """
     base_gallery_tags: Tuple[str, ...] = tuple()
     exclude_ids: Set[int] = set()
@@ -1490,27 +1787,26 @@ async def get_recommended_galleries(
                         cleaned_tag = tag.strip().lower()
                         if cleaned_tag:
                             normalized.append(cleaned_tag)
-                base_gallery_tags = tuple(normalized[:15])  # 参照するタグ数を制限
+                base_gallery_tags = tuple(normalized[:15])
             except (TypeError, json.JSONDecodeError):
                 pass
 
     known_tags = await _get_known_tag_set(db_session)
-    exclude_terms = _parse_tag_terms(exclude_tag, known_tags)
-    
-    candidate_galleries: Dict[int, Dict[str, Any]] = {}
+    exclude_terms_tuple = _parse_tag_terms(exclude_tag, known_tags)
 
-    # ステップ1: タグに基づいて関連性の高い候補ギャラリーIDを取得
+    gallery_map: Dict[int, Dict[str, Any]] = {}
+    candidate_scores: Dict[int, Dict[str, float]] = {}
+    additional_candidate_ids: Set[int] = set()
+
     if base_gallery_tags:
         candidate_limit = min(limit * RECOMMENDATION_CANDIDATE_MULTIPLIER, RECOMMENDATION_CANDIDATE_MAX)
         params: Dict[str, Any] = {"limit": candidate_limit}
-        
-        tag_placeholders = []
+        tag_placeholders: List[str] = []
         for i, tag in enumerate(base_gallery_tags):
             key = f"tag_{i}"
             params[key] = tag
             tag_placeholders.append(f":{key}")
 
-        # gallery_tagsテーブルのみを使い、高速にマッチ数を集計
         candidate_query = f"""
             SELECT
                 gt.gallery_id,
@@ -1521,55 +1817,152 @@ async def get_recommended_galleries(
             ORDER BY match_count DESC
             LIMIT :limit
         """
-        
         candidate_id_rows = await db_session.execute(text(candidate_query), params)
         candidate_ids_with_score = {row.gallery_id: row.match_count for row in candidate_id_rows}
 
+        for ex_id in exclude_ids:
+            candidate_ids_with_score.pop(ex_id, None)
+
         if candidate_ids_with_score:
-            # 除外IDを削除
-            for ex_id in exclude_ids:
-                candidate_ids_with_score.pop(ex_id, None)
+            galleries_stmt = select(Gallery).where(Gallery.gallery_id.in_(candidate_ids_with_score.keys()))
+            gallery_results = await db_session.execute(galleries_stmt)
+            for gallery_row in gallery_results.scalars().all():
+                serialized = _serialize_gallery(gallery_row.__dict__)
+                match_score = float(candidate_ids_with_score.get(gallery_row.gallery_id, 0) or 0.0)
+                serialized["_match_score"] = match_score
+                gid = gallery_row.gallery_id
+                gallery_map[gid] = serialized
+                candidate_scores.setdefault(gid, {})["similarity"] = match_score
+                exclude_ids.add(gid)
 
-            # ステップ2: 候補IDのギャラリー情報を取得
-            if candidate_ids_with_score:
-                galleries_stmt = select(Gallery).where(Gallery.gallery_id.in_(candidate_ids_with_score.keys()))
-                gallery_results = await db_session.execute(galleries_stmt)
+    personal_candidate_limit = min(limit * RECOMMENDATION_CANDIDATE_MULTIPLIER, RECOMMENDATION_CANDIDATE_MAX)
+    if session_profile:
+        if session_profile.tag_weights:
+            top_tags = [item for item in sorted(session_profile.tag_weights.items(), key=lambda kv: kv[1], reverse=True) if item[1] > 0][:10]
+            if top_tags:
+                params: Dict[str, Any] = {"limit": personal_candidate_limit}
+                placeholders: List[str] = []
+                cases: List[str] = []
+                for idx, (tag, weight) in enumerate(top_tags):
+                    tag_key = f"pref_tag_{idx}"
+                    weight_key = f"pref_weight_{idx}"
+                    params[tag_key] = tag
+                    params[weight_key] = float(weight)
+                    placeholders.append(f":{tag_key}")
+                    cases.append(f"WHEN gt.tag = :{tag_key} THEN :{weight_key}")
+                case_sql = "CASE " + " ".join(cases) + " ELSE 0 END"
+                preference_query = f"""
+                    SELECT
+                        gt.gallery_id,
+                        SUM({case_sql}) AS preference_score
+                    FROM gallery_tags AS gt
+                    WHERE gt.tag IN ({', '.join(placeholders)})
+                    GROUP BY gt.gallery_id
+                    ORDER BY preference_score DESC
+                    LIMIT :limit
+                """
+                preference_rows = await db_session.execute(text(preference_query), params)
+                for row in preference_rows:
+                    gid = getattr(row, "gallery_id", None)
+                    if gid is None:
+                        continue
+                    score = float(getattr(row, "preference_score", 0.0) or 0.0)
+                    if score <= 0:
+                        continue
+                    candidate_scores.setdefault(gid, {})["tag_pref"] = candidate_scores.setdefault(gid, {}).get("tag_pref", 0.0) + score
+                    if gid not in gallery_map:
+                        additional_candidate_ids.add(gid)
 
-                for gallery_row in gallery_results.scalars().all():
-                    serialized = _serialize_gallery(gallery_row.__dict__)
-                    serialized["_match_score"] = candidate_ids_with_score.get(gallery_row.gallery_id, 0)
-                    candidate_galleries[gallery_row.gallery_id] = serialized
+        if session_profile.artist_weights:
+            top_artists = [item for item in sorted(session_profile.artist_weights.items(), key=lambda kv: kv[1], reverse=True) if item[1] > 0][:8]
+            if top_artists:
+                if await _table_exists(db_session, "gallery_artists"):
+                    params: Dict[str, Any] = {"limit": personal_candidate_limit}
+                    placeholders: List[str] = []
+                    cases: List[str] = []
+                    for idx, (artist, weight) in enumerate(top_artists):
+                        artist_key = f"pref_artist_{idx}"
+                        weight_key = f"pref_artist_weight_{idx}"
+                        params[artist_key] = artist
+                        params[weight_key] = float(weight)
+                        placeholders.append(f":{artist_key}")
+                        cases.append(f"WHEN ga.artist = :{artist_key} THEN :{weight_key}")
+                    case_sql = "CASE " + " ".join(cases) + " ELSE 0 END"
+                    artist_query = f"""
+                        SELECT
+                            ga.gallery_id,
+                            SUM({case_sql}) AS artist_score
+                        FROM gallery_artists AS ga
+                        WHERE ga.artist IN ({', '.join(placeholders)})
+                        GROUP BY ga.gallery_id
+                        ORDER BY artist_score DESC
+                        LIMIT :limit
+                    """
+                    artist_rows = await db_session.execute(text(artist_query), params)
+                    for row in artist_rows:
+                        gid = getattr(row, "gallery_id", None)
+                        if gid is None:
+                            continue
+                        score = float(getattr(row, "artist_score", 0.0) or 0.0)
+                        if score <= 0:
+                            continue
+                        candidate_scores.setdefault(gid, {})["artist_pref"] = candidate_scores.setdefault(gid, {}).get("artist_pref", 0.0) + score
+                        if gid not in gallery_map:
+                            additional_candidate_ids.add(gid)
+                else:
+                    per_artist_limit = max(personal_candidate_limit // max(len(top_artists), 1), limit)
+                    like_query = text(
+                        """
+                            SELECT gallery_id, artists
+                            FROM galleries
+                            WHERE artists LIKE :pattern
+                            LIMIT :limit
+                        """
+                    )
+                    for artist, weight in top_artists:
+                        rows = await db_session.execute(like_query, {"pattern": f'%"{artist}"%', "limit": per_artist_limit})
+                        for row in rows:
+                            gid = getattr(row, "gallery_id", None)
+                            if gid is None:
+                                gid = row[0] if isinstance(row, tuple) else None
+                            if gid is None:
+                                continue
+                            score = float(weight)
+                            if score <= 0:
+                                continue
+                            candidate_scores.setdefault(gid, {})["artist_pref"] = candidate_scores.setdefault(gid, {}).get("artist_pref", 0.0) + score
+                            if gid not in gallery_map:
+                                additional_candidate_ids.add(gid)
 
-    # 取得したギャラリーをスコア順にソート
-    sorted_galleries = sorted(candidate_galleries.values(), key=lambda g: -g.get("_match_score", 0))
+        if session_profile.gallery_affinity:
+            for gid, score in session_profile.gallery_affinity.items():
+                if score <= 0:
+                    continue
+                candidate_scores.setdefault(gid, {})["engagement"] = candidate_scores.setdefault(gid, {}).get("engagement", 0.0) + float(score)
+                if gid not in gallery_map:
+                    additional_candidate_ids.add(gid)
 
-    # exclude_tagでフィルタリング
-    if exclude_terms:
-        # このフィルタリングはPython側で行う方が効率的
-        def check_exclude(g: Dict[str, Any]) -> bool:
-            try:
-                g_tags = {t.strip().lower() for t in json.loads(g.get("tags") or "[]")}
-                return not any(ex_tag in g_tags for ex_tag in exclude_terms)
-            except:
-                return True
-        sorted_galleries = [g for g in sorted_galleries if check_exclude(g)]
+    if additional_candidate_ids:
+        stmt = select(Gallery).where(Gallery.gallery_id.in_(additional_candidate_ids))
+        extra_results = await db_session.execute(stmt)
+        for gallery_row in extra_results.scalars().all():
+            serialized = _serialize_gallery(gallery_row.__dict__)
+            gid = gallery_row.gallery_id
+            gallery_map[gid] = serialized
+            exclude_ids.add(gid)
 
-    galleries = sorted_galleries[:limit]
-    final_gallery_ids = {g["gallery_id"] for g in galleries}
-    exclude_ids.update(final_gallery_ids)
-
-    # ステップ3: 結果が不足している場合、最新のギャラリーで補完
-    if len(galleries) < limit:
-        remaining = limit - len(galleries)
+    target_candidates = max(limit * 2, limit + 6)
+    current_count = len(gallery_map)
+    if current_count < target_candidates:
+        remaining = target_candidates - current_count
         fallback_params: Dict[str, Any] = {"limit": remaining}
         fallback_clauses = ["g.manga_type = 'doujinshi'"]
 
-        if exclude_terms:
-            not_exists, not_params = _build_tag_not_exists_clause("g", exclude_terms)
+        if exclude_terms_tuple:
+            not_exists, not_params = _build_tag_not_exists_clause("g", exclude_terms_tuple)
             fallback_clauses.extend(not_exists)
             fallback_params.update(not_params)
 
-        # これまでに見つかった全てのIDを除外
         if exclude_ids:
             placeholders = []
             for i, ex_id in enumerate(exclude_ids):
@@ -1578,47 +1971,92 @@ async def get_recommended_galleries(
                 placeholders.append(f":{key}")
             fallback_clauses.append(f"g.gallery_id NOT IN ({','.join(placeholders)})")
 
-        fallback_sql = text(
-            "SELECT * FROM galleries AS g WHERE " + " AND ".join(fallback_clauses) + 
-            " ORDER BY g.created_at DESC, g.gallery_id DESC LIMIT :limit"
-        )
-        
+        fallback_sql = f"""
+            SELECT
+                g.gallery_id,
+                g.japanese_title,
+                g.tags,
+                g.characters,
+                g.files,
+                g.artists,
+                g.manga_type,
+                g.created_at,
+                g.page_count,
+                g.created_at_unix
+            FROM galleries AS g
+            WHERE {' AND '.join(fallback_clauses)}
+            ORDER BY g.created_at_unix DESC NULLS LAST, g.gallery_id DESC
+            LIMIT :limit
+        """
         fallback_result = await db_session.execute(fallback_sql, fallback_params)
-        fallback_galleries = [_serialize_gallery(row) for row in fallback_result.mappings()]
-        galleries.extend(fallback_galleries)
+        for row in fallback_result.mappings():
+            serialized = _serialize_gallery(row)
+            gid = serialized["gallery_id"]
+            if gid in gallery_map:
+                continue
+            gallery_map[gid] = serialized
+            exclude_ids.add(gid)
 
-    # ステップ4: パーソナライズスコアで最終的な並び替え
-    if session_tag_weights and galleries:
-        normalized_weights = {
-            key.strip().lower(): value
-            for key, value in session_tag_weights.items()
-            if isinstance(key, str) and key.strip()
-        }
-        if normalized_weights:
-            for idx, item in enumerate(galleries):
-                item["_base_order"] = idx
-                score = 0.0
-                try:
-                    tags_list = json.loads(item.get("tags") or "[]")
-                    for tag_value in tags_list:
-                        normalized = _normalize_tag_value(tag_value)
-                        if normalized:
-                            score += normalized_weights.get(normalized, 0.0)
-                except (TypeError, json.JSONDecodeError):
-                    pass
-                item["_personal_score"] = score
-            
-            # 安定ソート: パーソナルスコアが同じ場合は元の順序を維持
-            galleries.sort(key=lambda item: (-item.get("_personal_score", 0.0), item.get("_base_order", 0)))
-            
-            for item in galleries:
-                score = item.pop("_personal_score", None)
-                item.pop("_base_order", None)
-                item.pop("_match_score", None) # 不要なキーを削除
-                if score and score > 0:
-                    item["personal_score"] = round(float(score), 4)
+    exclude_term_set: Set[str] = set(exclude_terms_tuple or tuple())
+    if session_profile and session_profile.negative_tag_weights:
+        for tag, weight in session_profile.negative_tag_weights.items():
+            if weight >= 2.0:
+                exclude_term_set.add(tag)
 
-    return galleries[:limit]
+    results: List[Dict[str, Any]] = []
+    for gid, gallery in gallery_map.items():
+        tags_raw = _parse_string_list_field(gallery.get("tags"))
+        normalized_tags = [_normalize_tag_value(tag) for tag in tags_raw]
+        normalized_tags = [tag for tag in normalized_tags if tag]
+
+        if exclude_term_set and any(tag in exclude_term_set for tag in normalized_tags):
+            continue
+
+        artists_raw = _parse_string_list_field(gallery.get("artists"))
+        normalized_artists = [_normalize_artist_value(name) for name in artists_raw]
+        normalized_artists = [artist for artist in normalized_artists if artist]
+
+        metrics = candidate_scores.get(gid, {})
+        score = 0.0
+        if metrics:
+            score += float(metrics.get("similarity", 0.0)) * 0.6
+            score += float(metrics.get("tag_pref", 0.0)) * 1.1
+            score += float(metrics.get("artist_pref", 0.0)) * 1.25
+            score += float(metrics.get("engagement", 0.0)) * 1.35
+
+        base_match = float(gallery.get("_match_score", 0.0) or 0.0)
+        if base_match and "similarity" not in metrics:
+            score += base_match * 0.5
+
+        if session_profile:
+            tag_bonus = sum(session_profile.tag_weights.get(tag, 0.0) for tag in normalized_tags)
+            artist_bonus = sum(session_profile.artist_weights.get(artist, 0.0) for artist in normalized_artists)
+            engagement_bonus = session_profile.gallery_affinity.get(gid, 0.0)
+            penalty = sum(session_profile.negative_tag_weights.get(tag, 0.0) for tag in normalized_tags)
+            score += tag_bonus * 0.5
+            score += artist_bonus * 1.1
+            score += engagement_bonus * 1.4
+            score -= penalty * 0.9
+
+        score += random.uniform(0.0, 0.75)
+
+        item = dict(gallery)
+        item.pop("_match_score", None)
+        item["personal_score"] = round(score, 4)
+        results.append(item)
+
+    if not results:
+        return []
+
+    results.sort(
+        key=lambda item: (
+            item.get("personal_score", 0.0),
+            item.get("created_at_unix") or 0,
+            item.get("created_at") or "",
+        ),
+        reverse=True,
+    )
+    return results[:limit]
 
 # =================================================================================
 # ^^^^^^^^^^^^^^^^^^^^^^^^ 高速化のための修正箇所 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1787,10 +2225,6 @@ async def read_index():
 async def read_viewer():
     return _serve_cached_html("template/viewer.html")
 
-@app.get("/recommendations", response_class=HTMLResponse)
-async def read_recommendations():
-    return _serve_cached_html("template/recommendations.html")
-
 @app.get("/history", response_class=HTMLResponse)
 async def read_history():
     return _serve_cached_html("template/history.html")
@@ -1877,17 +2311,45 @@ async def api_recommendations(
     limit: int = 8,
     exclude_tag: Optional[str] = None,
     session_id: Optional[str] = None,
+    preferred_terms: Optional[str] = None,
+    liked_ids: Optional[str] = None,
 ):
     try:
         async with get_db_session() as db:
-            session_tag_weights: Optional[Dict[str, float]] = None
+            session_profile: Optional[SessionPreferenceProfile] = None
+            profile = SessionPreferenceProfile()
+
             if session_id:
                 try:
-                    # NOTE: さらなる高速化のため、この結果をキャッシュすることも検討できます
-                    session_tag_weights = await build_session_tag_profile(db, session_id)
+                    profile.merge(await build_session_profile(db, session_id))
                 except Exception as exc:
                     logger.error("おすすめ個人化プロファイル作成エラー: %s", exc)
-                    session_tag_weights = None
+
+            preferred_map = _parse_user_preferred_terms(preferred_terms)
+            if preferred_map:
+                profile.boost_tags(preferred_map, weight_multiplier=1.0)
+
+            liked_gallery_ids: Set[int] = set()
+            if liked_ids:
+                for token in str(liked_ids).split(','):
+                    token = token.strip()
+                    if not token:
+                        continue
+                    try:
+                        liked_gallery_ids.add(int(token))
+                    except (TypeError, ValueError):
+                        continue
+            if liked_gallery_ids:
+                try:
+                    profile.merge(await build_liked_profile(db, liked_gallery_ids))
+                except Exception as exc:
+                    logger.error("いいね情報の反映に失敗しました: %s", exc)
+
+            profile.prune()
+            if not profile.is_empty():
+                session_profile = profile
+            else:
+                session_profile = None
 
             # 1. 高速化された関数でギャラリーリストを取得
             results = await get_recommended_galleries(
@@ -1895,7 +2357,7 @@ async def api_recommendations(
                 gallery_id=gallery_id,
                 limit=limit,
                 exclude_tag=exclude_tag,
-                session_tag_weights=session_tag_weights,
+                session_profile=session_profile,
             )
 
             if not results:
@@ -2014,6 +2476,7 @@ async def search_galleries_get(
                             g.japanese_title,
                             g.tags,
                             g.characters,
+                            g.artists,
                             g.files,
                             g.manga_type,
                             g.created_at,
@@ -3031,6 +3494,7 @@ async def get_rankings(
                     g.japanese_title,
                     g.tags,
                     g.characters,
+                    g.artists,
                     g.files,
                     g.page_count,
                     g.created_at,
@@ -3057,6 +3521,7 @@ async def get_rankings(
                         "japanese_title": row.japanese_title,
                         "tags": row.tags,
                         "characters": row.characters,
+                        "artists": getattr(row, 'artists', None),
                         "page_count": row.page_count,
                         "created_at": row.created_at,
                         "created_at_unix": row.created_at_unix

@@ -413,6 +413,14 @@
             color: var(--text-secondary);
         }
 
+        .card-score {
+            background: var(--accent-soft);
+            color: var(--accent);
+            border-radius: var(--radius-pill);
+            padding: 2px 8px;
+            font-weight: 600;
+        }
+
         .card-tags {
             display: flex;
             flex-wrap: wrap;
@@ -605,6 +613,25 @@
             color: var(--text-secondary);
         }
 
+        .recommendation-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .recommendation-buttons {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .error-message {
+            color: var(--danger);
+            font-size: 14px;
+            margin-top: 12px;
+        }
+
         @media (max-width: 1023px) {
             .site-header {
                 padding: 16px 20px;
@@ -687,9 +714,9 @@
     <header class="site-header">
         <div class="header-top">
             <nav class="main-nav">
-                <a href="/" class="nav-button active">ホーム</a>
+                <a href="#recommendationSection" class="nav-button active">おすすめ</a>
+                <a href="#searchSection" class="nav-button">検索</a>
                 <a href="/tags" class="nav-button">タグ</a>
-                <a href="/recommendations" class="nav-button">おすすめ</a>
                 <a href="/history" class="nav-button">履歴</a>
             </nav>
             <div class="header-actions">
@@ -755,6 +782,21 @@
     </aside>
 
     <main class="content-area">
+        <section class="results-section" id="recommendationSection" aria-live="polite">
+            <div class="section-header">
+                <h2 class="section-title">あなたへのおすすめ</h2>
+                <div class="recommendation-actions">
+                    <div class="result-meta" id="recommendationMeta"></div>
+                    <div class="recommendation-buttons">
+                        <button id="refreshRecommendations" class="ghost-button" type="button">更新</button>
+                    </div>
+                </div>
+            </div>
+            <div class="result-meta" id="recommendationHiddenSummary"></div>
+            <div class="card-grid" id="recommendationGrid"></div>
+            <div class="loading" id="recommendationLoading" style="display:none;">おすすめを生成中...</div>
+            <div class="error-message" id="recommendationError" role="status" style="display:none;"></div>
+        </section>
         <section class="results-section" id="searchSection" aria-live="polite">
             <div class="section-header">
                 <h2 class="section-title">検索結果</h2>

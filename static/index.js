@@ -45,6 +45,13 @@
             resetSettingsButton: document.getElementById('resetSettingsButton'),
             filtersToggle: document.getElementById('filtersToggle'),
             searchOptions: document.getElementById('searchOptions'),
+            recommendationSection: document.getElementById('recommendationSection'),
+            recommendationGrid: document.getElementById('recommendationGrid'),
+            recommendationLoading: document.getElementById('recommendationLoading'),
+            recommendationError: document.getElementById('recommendationError'),
+            recommendationMeta: document.getElementById('recommendationMeta'),
+            recommendationHiddenSummary: document.getElementById('recommendationHiddenSummary'),
+            refreshRecommendations: document.getElementById('refreshRecommendations'),
         };
 
         MangaApp.applyThemeToDocument(document);
@@ -60,6 +67,7 @@
         setupObservers();
         attachEventHandlers(elements);
         updateHiddenTagsUI(elements);
+        initializeRecommendations(elements);
         renderHistory(elements);
         performSearch(elements, true);
     });
@@ -216,6 +224,30 @@
         setupFiltersToggle(elements);
     }
 
+    function initializeRecommendations(elements) {
+        if (!elements.recommendationGrid) {
+            return;
+        }
+
+        const load = (options = {}) => loadRecommendations(elements, options);
+        const debouncedLoad = debounce(() => loadRecommendations(elements), 500);
+
+        updateRecommendationHiddenSummary(elements);
+        load({ forceRefresh: true });
+
+        if (elements.refreshRecommendations) {
+            elements.refreshRecommendations.addEventListener('click', () => load({ forceRefresh: true }));
+        }
+
+        document.addEventListener('manga:hidden-tags-change', () => {
+            updateRecommendationHiddenSummary(elements);
+            debouncedLoad();
+        });
+        document.addEventListener('manga:likes-change', () => debouncedLoad());
+        document.addEventListener('manga:tag-usage-change', () => debouncedLoad());
+        document.addEventListener('tracking:session-ready', () => load({ forceRefresh: true }));
+    }
+
     function setupFiltersToggle(elements) {
         const { filtersToggle, searchOptions } = elements;
         if (!filtersToggle || !searchOptions) {
@@ -243,6 +275,127 @@
         });
 
         handleViewportChange(mobileMediaQuery);
+    }
+
+    function getTrackingSessionId() {
+        if (window.Tracking && typeof window.Tracking.getSessionId === 'function') {
+            return window.Tracking.getSessionId();
+        }
+        return null;
+    }
+
+    function getPreferredTermsPayload(limit = 12) {
+        if (!MangaApp || typeof MangaApp.getTagUsageCounts !== 'function') {
+            return [];
+        }
+        const counts = MangaApp.getTagUsageCounts();
+        return Object.entries(counts)
+            .map(([tag, weight]) => ({
+                tag,
+                weight: Number.isFinite(weight) ? Number(weight) : Number.parseFloat(weight) || 1,
+            }))
+            .filter((entry) => entry.tag && entry.weight > 0)
+            .sort((a, b) => b.weight - a.weight)
+            .slice(0, limit);
+    }
+
+    async function loadRecommendations(elements, options = {}) {
+        if (!elements.recommendationGrid) {
+            return;
+        }
+        const { forceRefresh = false } = options;
+        showRecommendationLoading(elements, true);
+        if (elements.recommendationError) {
+            elements.recommendationError.style.display = 'none';
+        }
+        try {
+            const params = new URLSearchParams();
+            params.append('limit', '24');
+            const hidden = MangaApp.getHiddenTags();
+            if (hidden.length) {
+                params.append('exclude_tag', hidden.join(','));
+            }
+            const sessionId = getTrackingSessionId();
+            if (sessionId) {
+                params.append('session_id', sessionId);
+            }
+            const preferred = getPreferredTermsPayload();
+            if (preferred.length) {
+                params.append('preferred_terms', JSON.stringify(preferred));
+            }
+            if (typeof MangaApp.getLikedGalleries === 'function') {
+                const liked = MangaApp.getLikedGalleries();
+                if (Array.isArray(liked) && liked.length) {
+                    params.append('liked_ids', liked.join(','));
+                }
+            }
+            if (forceRefresh) {
+                params.append('refresh', Date.now().toString());
+            }
+            const response = await fetch(`/api/recommendations?${params.toString()}`);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            const items = Array.isArray(data.results) ? data.results : [];
+            renderRecommendations(elements, items);
+            if (elements.recommendationMeta) {
+                elements.recommendationMeta.textContent = `${items.length} 件を表示中`;
+            }
+        } catch (error) {
+            console.error('おすすめ取得エラー', error);
+            if (elements.recommendationGrid) {
+                elements.recommendationGrid.innerHTML = '';
+            }
+            if (elements.recommendationMeta) {
+                elements.recommendationMeta.textContent = '0 件を表示中';
+            }
+            if (elements.recommendationError) {
+                elements.recommendationError.textContent = 'おすすめを取得できませんでした。少し時間を置いて再試行してください。';
+                elements.recommendationError.style.display = 'block';
+            }
+        } finally {
+            showRecommendationLoading(elements, false);
+        }
+    }
+
+    function renderRecommendations(elements, items) {
+        if (!elements.recommendationGrid) {
+            return;
+        }
+        if (!Array.isArray(items) || !items.length) {
+            elements.recommendationGrid.innerHTML = '<p>十分なデータがありません。閲覧や検索で好みを学習させましょう。</p>';
+            return;
+        }
+        const fragment = document.createDocumentFragment();
+        items.forEach((item) => {
+            const card = createGalleryCard(item);
+            if (cardObserver) {
+                cardObserver.observe(card);
+            }
+            fragment.appendChild(card);
+        });
+        elements.recommendationGrid.innerHTML = '';
+        elements.recommendationGrid.appendChild(fragment);
+    }
+
+    function showRecommendationLoading(elements, visible) {
+        if (elements.recommendationLoading) {
+            elements.recommendationLoading.style.display = visible ? 'block' : 'none';
+        }
+        if (elements.refreshRecommendations) {
+            elements.refreshRecommendations.disabled = visible;
+        }
+    }
+
+    function updateRecommendationHiddenSummary(elements) {
+        if (!elements.recommendationHiddenSummary) {
+            return;
+        }
+        const hidden = MangaApp.getHiddenTags();
+        elements.recommendationHiddenSummary.textContent = hidden.length
+            ? `除外タグ: ${hidden.join(', ')}`
+            : '除外タグなし';
     }
 
     function toggleSettings(elements, show) {
@@ -536,6 +689,20 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
             const pageInfo = document.createElement('span');
             pageInfo.textContent = `${gallery.page_count}ページ`;
             meta.appendChild(pageInfo);
+        }
+
+        const artistList = safeParseArray(gallery.artists);
+        if (artistList.length) {
+            const artistInfo = document.createElement('span');
+            artistInfo.textContent = `作者: ${artistList[0]}`;
+            meta.appendChild(artistInfo);
+        }
+
+        if (typeof gallery.personal_score === 'number') {
+            const scoreInfo = document.createElement('span');
+            scoreInfo.className = 'card-score';
+            scoreInfo.textContent = `スコア ${gallery.personal_score.toFixed(2)}`;
+            meta.appendChild(scoreInfo);
         }
 
         const tagsList = document.createElement('ul');
