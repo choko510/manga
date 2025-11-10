@@ -22,10 +22,8 @@
     }
 
     async function loadTranslations() {
-        if (translationPromise) {
-            return translationPromise;
-        }
-        translationPromise = fetch('/static/tag-translations.json')
+        // 毎回最新の tag-translations.json を取得するため、リクエスト毎にキャッシュを回避
+        translationPromise = fetch('/static/tag-translations.json?ts=' + Date.now(), { cache: 'no-store' })
             .then((response) => {
                 if (!response.ok) {
                     throw new Error('Failed to load translations');

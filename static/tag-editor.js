@@ -901,6 +901,25 @@ function showProgress(current, total, message = '処理中...') {
         });
     }
 
+    function validateDuplicateTagsPayload(payload) {
+        if (!payload || typeof payload !== 'object') return;
+
+        const seen = new Map();
+        for (const [tag] of Object.entries(payload)) {
+            const rawTag = (tag || '').trim();
+            if (!rawTag) continue;
+            const norm = normaliseTag(rawTag);
+            if (!norm) continue;
+
+            if (seen.has(norm)) {
+                const first = seen.get(norm);
+                // 同じキー名での衝突は通常起こらないはずだが、安全側でチェック
+                throw new Error(`重複しているタグがあります: "${rawTag}" と "${first}"`);
+            }
+            seen.set(norm, rawTag);
+        }
+    }
+
     async function loadData({ withVersions = true } = {}) {
         try {
             const [translationsResponse, categoriesResponse] = await Promise.all([

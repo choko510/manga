@@ -105,6 +105,12 @@
     }
 
     function attachEventHandlers(elements) {
+        // デフォルトの最小ページ数を 10 に設定
+        if (elements.minPagesSelect) {
+            elements.minPagesSelect.value = '10';
+            currentMinPages = 10;
+        }
+
         elements.searchButton.addEventListener('click', () => performSearch(elements, true));
         elements.searchInput.addEventListener('keypress', (event) => {
             if (event.key === 'Enter') {
