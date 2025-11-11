@@ -1,505 +1,715 @@
-/**
- * ユーザー行動追跡スクリプト
- * ページビュー、滞在時間、スクロール、クリック、マウス移動を追跡
- * プライバシーに配慮した設計
- */
+// 新トラッキングスクリプト
+// 要件:
+// - FingerprintJS + localStorageで一貫した user_id を生成・保持
+// - セッションIDを管理し、/api/tracking/* に対して送信
+// - viewer.html と連携して、閲覧した漫画ID・ページ数・閲覧時間を記録
+// - よく使う検索タグも記録
+// - 旧tracking.js実装は破棄し、このファイルで統一的に扱う
 
-// グローバル変数
-let sessionId = null;
-let fingerprintHash = null;
-let pageViewId = null;
-let pageStartTime = null;
-let lastScrollPosition = 0;
-let lastScrollTime = Date.now();
-let eventQueue = [];
-let isTrackingEnabled = true;
-let privacyConsent = null; // プライバシー同意状態
-let trackingInitialized = false;
-let config = {
-    apiEndpoint: '/api/tracking',
-    batchInterval: 10000, // 10秒ごとにバッチ送信
-    maxQueueSize: 50, // 最大キューサイズ
-    mouseTrackingInterval: 2000, // マウス位置追跡間隔（ミリ秒）
-    scrollThrottleDelay: 100, // スクロールイベントの節流遅延（ミリ秒）
-    enableMouseTracking: true,
-    enableScrollTracking: false, // スクロールトラッキングを無効化
-    enableClickTracking: true,
-    anonymizeData: true, // データの匿名化
-    dataRetentionDays: 90 // データ保持期間（日）
-};
+(function () {
+    "use strict";
 
+    // =========================
+    // 定数
+    // =========================
 
-// データの匿名化
-function anonymizeData(data) {
-    if (!config.anonymizeData) return data;
-    
-    const anonymized = { ...data };
-    
-    // IPアドレスの匿名化（サーバー側で実装）
-    if (anonymized.ip_address) {
-        // IPv4の場合：最後のオクテットを0に
-        // IPv6の場合：最後の64ビットを0に
-        anonymized.ip_address = '[ANONYMIZED]';
-    }
-    
-    // ユーザーエージェントの一部をマスク
-    if (anonymized.user_agent) {
-        const ua = anonymized.user_agent;
-        anonymized.user_agent = ua.substring(0, Math.max(20, ua.length / 2)) + '[...]';
-    }
-    
-    // テキストデータの匿名化
-    if (anonymized.element_text && anonymized.element_text.length > 10) {
-        anonymized.element_text = anonymized.element_text.substring(0, 5) + '[...]';
-    }
-    
-    return anonymized;
-}
-
-function notifySessionReady() {
-    if (!sessionId) {
-        return;
-    }
-    document.dispatchEvent(new CustomEvent('tracking:session-ready', {
-        detail: { sessionId }
-    }));
-}
-
-// Fingerprint.jsの読み込みと初期化
-async function initializeFingerprint() {
-    try {
-        // FingerprintJSライブラリを動的に読み込み
-        if (typeof FingerprintJS === 'undefined') {
-            const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js';
-            script.async = true;
-            document.head.appendChild(script);
-            
-            // スクリプト読み込み完了を待つ
-            await new Promise(resolve => {
-                script.onload = resolve;
-            });
-        }
-        
-        // フィンガープリントを取得
-        const fp = await FingerprintJS.load();
-        const result = await fp.get();
-        fingerprintHash = result.visitorId;
-        
-        // セッションIDの生成または取得
-        sessionId = getSessionId();
-
-        // セッション情報をサーバーに送信
-        updateSession();
-        notifySessionReady();
-
-        return true;
-    } catch (error) {
-        console.error('フィンガープリント初期化エラー:', error);
-        // フォールバック：ランダムなIDを生成
-        fingerprintHash = 'fallback_' + Math.random().toString(36).substr(2, 9);
-        sessionId = getSessionId();
-        updateSession();
-        notifySessionReady();
-        return false;
-    }
-}
-
-// セッションIDの取得または生成
-function getSessionId() {
-    let storedSessionId = localStorage.getItem('tracking_session_id');
-    if (!storedSessionId) {
-        storedSessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        localStorage.setItem('tracking_session_id', storedSessionId);
-    }
-    return storedSessionId;
-}
-
-// セッション情報の更新
-async function updateSession() {
-    if (!isTrackingEnabled || !sessionId || !fingerprintHash) return;
-    
-    try {
-        const response = await fetch(`${config.apiEndpoint}/session`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(anonymizeData({
-                session_id: sessionId,
-                fingerprint_hash: fingerprintHash,
-                user_agent: navigator.userAgent,
-                ip_address: null // クライアント側では取得できないためサーバー側で設定
-            }))
-        });
-        
-        if (!response.ok) {
-            console.error('セッション更新エラー:', response.status);
-        }
-    } catch (error) {
-        console.error('セッション更新リクエストエラー:', error);
-    }
-}
-
-// ページビューの記録
-async function recordPageView() {
-    if (!isTrackingEnabled || !sessionId) return;
-    
-    pageStartTime = Date.now();
-    
-    try {
-        const response = await fetch(`${config.apiEndpoint}/page-view`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(anonymizeData({
-                session_id: sessionId,
-                page_url: window.location.href,
-                page_title: document.title,
-                referrer: document.referrer || null,
-                view_start: new Date(pageStartTime).toISOString(),
-                view_end: null,
-                time_on_page: null,
-                scroll_depth_max: null
-            }))
-        });
-        
-        if (response.ok) {
-            const data = await response.json();
-            pageViewId = data.page_view_id;
-        } else {
-            console.error('ページビュー記録エラー:', response.status);
-        }
-    } catch (error) {
-        console.error('ページビュー記録リクエストエラー:', error);
-    }
-}
-
-// ページ滞在時間の更新
-async function updatePageView() {
-    if (!isTrackingEnabled || !sessionId || !pageViewId) return;
-    
-    const timeOnPage = Math.floor((Date.now() - pageStartTime) / 1000);
-    const scrollDepth = calculateScrollDepth();
-    
-    try {
-        const response = await fetch(`${config.apiEndpoint}/page-view`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(anonymizeData({
-                session_id: sessionId,
-                page_url: window.location.href,
-                page_title: document.title,
-                referrer: document.referrer || null,
-                view_start: new Date(pageStartTime).toISOString(),
-                view_end: new Date().toISOString(),
-                time_on_page: timeOnPage,
-                scroll_depth_max: scrollDepth
-            }))
-        });
-        
-        if (!response.ok) {
-            console.error('ページビュー更新エラー:', response.status);
-        }
-    } catch (error) {
-        console.error('ページビュー更新リクエストエラー:', error);
-    }
-}
-
-// スクロール深度の計算
-function calculateScrollDepth() {
-    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-    const documentHeight = document.documentElement.scrollHeight - window.innerHeight;
-    return documentHeight > 0 ? Math.round((scrollTop / documentHeight) * 100) : 0;
-}
-
-// イベントのキューに追加
-function queueEvent(eventType, eventData) {
-    if (!isTrackingEnabled) return;
-    
-    const event = {
-        session_id: sessionId,
-        page_view_id: pageViewId,
-        event_type: eventType,
-        timestamp: new Date().toISOString(),
-        ...eventData
+    const CONFIG = {
+        // APIエンドポイントのベース
+        baseUrl: "",
+        api: {
+            identify: "/api/tracking/identify",
+            session: "/api/tracking/session",
+            mangaViewStart: "/api/tracking/manga-view/start",
+            mangaViewUpdate: "/api/tracking/manga-view/update",
+            mangaViewEnd: "/api/tracking/manga-view/end",
+            search: "/api/tracking/search",
+            events: "/api/tracking/events"
+        },
+        // FingerprintJS CDN
+        fingerprintJsCdn: "https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js",
+        // localStorage keys
+        storageKeys: {
+            userId: "tracking_user_id",
+            userIdSource: "tracking_user_id_source",
+            sessionId: "tracking_session_id",
+            lastSessionTouched: "tracking_session_last_touched",
+            viewerState: "tracking_manga_viewer_state"
+        },
+        // セッション有効秒数（一定期間操作がなければ新セッション扱い）
+        sessionTtlSeconds: 60 * 30, // 30分
+        // ビューア更新送信間隔
+        viewerUpdateIntervalSec: 15,
+        // ページ離脱時は sendBeacon を優先
+        useSendBeacon: true,
+        // デバッグログ
+        debug: false
     };
-    
-    eventQueue.push(event);
-    
-    // キューが最大サイズに達したら即時送信
-    if (eventQueue.length >= config.maxQueueSize) {
-        sendEventBatch();
+
+    // =========================
+    // 内部ユーティリティ
+    // =========================
+
+    function nowIso() {
+        return new Date().toISOString();
     }
-}
 
-// イベントのバッチ送信
-async function sendEventBatch() {
-    if (!isTrackingEnabled || eventQueue.length === 0) return;
-    
-    const eventsToSend = [...eventQueue];
-    eventQueue = []; // キューをクリア
-    
-    try {
-        const response = await fetch(`${config.apiEndpoint}/events`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                events: eventsToSend.map(event => anonymizeData(event))
-            })
-        });
-        
-        if (!response.ok) {
-            console.error('イベントバッチ送信エラー:', response.status);
-            // 失敗した場合はキューに戻す
-            eventQueue = [...eventsToSend, ...eventQueue];
-        }
-    } catch (error) {
-        console.error('イベントバッチ送信リクエストエラー:', error);
-        // 失敗した場合はキューに戻す
-        eventQueue = [...eventsToSend, ...eventQueue];
-    }
-}
-
-// スクロールイベントの処理（節流付き）
-let scrollThrottleTimer = null;
-function handleScroll() {
-    if (!config.enableScrollTracking || !isTrackingEnabled) return;
-    
-    if (scrollThrottleTimer) return;
-    
-    scrollThrottleTimer = setTimeout(() => {
-        const currentScrollPosition = window.pageYOffset || document.documentElement.scrollTop;
-        const currentTime = Date.now();
-        const scrollDirection = currentScrollPosition > lastScrollPosition ? 'down' : 'up';
-        const timeDiff = currentTime - lastScrollTime;
-        const scrollDistance = Math.abs(currentScrollPosition - lastScrollPosition);
-        const scrollSpeed = timeDiff > 0 ? Math.round(scrollDistance / timeDiff * 1000) : 0; // ピクセル/秒
-        
-        queueEvent('scroll', {
-            x_position: null,
-            y_position: currentScrollPosition,
-            scroll_direction: scrollDirection,
-            scroll_speed: scrollSpeed
-        });
-        
-        lastScrollPosition = currentScrollPosition;
-        lastScrollTime = currentTime;
-        scrollThrottleTimer = null;
-    }, config.scrollThrottleDelay);
-}
-
-// クリックイベントの処理
-function handleClick(event) {
-    if (!config.enableClickTracking || !isTrackingEnabled) return;
-    
-    const element = event.target;
-    const elementSelector = getElementSelector(element);
-    const elementText = getElementText(element);
-    
-    queueEvent('click', {
-        element_selector: elementSelector,
-        element_text: elementText,
-        x_position: event.clientX,
-        y_position: event.clientY
-    });
-}
-
-// マウス移動イベントの処理
-function handleMouseMove(event) {
-    if (!config.enableMouseTracking || !isTrackingEnabled) return;
-    
-    queueEvent('mouse_move', {
-        x_position: event.clientX,
-        y_position: event.clientY
-    });
-}
-
-// 要素のCSSセレクタを取得
-function getElementSelector(element) {
-    if (!element) return null;
-    
-    // IDがあれば優先
-    if (element.id) {
-        return `#${element.id}`;
-    }
-    
-    // クラスがあれば使用
-    if (element.className && typeof element.className === 'string') {
-        const classes = element.className.split(' ').filter(c => c.trim());
-        if (classes.length > 0) {
-            return `${element.tagName.toLowerCase()}.${classes.join('.')}`;
+    function logDebug(...args) {
+        if (CONFIG.debug) {
+            console.debug("[Tracking]", ...args);
         }
     }
-    
-    // タグ名とdata属性を組み合わせ
-    let selector = element.tagName.toLowerCase();
-    
-    // data-track属性があれば使用
-    if (element.dataset.track) {
-        selector += `[data-track="${element.dataset.track}"]`;
-    }
-    
-    return selector;
-}
 
-// 要素のテキストを取得（最大50文字）
-function getElementText(element) {
-    if (!element) return null;
-    
-    let text = element.textContent || element.innerText || '';
-    text = text.trim();
-    
-    // 長すぎるテキストは切り詰める
-    if (text.length > 50) {
-        text = text.substring(0, 47) + '...';
-    }
-    
-    return text || null;
-}
-
-// トラッキングの有効/無効切り替え
-function setTrackingEnabled(enabled) {
-    isTrackingEnabled = enabled;
-    localStorage.setItem('tracking_enabled', enabled.toString());
-}
-
-// トラッキング設定の読み込み
-function loadConfig() {
-    const savedConfig = localStorage.getItem('tracking_config');
-    if (savedConfig) {
+    function safeJsonParse(str, fallback) {
         try {
-            const parsed = JSON.parse(savedConfig);
-            config = { ...config, ...parsed };
-        } catch (error) {
-            console.error('設定読み込みエラー:', error);
+            return JSON.parse(str);
+        } catch {
+            return fallback;
         }
     }
-    
-    const savedEnabled = localStorage.getItem('tracking_enabled');
-    if (savedEnabled !== null) {
-        isTrackingEnabled = savedEnabled === 'true';
-    }
-}
 
-// トラッキング設定の保存
-function saveConfig() {
-    localStorage.setItem('tracking_config', JSON.stringify(config));
-}
+    function randomId(prefix) {
+        return (
+            prefix +
+            "_" +
+            Math.random().toString(36).slice(2) +
+            "_" +
+            Date.now().toString(36)
+        );
+    }
 
-// 初期化処理
-async function initializeTracking() {
-    // 設定の読み込み
-    loadConfig();
-    
-    // フィンガープリントの初期化
-    await initializeFingerprint();
-    
-    // ページビューの記録
-    recordPageView();
-    
-    // イベントリスナーの設定
-    if (config.enableScrollTracking) {
-        window.addEventListener('scroll', handleScroll, { passive: true });
-    }
-    
-    if (config.enableClickTracking) {
-        document.addEventListener('click', handleClick, true);
-    }
-    
-    if (config.enableMouseTracking) {
-        // マウス移動は間引いて追跡
-        setInterval(() => {
-            if (document.hasFocus()) {
-                document.addEventListener('mousemove', handleMouseMove, { once: true });
+    // =========================
+    // Fingerprint / user_id 管理
+    // =========================
+
+    let userId = null;
+    let userIdSource = null;
+    let userIdReady = false;
+    let userIdReadyCallbacks = [];
+
+    function getStoredUserId() {
+        try {
+            const id = localStorage.getItem(CONFIG.storageKeys.userId);
+            const src = localStorage.getItem(CONFIG.storageKeys.userIdSource);
+            if (id && typeof id === "string") {
+                return { id, source: src || "unknown" };
             }
-        }, config.mouseTrackingInterval);
-    }
-    
-    // 定期的なバッチ送信
-    setInterval(sendEventBatch, config.batchInterval);
-    
-    // ページ離脱時の処理
-    window.addEventListener('beforeunload', () => {
-        updatePageView();
-        sendEventBatch();
-    });
-    
-    // ページ非表示時の処理
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') {
-            updatePageView();
-            sendEventBatch();
-        } else if (document.visibilityState === 'visible') {
-            // ページが再表示されたら新しいページビューとして記録
-            recordPageView();
+        } catch {
+            // ignore
         }
-    });
-    
-    console.log('トラッキングが初期化されました');
-}
-
-// グローバル関数として公開（外部からの制御用）
-// 単一のイベントを記録するAPIエンドポイント
-async function recordSingleEvent(request) {
-    try {
-        const response = await fetch(`${config.apiEndpoint}/single-event`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(anonymizeData({
-                session_id: request.session_id,
-                page_view_id: request.page_view_id,
-                event_type: request.event_type,
-                element_selector: request.element_selector,
-                element_text: request.element_text,
-                x_position: request.x_position,
-                y_position: request.y_position,
-                scroll_direction: request.scroll_direction,
-                scroll_speed: request.scroll_speed,
-                timestamp: request.timestamp || new Date().toISOString()
-            }))
-        });
-        
-        if (!response.ok) {
-            console.error('単一イベント記録エラー:', response.status);
-        }
-        
-        return await response.json();
-    } catch (error) {
-        console.error('単一イベント記録リクエストエラー:', error);
         return null;
     }
-}
 
-window.Tracking = {
-    setTrackingEnabled,
-    saveConfig,
-    loadConfig,
-    sendEventBatch,
-    updatePageView,
-    getSessionId: () => sessionId,
-    getPageViewId: () => pageViewId,
-    isTrackingEnabled: () => isTrackingEnabled,
-    recordSingleEvent
-};
-
-function startTrackingOnce() {
-    if (trackingInitialized) {
-        return;
+    function storeUserId(id, source) {
+        try {
+            localStorage.setItem(CONFIG.storageKeys.userId, id);
+            localStorage.setItem(CONFIG.storageKeys.userIdSource, source || "unknown");
+        } catch {
+            // ignore
+        }
     }
-    trackingInitialized = true;
-    initializeTracking();
-}
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', startTrackingOnce, { once: true });
-} else {
-    startTrackingOnce();
-}
+    function resolveUserIdSyncFallback() {
+        const existing = getStoredUserId();
+        if (existing) {
+            userId = existing.id;
+            userIdSource = existing.source;
+            return;
+        }
+        const generated = randomId("u");
+        userId = generated;
+        userIdSource = "generated";
+        storeUserId(userId, userIdSource);
+    }
+
+    async function loadFingerprintJsIfNeeded() {
+        if (typeof FingerprintJS !== "undefined") {
+            return;
+        }
+        await new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = CONFIG.fingerprintJsCdn;
+            script.async = true;
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error("FingerprintJS load error"));
+            document.head.appendChild(script);
+        });
+    }
+
+    async function initUserId() {
+        // 既に完了していれば即返す
+        if (userIdReady && userId) {
+            return userId;
+        }
+
+        // 先にlocalStorage確認
+        const existing = getStoredUserId();
+        if (existing) {
+            userId = existing.id;
+            userIdSource = existing.source;
+            userIdReady = true;
+            notifyUserIdReady();
+            // identify送信（非同期）
+            identifyUser().catch(() => {});
+            return userId;
+        }
+
+        // FingerprintJS試行
+        try {
+            await loadFingerprintJsIfNeeded();
+            if (typeof FingerprintJS !== "undefined") {
+                const fp = await FingerprintJS.load();
+                const result = await fp.get();
+                if (result && result.visitorId) {
+                    userId = "fp_" + result.visitorId;
+                    userIdSource = "fingerprint";
+                    storeUserId(userId, userIdSource);
+                }
+            }
+        } catch (e) {
+            logDebug("Fingerprint init failed", e);
+        }
+
+        // Fingerprintで決まらなければフォールバック
+        if (!userId) {
+            resolveUserIdSyncFallback();
+        }
+
+        userIdReady = true;
+        notifyUserIdReady();
+
+        // identify送信（非同期）
+        identifyUser().catch(() => {});
+
+        return userId;
+    }
+
+    function onUserIdReady(cb) {
+        if (userIdReady && userId) {
+            cb(userId);
+        } else {
+            userIdReadyCallbacks.push(cb);
+        }
+    }
+
+    function notifyUserIdReady() {
+        userIdReadyCallbacks.splice(0).forEach((cb) => {
+            try {
+                cb(userId);
+            } catch {
+                // ignore
+            }
+        });
+    }
+
+    // =========================
+    // セッション管理
+    // =========================
+
+    let sessionId = null;
+
+    function getStoredSession() {
+        try {
+            const id = localStorage.getItem(CONFIG.storageKeys.sessionId);
+            const last = parseInt(
+                localStorage.getItem(CONFIG.storageKeys.lastSessionTouched) || "0",
+                10
+            );
+            if (id && last > 0) {
+                return { id, last };
+            }
+        } catch {
+            // ignore
+        }
+        return null;
+    }
+
+    function touchSession(id) {
+        try {
+            localStorage.setItem(CONFIG.storageKeys.sessionId, id);
+            localStorage.setItem(
+                CONFIG.storageKeys.lastSessionTouched,
+                String(Math.floor(Date.now() / 1000))
+            );
+        } catch {
+            // ignore
+        }
+    }
+
+    function ensureSessionId() {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const stored = getStoredSession();
+        if (stored) {
+            const age = nowSec - stored.last;
+            if (age <= CONFIG.sessionTtlSeconds) {
+                sessionId = stored.id;
+                touchSession(sessionId);
+                return sessionId;
+            }
+        }
+        sessionId = randomId("s");
+        touchSession(sessionId);
+        return sessionId;
+    }
+
+    async function ensureSessionRegistered() {
+        const uid = await initUserId();
+        const sid = ensureSessionId();
+        const payload = {
+            user_id: uid,
+            session_id: sid,
+            user_agent: navigator.userAgent || "",
+            referrer: document.referrer || ""
+        };
+        return sendJson("POST", CONFIG.api.session, payload, { ignoreError: true });
+    }
+
+    // =========================
+    // 通信ユーティリティ
+    // =========================
+
+    function buildUrl(path) {
+        if (!path.startsWith("/")) return path;
+        if (!CONFIG.baseUrl) return path;
+        return CONFIG.baseUrl.replace(/\/+$/, "") + path;
+    }
+
+    async function sendJson(method, path, body, options) {
+        const url = buildUrl(path);
+        const opt = options || {};
+        const payload = body != null ? JSON.stringify(body) : null;
+
+        // ページ離脱時などに sendBeacon を使いたいケース
+        if (
+            opt.beacon &&
+            typeof navigator !== "undefined" &&
+            typeof navigator.sendBeacon === "function" &&
+            payload &&
+            method === "POST"
+        ) {
+            try {
+                const success = navigator.sendBeacon(
+                    url,
+                    new Blob([payload], { type: "application/json" })
+                );
+                if (success) {
+                    return { ok: true, beacon: true };
+                }
+            } catch {
+                // フォールバックでfetch
+            }
+        }
+
+        try {
+            const res = await fetch(url, {
+                method,
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: payload
+            });
+            if (!res.ok) {
+                if (!opt.ignoreError) {
+                    logDebug("Tracking request failed", method, path, res.status);
+                }
+                return { ok: false, status: res.status };
+            }
+            const ct = res.headers.get("content-type") || "";
+            if (ct.includes("application/json")) {
+                return await res.json();
+            }
+            return { ok: true };
+        } catch (e) {
+            if (!opt.ignoreError) {
+                logDebug("Tracking request error", method, path, e);
+            }
+            return { ok: false, error: String(e) };
+        }
+    }
+
+    // =========================
+    // /api/tracking 実装
+    // =========================
+
+    async function identifyUser() {
+        if (!userId) {
+            await initUserId();
+        }
+        const payload = {
+            user_id: userId,
+            fingerprint: userIdSource === "fingerprint" ? userId : null,
+            user_agent: navigator.userAgent || ""
+        };
+        return sendJson("POST", CONFIG.api.identify, payload, { ignoreError: true });
+    }
+
+    // =========================
+    // ビューアトラッキング
+    // =========================
+
+    let currentMangaView = {
+        id: null, // manga_view_id
+        mangaId: null,
+        pageCount: null,
+        startedAt: null,
+        lastUpdateAt: null,
+        maxPage: 0,
+        lastPage: 0,
+        accumSec: 0
+    };
+
+    let viewerUpdateTimer = null;
+    let viewerLastTick = null;
+
+    function loadViewerStateFromStorage() {
+        try {
+            const raw = localStorage.getItem(CONFIG.storageKeys.viewerState);
+            if (!raw) return;
+            const st = safeJsonParse(raw, null);
+            if (!st || typeof st !== "object") return;
+            currentMangaView.id = st.id || null;
+            currentMangaView.mangaId = st.mangaId || null;
+            currentMangaView.pageCount = st.pageCount || null;
+            currentMangaView.startedAt = st.startedAt || null;
+            currentMangaView.lastUpdateAt = st.lastUpdateAt || null;
+            currentMangaView.maxPage = st.maxPage || 0;
+            currentMangaView.lastPage = st.lastPage || 0;
+            currentMangaView.accumSec = st.accumSec || 0;
+        } catch {
+            // ignore
+        }
+    }
+
+    function saveViewerStateToStorage() {
+        try {
+            if (!currentMangaView.id) {
+                localStorage.removeItem(CONFIG.storageKeys.viewerState);
+                return;
+            }
+            const st = {
+                id: currentMangaView.id,
+                mangaId: currentMangaView.mangaId,
+                pageCount: currentMangaView.pageCount,
+                startedAt: currentMangaView.startedAt,
+                lastUpdateAt: currentMangaView.lastUpdateAt,
+                maxPage: currentMangaView.maxPage,
+                lastPage: currentMangaView.lastPage,
+                accumSec: currentMangaView.accumSec
+            };
+            localStorage.setItem(
+                CONFIG.storageKeys.viewerState,
+                JSON.stringify(st)
+            );
+        } catch {
+            // ignore
+        }
+    }
+
+    function resetViewerState() {
+        currentMangaView = {
+            id: null,
+            mangaId: null,
+            pageCount: null,
+            startedAt: null,
+            lastUpdateAt: null,
+            maxPage: 0,
+            lastPage: 0,
+            accumSec: 0
+        };
+        if (viewerUpdateTimer) {
+            clearInterval(viewerUpdateTimer);
+            viewerUpdateTimer = null;
+        }
+        viewerLastTick = null;
+        try {
+            localStorage.removeItem(CONFIG.storageKeys.viewerState);
+        } catch {
+            // ignore
+        }
+    }
+
+    function viewerTickAccum() {
+        if (!currentMangaView.id) return;
+        const now = Date.now();
+        if (!viewerLastTick) {
+            viewerLastTick = now;
+            return;
+        }
+        const diffSec = Math.max(0, Math.floor((now - viewerLastTick) / 1000));
+        if (diffSec > 0) {
+            currentMangaView.accumSec += diffSec;
+            viewerLastTick = now;
+        }
+    }
+
+    async function startMangaView(params) {
+        const mangaId = Number(params && params.mangaId);
+        const pageCount = Number(params && params.pageCount) || null;
+        if (!mangaId || Number.isNaN(mangaId)) {
+            logDebug("startMangaView: invalid mangaId", params);
+            return;
+        }
+
+        await ensureSessionRegistered();
+        const uid = userId || (await initUserId());
+        const sid = sessionId || ensureSessionId();
+
+        resetViewerState();
+
+        currentMangaView.mangaId = mangaId;
+        currentMangaView.pageCount = pageCount;
+        currentMangaView.startedAt = nowIso();
+        currentMangaView.lastUpdateAt = currentMangaView.startedAt;
+        currentMangaView.maxPage = 0;
+        currentMangaView.lastPage = 0;
+        currentMangaView.accumSec = 0;
+
+        const payload = {
+            user_id: uid,
+            session_id: sid,
+            manga_id: mangaId,
+            page_count: pageCount,
+            started_at: currentMangaView.startedAt
+        };
+
+        const res = await sendJson(
+            "POST",
+            CONFIG.api.mangaViewStart,
+            payload,
+            { ignoreError: true }
+        );
+
+        if (res && (res.manga_view_id || res.id)) {
+            currentMangaView.id = res.manga_view_id || res.id;
+            saveViewerStateToStorage();
+            viewerLastTick = Date.now();
+            if (!viewerUpdateTimer) {
+                viewerUpdateTimer = setInterval(async () => {
+                    try {
+                        await updateMangaView({ reason: "interval" });
+                    } catch {
+                        // ignore
+                    }
+                }, CONFIG.viewerUpdateIntervalSec * 1000);
+            }
+            logDebug("manga-view started", currentMangaView);
+        } else {
+            // IDが取れない場合はサーバ側記録なしでローカルのみ
+            logDebug("manga-view start failed or no id returned", res);
+        }
+    }
+
+    async function updateMangaView(options) {
+        if (!currentMangaView.id) return;
+
+        viewerTickAccum();
+
+        const now = nowIso();
+        const increment =
+            currentMangaView.accumSec > 0
+                ? currentMangaView.accumSec
+                : undefined;
+
+        const payload = {
+            manga_view_id: currentMangaView.id,
+            current_page: currentMangaView.lastPage || 0,
+            max_page: currentMangaView.maxPage || 0,
+            now,
+            increment_duration_sec: increment
+        };
+
+        // サーバ側で加算型更新を想定
+        await sendJson(
+            "POST",
+            CONFIG.api.mangaViewUpdate,
+            payload,
+            { ignoreError: true }
+        );
+
+        currentMangaView.lastUpdateAt = now;
+        currentMangaView.accumSec = 0;
+        saveViewerStateToStorage();
+
+        if (options && options.reason) {
+            logDebug("manga-view update", options.reason, payload);
+        }
+    }
+
+    async function endMangaView(options) {
+        if (!currentMangaView.id) {
+            resetViewerState();
+            return;
+        }
+
+        viewerTickAccum();
+
+        const endedAt = nowIso();
+        const finalPage = currentMangaView.lastPage || currentMangaView.maxPage || 0;
+        const totalDuration =
+            (currentMangaView.accumSec || 0);
+
+        const payload = {
+            manga_view_id: currentMangaView.id,
+            ended_at: endedAt,
+            final_page: finalPage,
+            total_duration_sec: totalDuration > 0 ? totalDuration : undefined
+        };
+
+        // ページ離脱に強い送信
+        await sendJson(
+            "POST",
+            CONFIG.api.mangaViewEnd,
+            payload,
+            {
+                ignoreError: true,
+                beacon: CONFIG.useSendBeacon || (options && options.beacon)
+            }
+        );
+
+        logDebug("manga-view end", payload);
+
+        resetViewerState();
+    }
+
+    function setCurrentPage(pageIndex) {
+        if (!currentMangaView.mangaId) {
+            return;
+        }
+        const idx = Number(pageIndex);
+        if (!Number.isFinite(idx) || idx < 0) {
+            return;
+        }
+        currentMangaView.lastPage = idx;
+        if (idx > currentMangaView.maxPage) {
+            currentMangaView.maxPage = idx;
+        }
+        saveViewerStateToStorage();
+    }
+
+    // =========================
+    // 検索クエリ記録
+    // =========================
+
+    async function logSearchQuery(params) {
+        if (!params || (!params.query && !params.tags)) {
+            return;
+        }
+
+        await ensureSessionRegistered();
+        const uid = userId || (await initUserId());
+        const sid = sessionId || ensureSessionId();
+
+        const rawQuery = String(params.query || "").slice(0, 200);
+        const tags = Array.isArray(params.tags)
+            ? params.tags
+                  .map((t) => (t == null ? "" : String(t)))
+                  .filter((t) => t.trim().length > 0)
+                  .slice(0, 100)
+            : [];
+
+        const payload = {
+            user_id: uid,
+            session_id: sid,
+            query: rawQuery,
+            tags,
+            used_at: nowIso()
+        };
+
+        logDebug("search query", payload);
+
+        return sendJson(
+            "POST",
+            CONFIG.api.search,
+            payload,
+            { ignoreError: true }
+        );
+    }
+
+    // =========================
+    // グローバル公開API
+    // =========================
+
+    const ViewerAPI = {
+        // viewer.html 側から呼ぶ: 漫画閲覧開始
+        start: function (opts) {
+            // opts: { mangaId, pageCount }
+            initUserId().then(() => {
+                ensureSessionRegistered().then(() => {
+                    startMangaView(opts);
+                });
+            });
+        },
+        // viewer.html 側から呼ぶ: ページ変更時
+        updatePage: function (opts) {
+            // opts: { pageIndex }
+            if (!opts) return;
+            const idx = Number(opts.pageIndex);
+            if (!Number.isFinite(idx) || idx < 0) return;
+            setCurrentPage(idx);
+            // ページ更新間隔に任せるが、明示的にも更新キック可能
+            if (currentMangaView.id) {
+                updateMangaView({ reason: "page_change" }).catch(() => {});
+            }
+        },
+        // viewer.html 側から呼ぶ: 閲覧終了（任意）。beforeunload等でも自動呼び出しされる想定。
+        end: function () {
+            endMangaView({ beacon: true }).catch(() => {});
+        }
+    };
+
+    const SearchAPI = {
+        // 検索実行時に呼ぶ
+        logQuery: function (opts) {
+            logSearchQuery(opts).catch(() => {});
+        }
+    };
+
+    const Tracking = {
+        getUserId: function () {
+            return userId;
+        },
+        onUserIdReady,
+        viewer: ViewerAPI,
+        search: SearchAPI,
+        // セッションID参照用（必要なら）
+        getSessionId: function () {
+            return sessionId || getStoredSession()?.id || null;
+        }
+    };
+
+    // =========================
+    // 自動初期化
+    // =========================
+
+    // user_id / session を起動時に準備しておく
+    (function bootstrap() {
+        // 既存状態読み込み（連続セッション対策）
+        loadViewerStateFromStorage();
+        // 非同期でユーザーとセッションを初期化
+        initUserId()
+            .then(() => ensureSessionRegistered())
+            .catch(() => {});
+    })();
+
+    // ページ離脱時にビューアを終了（ビューア利用時のみ効果）
+    if (typeof window !== "undefined") {
+        window.addEventListener("beforeunload", function () {
+            if (currentMangaView && currentMangaView.id) {
+                // 同期的ベストエフォート
+                endMangaView({ beacon: true }).catch(() => {});
+            }
+        });
+
+        document.addEventListener("visibilitychange", function () {
+            if (document.visibilityState === "hidden") {
+                if (currentMangaView && currentMangaView.id) {
+                    endMangaView({ beacon: true }).catch(() => {});
+                }
+            }
+        });
+    }
+
+    // グローバル公開
+    if (typeof window !== "undefined") {
+        window.Tracking = Tracking;
+    }
+})();

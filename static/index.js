@@ -10,6 +10,27 @@
     let cardObserver = null;
     const searchCache = new Map();
 
+    function logSearchTracking(query, resolvedQuery) {
+        try {
+            if (!window.Tracking || !window.Tracking.search || typeof window.Tracking.search.logQuery !== 'function') {
+                return;
+            }
+            const q = (query || '').toString();
+            const resolved = (resolvedQuery || '').toString();
+            // クエリからタグらしきトークンを抽出（スペース/カンマ区切り）
+            const tokens = (resolved || q)
+                .split(/[,\s]+/)
+                .map((v) => v.trim())
+                .filter((v) => v.length > 0);
+            window.Tracking.search.logQuery({
+                query: q,
+                tags: tokens
+            });
+        } catch (e) {
+            console.error('Tracking.search.logQuery error', e);
+        }
+    }
+
     function extractTagsFromQuery(query) {
         if (!query) {
             return [];
@@ -298,6 +319,11 @@
             currentResolvedQuery = typeof MangaApp.resolveTagQueryString === 'function'
                 ? MangaApp.resolveTagQueryString(currentQuery)
                 : currentQuery;
+
+            // 新トラッキング: 検索実行を記録
+            if (currentQuery) {
+                logSearchTracking(currentQuery, currentResolvedQuery);
+            }
             currentMinPages = parseInt(elements.minPagesSelect.value, 10) || 0;
             const maxVal = parseInt(elements.maxPagesSelect.value, 10);
             currentMaxPages = Number.isFinite(maxVal) ? maxVal : null;

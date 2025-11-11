@@ -1982,6 +1982,18 @@
                 // UIを更新（タイトル・タグ）
                 updateGalleryInfo();
 
+                // 新トラッキング連携: 漫画閲覧開始を通知
+                if (window.Tracking && window.Tracking.viewer && typeof window.Tracking.viewer.start === 'function' && numericGalleryId) {
+                    try {
+                        window.Tracking.viewer.start({
+                            mangaId: numericGalleryId,
+                            pageCount: Array.isArray(imageUrls) ? imageUrls.length : null
+                        });
+                    } catch (e) {
+                        console.error('Tracking.viewer.start error', e);
+                    }
+                }
+
                 // 読みモードに応じて描画戦略を切り替え
                 currentPageIndex = 0;
                 if (currentReadingMode === 'vertical' || currentReadingMode === 'horizontal') {
@@ -2476,6 +2488,17 @@
             viewerLikeButton.innerHTML = isLiked ? '<i class="fas fa-heart"></i> いいね済み' : '<i class="far fa-heart"></i> いいね';
         }
 
+        // 新トラッキング連携: ビューア終了処理
+        function notifyViewerEnd() {
+            if (window.Tracking && window.Tracking.viewer && typeof window.Tracking.viewer.end === 'function') {
+                try {
+                    window.Tracking.viewer.end();
+                } catch (e) {
+                    console.error('Tracking.viewer.end error', e);
+                }
+            }
+        }
+
         async function handlePdfDownload() {
             if (isDownloadingPdf || !downloadPdfButton) {
                 return;
@@ -2625,6 +2648,15 @@
             recommendationGrid.appendChild(fragment);
         }
 
+        // ページ離脱/クローズ時に閲覧終了を通知（ベストエフォート）
+        window.addEventListener('beforeunload', () => {
+            notifyViewerEnd();
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                notifyViewerEnd();
+            }
+        });
     </script>
 </body>
 

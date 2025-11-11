@@ -224,42 +224,68 @@ class Gallery(Base):
     def __repr__(self):
         return f"<Gallery(id={self.gallery_id}, title='{self.japanese_title}')>"
 
-# ---- トラッキング ----
-class UserSession(TrackingBase):
-    __tablename__ = 'user_sessions'
+# ---- 新トラッキング: シンプルなuser/session/manga/searchログ ----
+
+class TrackingUser(TrackingBase):
+    """
+    1ブラウザ＝1 user_id を表す。
+    - user_id: FingerprintJS起点 or フォールバックID（tracking.jsで生成）
+    """
+    __tablename__ = "tracking_users"
+    user_id = Column(String, primary_key=True)
+    first_seen = Column(String, nullable=False)
+    last_seen = Column(String, nullable=False)
+    last_user_agent = Column(Text)
+    last_ip = Column(String)
+
+class TrackingSession(TrackingBase):
+    """
+    短期間の閲覧セッション。
+    - tracking.js側で(session_ttl以内で)再利用。
+    """
+    __tablename__ = "tracking_sessions"
     session_id = Column(String, primary_key=True)
-    fingerprint_hash = Column(String, nullable=False)
+    user_id = Column(String, nullable=False, index=True)
+    started_at = Column(String, nullable=False)
+    last_activity = Column(String, nullable=False)
     user_agent = Column(Text)
-    ip_address = Column(String)
-    created_at = Column(String)
-    last_activity = Column(String)
-
-class PageView(TrackingBase):
-    __tablename__ = 'page_views'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String, nullable=False)
-    page_url = Column(String, nullable=False)
-    page_title = Column(String)
     referrer = Column(String)
-    view_start = Column(String)
-    view_end = Column(String)
-    time_on_page = Column(Integer)  # 秒
-    scroll_depth_max = Column(Integer)
+    ip_hash = Column(String)
 
-class UserEvent(TrackingBase):
-    __tablename__ = 'user_events'
+class TrackingMangaView(TrackingBase):
+    """
+    作品単位の閲覧ログ。
+    viewer.html + tracking.jsから:
+      - start: /api/tracking/manga-view/start
+      - update: /api/tracking/manga-view/update
+      - end: /api/tracking/manga-view/end
+    """
+    __tablename__ = "tracking_manga_views"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String, nullable=False)
-    page_view_id = Column(Integer)
-    event_type = Column(String, nullable=False)  # 'click', 'mouse_move', 'scroll'
-    element_selector = Column(String)
-    element_text = Column(String)
-    x_position = Column(Integer)
-    y_position = Column(Integer)
-    scroll_direction = Column(String)  # 'up' or 'down'
-    scroll_speed = Column(Integer)     # ピクセル/秒
-    timestamp = Column(String)
+    user_id = Column(String, nullable=False, index=True)
+    session_id = Column(String, nullable=False, index=True)
+    manga_id = Column(Integer, nullable=False, index=True)
+    page_count = Column(Integer)
+    started_at = Column(String, nullable=False)
+    ended_at = Column(String)
+    total_duration_sec = Column(Integer, default=0)
+    max_page = Column(Integer, default=0)
+    last_page = Column(Integer, default=0)
+    last_page_changed_at = Column(String)
 
+class TrackingSearchQuery(TrackingBase):
+    """
+    よく使う検索タグ/クエリを集計するための元データ。
+    tracking.jsの Tracking.search.logQuery から記録。
+    """
+    __tablename__ = "tracking_search_queries"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, index=True)
+    session_id = Column(String, index=True)
+    query = Column(Text)
+    normalized_query = Column(Text, index=True)
+    tags_json = Column(Text)
+    used_at = Column(String, index=True)
 
 class UserSnapshot(TrackingBase):
     __tablename__ = 'user_snapshots'
@@ -1036,44 +1062,11 @@ async def init_database():
         await conn.execute(text("PRAGMA optimize"))
 
 async def init_tracking_database():
-    import os
-    import shutil
-
-    global tracking_engine, TrackingSessionLocal
-    try:
-        async with tracking_engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception as e:
-        logger.warning(f"トラッキングDB再作成: {e}")
-        await tracking_engine.dispose()
-        if os.path.exists(f"db/{TRACKING_DB_FILE}"):
-            try:
-                shutil.copy2(f"db/{TRACKING_DB_FILE}", f"db/{TRACKING_DB_FILE}.corrupt_backup")
-            except Exception:
-                pass
-            for suffix in ["-wal", "-shm"]:
-                p = f"db/{TRACKING_DB_FILE}{suffix}"
-                if os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except Exception:
-                        pass
-            try:
-                os.remove(f"db/{TRACKING_DB_FILE}")
-            except Exception:
-                pass
-        tracking_engine = create_async_engine(
-            f"sqlite+aiosqlite:///db/{TRACKING_DB_FILE}",
-            echo=False,
-            connect_args={
-                "timeout": 20,
-                "isolation_level": None,
-            },
-            pool_pre_ping=True,
-            pool_recycle=3600,
-        )
-        TrackingSessionLocal = async_sessionmaker(bind=tracking_engine, expire_on_commit=False)
-
+    """
+    tracking.db 初期化（シンプルな新スキーマ）。
+    既存tracking.dbが古いスキーマの場合も create_all により必要テーブルのみ作成される前提。
+    破壊的マイグレーションが必要になった場合は明示的にファイル削除する運用とする。
+    """
     async with tracking_engine.begin() as conn:
         await conn.run_sync(TrackingBase.metadata.create_all)
 
@@ -1085,11 +1078,10 @@ async def init_tracking_database():
         await conn.execute(text("PRAGMA foreign_keys=ON"))
 
         # インデックス
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_sessions_fingerprint ON user_sessions(fingerprint_hash)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_page_views_session_id ON page_views(session_id)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_events_session_id ON user_events(session_id)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_events_page_view_id ON user_events(page_view_id)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_events_type ON user_events(event_type)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracking_users_last_seen ON tracking_users(last_seen)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracking_sessions_user ON tracking_sessions(user_id, last_activity)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracking_manga_views_user_manga ON tracking_manga_views(user_id, manga_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracking_search_queries_user ON tracking_search_queries(user_id, used_at)"))
 
 # =========================
 # FTS ユーティリティ
@@ -1871,36 +1863,45 @@ class SearchRequest(BaseModel):
     min_pages: Optional[int] = None
     max_pages: Optional[int] = None
 
-class SessionRequest(BaseModel):
-    session_id: str
-    fingerprint_hash: str
+# ---- 新トラッキング API用モデル ----
+
+class IdentifyRequest(BaseModel):
+    user_id: str
+    fingerprint: Optional[str] = None
     user_agent: Optional[str] = None
-    ip_address: Optional[str] = None
 
-class PageViewRequest(BaseModel):
+class TrackingSessionRequest(BaseModel):
+    user_id: str
     session_id: str
-    page_url: str
-    page_title: Optional[str] = None
+    user_agent: Optional[str] = None
     referrer: Optional[str] = None
-    view_start: Optional[str] = None
-    view_end: Optional[str] = None
-    time_on_page: Optional[int] = None
-    scroll_depth_max: Optional[int] = None
 
-class EventRequest(BaseModel):
+class MangaViewStartRequest(BaseModel):
+    user_id: str
     session_id: str
-    page_view_id: Optional[int] = None
-    event_type: str
-    element_selector: Optional[str] = None
-    element_text: Optional[str] = None
-    x_position: Optional[int] = None
-    y_position: Optional[int] = None
-    scroll_direction: Optional[str] = None
-    scroll_speed: Optional[int] = None
-    timestamp: Optional[str] = None
+    manga_id: int
+    page_count: Optional[int] = None
+    started_at: Optional[str] = None
 
-class BatchEventsRequest(BaseModel):
-    events: List[EventRequest]
+class MangaViewUpdateRequest(BaseModel):
+    manga_view_id: int
+    current_page: Optional[int] = None
+    max_page: Optional[int] = None
+    now: Optional[str] = None
+    increment_duration_sec: Optional[int] = None
+
+class MangaViewEndRequest(BaseModel):
+    manga_view_id: int
+    ended_at: Optional[str] = None
+    final_page: Optional[int] = None
+    total_duration_sec: Optional[int] = None
+
+class SearchLogRequest(BaseModel):
+    user_id: str
+    session_id: Optional[str] = None
+    query: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    used_at: Optional[str] = None
 
 # =========================
 # ルータ
@@ -2928,132 +2929,179 @@ async def load_history_snapshot(code: str) -> SnapshotDataResponse:
         raise HTTPException(status_code=500, detail=f"スナップショットの読み込みに失敗しました: {exc}") from exc
 
 # =========================
-# トラッキング系
+# 新トラッキングAPI
 # =========================
-@app.post("/api/tracking/session")
-async def update_session(request: SessionRequest):
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+@app.post("/api/tracking/identify")
+async def api_tracking_identify(request: IdentifyRequest):
+    """
+    TrackingUserをuser_idでupsert。
+    IPはここでは扱わず、必要であればreverse proxy側で加工して渡す前提。
+    """
     try:
         async with get_tracking_db_session() as db:
-            stmt = select(UserSession).where(UserSession.session_id == request.session_id)
+            now = _now_iso()
+            stmt = select(TrackingUser).where(TrackingUser.user_id == request.user_id)
             result = await db.execute(stmt)
-            existing_session = result.scalars().first()
-            now_iso = datetime.now().isoformat()
-            if existing_session:
-                existing_session.last_activity = now_iso
+            user = result.scalars().first()
+            if user:
+                user.last_seen = now
                 if request.user_agent:
-                    existing_session.user_agent = request.user_agent
-                if request.ip_address:
-                    existing_session.ip_address = request.ip_address
-                await db.commit()
-                return {"status": "updated", "session_id": existing_session.session_id}
+                    user.last_user_agent = request.user_agent
             else:
-                new_session = UserSession(
+                user = TrackingUser(
+                    user_id=request.user_id,
+                    first_seen=now,
+                    last_seen=now,
+                    last_user_agent=request.user_agent,
+                )
+                db.add(user)
+            await db.commit()
+            return {"status": "ok", "user_id": request.user_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"identifyエラー: {e}")
+
+@app.post("/api/tracking/session")
+async def api_tracking_session(request: TrackingSessionRequest):
+    """
+    tracking.js が起動時に叩く。
+    - user_id + session_id を基に TrackingSession を upsert。
+    """
+    try:
+        async with get_tracking_db_session() as db:
+            now = _now_iso()
+            stmt = select(TrackingSession).where(TrackingSession.session_id == request.session_id)
+            result = await db.execute(stmt)
+            sess = result.scalars().first()
+            if sess:
+                sess.last_activity = now
+                if request.user_agent:
+                    sess.user_agent = request.user_agent
+                if request.referrer:
+                    sess.referrer = request.referrer
+            else:
+                sess = TrackingSession(
                     session_id=request.session_id,
-                    fingerprint_hash=request.fingerprint_hash,
+                    user_id=request.user_id,
+                    started_at=now,
+                    last_activity=now,
                     user_agent=request.user_agent,
-                    ip_address=request.ip_address,
-                    created_at=now_iso,
-                    last_activity=now_iso,
+                    referrer=request.referrer,
                 )
-                db.add(new_session)
-                await db.commit()
-                return {"status": "created", "session_id": new_session.session_id}
+                db.add(sess)
+            await db.commit()
+            return {"status": "ok", "session_id": request.session_id}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"セッション更新エラー: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"sessionエラー: {e}")
 
-@app.post("/api/tracking/page-view")
-async def record_page_view(request: PageViewRequest):
+@app.post("/api/tracking/manga-view/start")
+async def api_tracking_manga_view_start(request: MangaViewStartRequest):
     try:
         async with get_tracking_db_session() as db:
-            stmt = select(UserSession).where(UserSession.session_id == request.session_id)
-            result = await db.execute(stmt)
-            session = result.scalars().first()
-            if not session:
-                raise HTTPException(status_code=404, detail="セッションが見つかりません")
-            new_page_view = PageView(
+            started_at = request.started_at or _now_iso()
+            mv = TrackingMangaView(
+                user_id=request.user_id,
                 session_id=request.session_id,
-                page_url=request.page_url,
-                page_title=request.page_title,
-                referrer=request.referrer,
-                view_start=request.view_start or datetime.now().isoformat(),
-                view_end=request.view_end,
-                time_on_page=request.time_on_page,
-                scroll_depth_max=request.scroll_depth_max,
+                manga_id=request.manga_id,
+                page_count=request.page_count,
+                started_at=started_at,
+                total_duration_sec=0,
+                max_page=0,
+                last_page=0,
             )
-            db.add(new_page_view)
+            db.add(mv)
             await db.commit()
-            return {"status": "created", "page_view_id": new_page_view.id, "session_id": request.session_id}
+            await db.refresh(mv)
+            return {"status": "ok", "manga_view_id": mv.id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"manga-view startエラー: {e}")
+
+@app.post("/api/tracking/manga-view/update")
+async def api_tracking_manga_view_update(request: MangaViewUpdateRequest):
+    try:
+        async with get_tracking_db_session() as db:
+            stmt = select(TrackingMangaView).where(TrackingMangaView.id == request.manga_view_id)
+            result = await db.execute(stmt)
+            mv = result.scalars().first()
+            if not mv:
+                raise HTTPException(status_code=404, detail="manga_viewが見つかりません")
+
+            # 時間加算
+            if request.increment_duration_sec and request.increment_duration_sec > 0:
+                mv.total_duration_sec = (mv.total_duration_sec or 0) + int(request.increment_duration_sec)
+
+            # ページ更新
+            if request.current_page is not None:
+                mv.last_page = max(mv.last_page or 0, request.current_page)
+                mv.last_page_changed_at = request.now or _now_iso()
+
+            if request.max_page is not None:
+                mv.max_page = max(mv.max_page or 0, request.max_page)
+
+            await db.commit()
+            return {"status": "ok"}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ページビュー記録エラー: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"manga-view updateエラー: {e}")
 
-@app.post("/api/tracking/events")
-async def record_events(request: BatchEventsRequest):
+@app.post("/api/tracking/manga-view/end")
+async def api_tracking_manga_view_end(request: MangaViewEndRequest):
     try:
         async with get_tracking_db_session() as db:
-            session_ids = {event.session_id for event in request.events}
-            sessions: List[UserSession]
-            if session_ids:
-                stmt = select(UserSession).where(UserSession.session_id.in_(session_ids))
-                result = await db.execute(stmt)
-                sessions = result.scalars().all()
-            else:
-                sessions = []
-            session_dict = {s.session_id: s for s in sessions}
-            valid_events = [event for event in request.events if event.session_id in session_dict]
-            if not valid_events:
-                return {"status": "no_valid_events", "count": 0}
-
-            new_events = []
-            for event in valid_events:
-                new_event = UserEvent(
-                    session_id=event.session_id,
-                    page_view_id=event.page_view_id,
-                    event_type=event.event_type,
-                    element_selector=event.element_selector,
-                    element_text=event.element_text,
-                    x_position=event.x_position,
-                    y_position=event.y_position,
-                    scroll_direction=event.scroll_direction,
-                    scroll_speed=event.scroll_speed,
-                    timestamp=event.timestamp or datetime.now().isoformat(),
-                )
-                new_events.append(new_event)
-            db.add_all(new_events)
-            await db.commit()
-            return {"status": "created", "count": len(new_events), "session_id": valid_events[0].session_id if valid_events else None}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"イベント記録エラー: {str(e)}")
-
-@app.post("/api/tracking/single-event")
-async def record_single_event(request: EventRequest):
-    try:
-        async with get_tracking_db_session() as db:
-            stmt = select(UserSession).where(UserSession.session_id == request.session_id)
+            stmt = select(TrackingMangaView).where(TrackingMangaView.id == request.manga_view_id)
             result = await db.execute(stmt)
-            session = result.scalars().first()
-            if not session:
-                raise HTTPException(status_code=404, detail="セッションが見つかりません")
-            new_event = UserEvent(
-                session_id=request.session_id,
-                page_view_id=request.page_view_id,
-                event_type=request.event_type,
-                element_selector=request.element_selector,
-                element_text=request.element_text,
-                x_position=request.x_position,
-                y_position=request.y_position,
-                scroll_direction=request.scroll_direction,
-                scroll_speed=request.scroll_speed,
-                timestamp=request.timestamp or datetime.now().isoformat(),
-            )
-            db.add(new_event)
+            mv = result.scalars().first()
+            if not mv:
+                # 既に削除/未登録の場合は成功扱い
+                return {"status": "ok", "skipped": True}
+
+            if request.total_duration_sec is not None and request.total_duration_sec > 0:
+                mv.total_duration_sec = max(
+                    mv.total_duration_sec or 0,
+                    int(request.total_duration_sec)
+                )
+
+            if request.final_page is not None:
+                mv.last_page = max(mv.last_page or 0, request.final_page)
+
+            mv.ended_at = request.ended_at or _now_iso()
             await db.commit()
-            return {"status": "created", "event_id": new_event.id, "session_id": request.session_id}
-    except HTTPException:
-        raise
+            return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"イベント記録エラー: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"manga-view endエラー: {e}")
+
+@app.post("/api/tracking/search")
+async def api_tracking_search(request: SearchLogRequest):
+    """
+    検索クエリ/タグのログ。
+    tagsはクライアントでパース済みを想定し、そのままJSON文字列で保存。
+    """
+    try:
+        async with get_tracking_db_session() as db:
+            used_at = request.used_at or _now_iso()
+            q = (request.query or "").strip()
+            normalized = q.lower() if q else ""
+
+            tags = [str(t).strip() for t in request.tags if str(t).strip()]
+            tags_json = json.dumps(tags, ensure_ascii=False) if tags else None
+
+            entry = TrackingSearchQuery(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                query=q or None,
+                normalized_query=normalized or None,
+                tags_json=tags_json,
+                used_at=used_at,
+            )
+            db.add(entry)
+            await db.commit()
+            return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"searchログエラー: {e}")
 
 # =========================
 # ランキング系API
