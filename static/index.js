@@ -5,6 +5,7 @@
     let currentResolvedQuery = '';
     let currentMinPages = 0;
     let currentMaxPages = null;
+    let currentRankingOffset = 0;
     let isLoading = false;
     let cardObserver = null;
     const searchCache = new Map();
@@ -302,10 +303,15 @@
             currentMaxPages = Number.isFinite(maxVal) ? maxVal : null;
             elements.cardGrid.innerHTML = '';
             elements.resultMeta.textContent = '';
+            currentRankingOffset = 0;
+            if (window.MangaApp && typeof MangaApp.setLastSearchQuery === 'function') {
+                MangaApp.setLastSearchQuery(currentQuery, currentResolvedQuery);
+            }
         }
 
         // 並び順の値を取得
         const sortBy = elements.sortBySelect ? elements.sortBySelect.value : 'created_at';
+        const isRankingSort = sortBy !== 'created_at' && ['daily', 'weekly', 'monthly', 'yearly', 'all_time'].includes(sortBy);
 
         showLoading(elements, true);
 
@@ -316,9 +322,10 @@
                 currentAfterCreatedAt,
                 currentMinPages,
                 currentMaxPages,
-                sortBy
+                sortBy,
+                currentRankingOffset
             );
-            const { results, hasMore, nextAfterCreatedAt } = data;
+            const { results, hasMore, nextAfterCreatedAt, nextRankingOffset } = data;
 
             if (reset && typeof MangaApp.recordTagUsage === 'function' && currentQuery) {
                 const tags = extractTagsFromQuery(currentResolvedQuery || currentQuery);
@@ -334,8 +341,20 @@
                 renderResults(elements, results, reset);
             }
 
-            currentAfterCreatedAt = nextAfterCreatedAt;
-            
+            if (isRankingSort) {
+                currentAfterCreatedAt = null;
+                if (typeof nextRankingOffset === 'number') {
+                    currentRankingOffset = nextRankingOffset;
+                } else if (reset) {
+                    currentRankingOffset = results.length;
+                } else {
+                    currentRankingOffset += results.length;
+                }
+            } else {
+                currentAfterCreatedAt = nextAfterCreatedAt;
+                currentRankingOffset = 0;
+            }
+
             // 無限スクロールが有効な場合はボタンを非表示に、そうでなければ表示
             if (infiniteScrollEnabled) {
                 elements.loadMoreContainer.style.display = hasMore ? 'block' : 'none';
@@ -364,8 +383,8 @@
             showLoading(elements, false);
         }
     }
-async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minPages, maxPages, sortBy = 'created_at') {
-    const cacheKey = `${resolvedQuery}|${userQuery}|${afterCreatedAt ?? 'start'}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
+async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minPages, maxPages, sortBy = 'created_at', rankingOffset = 0) {
+    const cacheKey = `${resolvedQuery}|${userQuery}|${afterCreatedAt ?? 'start'}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${rankingOffset}|${MangaApp.getHiddenTags().join(',')}`;
     if (searchCache.has(cacheKey)) {
         return searchCache.get(cacheKey);
     }
@@ -398,12 +417,23 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
         if (queryForRequest) {
             // タグ検索（クエリあり）の場合は通常の検索APIを使用し、パラメータにソート順を追加
             params.append('sort_by', sortBy);
+            params.append('offset', rankingOffset.toString());
             response = await fetch(`/search?${params.toString()}`);
         } else {
             // タグなしの場合はランキングAPIを使用
             const rankingParams = new URLSearchParams();
             rankingParams.append('ranking_type', sortBy);
             rankingParams.append('limit', LIMIT.toString());
+            rankingParams.append('offset', rankingOffset.toString());
+            if (typeof minPages === 'number' && minPages > 0) {
+                rankingParams.append('min_pages', minPages.toString());
+            }
+            if (typeof maxPages === 'number' && maxPages > 0) {
+                rankingParams.append('max_pages', maxPages.toString());
+            }
+            if (hiddenTags.length) {
+                rankingParams.append('exclude_tag', hiddenTags.join(','));
+            }
             response = await fetch(`/api/rankings?${rankingParams.toString()}`);
         }
     } else {
@@ -417,15 +447,20 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
 
     // ランキングAPIと検索APIでレスポンス形式が異なるため、それぞれに対応
     let filtered, hasMore, nextAfterCreatedAt;
-    
+    let nextRankingOffset = null;
+
     if (sortBy !== 'created_at' && ['daily', 'weekly', 'monthly', 'yearly', 'all_time'].includes(sortBy)) {
         if (queryForRequest) {
             // タグ/クエリありランキングソート:
             // /search のレスポンス形式 { results, has_more, ... } をそのまま利用
             filtered = data.results || [];
             hasMore = Boolean(data.has_more);
-            const lastItem = filtered[filtered.length - 1];
-            nextAfterCreatedAt = lastItem ? lastItem.created_at : null;
+            nextAfterCreatedAt = null;
+            if (typeof data.next_offset === 'number') {
+                nextRankingOffset = data.next_offset;
+            } else {
+                nextRankingOffset = rankingOffset + filtered.length;
+            }
         } else {
             // タグ無しランキングソート:
             // /api/rankings のレスポンス形式 { rankings, has_more, ... } に対応
@@ -433,6 +468,11 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
             hasMore = Boolean(data.has_more);
             const lastItem = filtered[filtered.length - 1];
             nextAfterCreatedAt = null; // ランキングでは使用しない
+            if (typeof data.next_offset === 'number') {
+                nextRankingOffset = data.next_offset;
+            } else {
+                nextRankingOffset = rankingOffset + filtered.length;
+            }
         }
     } else {
         // 通常の検索APIレスポンスを処理
@@ -446,6 +486,7 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
         results: filtered,
         hasMore: hasMore,
         nextAfterCreatedAt: nextAfterCreatedAt,
+        nextRankingOffset: nextRankingOffset,
     };
     searchCache.set(cacheKey, result);
     if (searchCache.size > 60) {
