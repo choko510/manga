@@ -7,6 +7,11 @@
         tagUsage: 'manga_tag_usage'
     };
 
+    const SESSION_KEYS = {
+        lastSearchQuery: 'manga_last_search_query',
+        lastSearchResolved: 'manga_last_search_resolved',
+    };
+
     let translationPromise = null;
     let translations = {};
     const aliasIndex = new Map();
@@ -270,6 +275,25 @@
         return likes.has(galleryId);
     }
 
+    function setLastSearchQuery(query, resolvedQuery) {
+        try {
+            sessionStorage.setItem(SESSION_KEYS.lastSearchQuery, typeof query === 'string' ? query : '');
+            sessionStorage.setItem(SESSION_KEYS.lastSearchResolved, typeof resolvedQuery === 'string' ? resolvedQuery : '');
+        } catch (error) {
+            // ignore storage errors
+        }
+    }
+
+    function getLastSearchQuery() {
+        try {
+            const query = sessionStorage.getItem(SESSION_KEYS.lastSearchQuery) || '';
+            const resolved = sessionStorage.getItem(SESSION_KEYS.lastSearchResolved) || '';
+            return { query, resolved };
+        } catch (error) {
+            return { query: '', resolved: '' };
+        }
+    }
+
     function sanitiseHistoryEntry(entry) {
         if (!entry || typeof entry !== 'object') {
             return null;
@@ -436,17 +460,34 @@
             : Number.isFinite(existingEntry?.last_page)
                 ? Math.max(1, existingEntry.last_page)
                 : Math.min(lastPageIndex + 1, Math.max(1, pageCount));
+        const entryMaxIndex = Number.isFinite(entry.max_page_index)
+            ? Math.max(0, entry.max_page_index)
+            : null;
+        const existingMaxIndex = Number.isFinite(existingEntry?.max_page_index)
+            ? Math.max(0, existingEntry.max_page_index)
+            : null;
+        const safePageCount = pageCount > 0 ? Math.floor(pageCount) : null;
+        const normalizedLastIndex = Math.max(0, lastPageIndex);
+        const normalizedLastPage = Math.max(1, lastPage);
+        const derivedMaxIndex = Math.max(normalizedLastIndex, entryMaxIndex ?? 0, existingMaxIndex ?? 0);
+        const derivedMaxPage = Math.max(normalizedLastPage, derivedMaxIndex + 1);
+        const boundedLastIndex = safePageCount ? Math.min(normalizedLastIndex, safePageCount - 1) : normalizedLastIndex;
+        const boundedLastPage = safePageCount ? Math.min(normalizedLastPage, safePageCount) : normalizedLastPage;
+        const boundedMaxIndex = safePageCount ? Math.min(derivedMaxIndex, safePageCount - 1) : derivedMaxIndex;
+        const boundedMaxPage = safePageCount ? Math.min(derivedMaxPage, safePageCount) : derivedMaxPage;
         const completed = typeof entry.completed === 'boolean'
             ? entry.completed
-            : existingEntry?.completed ?? (pageCount > 0 && lastPage >= pageCount);
+            : existingEntry?.completed ?? (safePageCount ? boundedMaxPage >= safePageCount : false);
         history.unshift({
             gallery_id: entry.gallery_id,
             japanese_title: entry.japanese_title || '',
             viewed_at: Date.now(),
             updated_at: Date.now(),
             page_count: pageCount,
-            last_page_index: Math.min(lastPageIndex, Math.max(0, pageCount - 1)),
-            last_page: Math.min(lastPage, Math.max(1, pageCount || lastPage)),
+            last_page_index: boundedLastIndex,
+            last_page: Math.max(1, boundedLastPage),
+            max_page_index: boundedMaxIndex,
+            max_page: Math.max(1, boundedMaxPage),
             completed,
         });
         const trimmed = history.slice(0, HISTORY_LIMIT);
@@ -472,11 +513,23 @@
                 : null;
 
         const clampedIndex = Math.max(0, pages ? Math.min(pageIndex, pages - 1) : Math.floor(pageIndex));
-        entry.last_page_index = clampedIndex;
-        entry.last_page = clampedIndex + 1;
+        const previousMaxIndex = Number.isFinite(entry.max_page_index) ? Math.max(0, entry.max_page_index) : 0;
+        const updatedMaxIndex = Math.max(previousMaxIndex, clampedIndex);
+
         if (pages) {
+            const boundedIndex = Math.min(clampedIndex, pages - 1);
+            const boundedMaxIndex = Math.min(updatedMaxIndex, pages - 1);
             entry.page_count = pages;
-            entry.completed = entry.last_page >= pages;
+            entry.last_page_index = boundedIndex;
+            entry.last_page = Math.min(boundedIndex + 1, pages);
+            entry.max_page_index = boundedMaxIndex;
+            entry.max_page = Math.min(boundedMaxIndex + 1, pages);
+            entry.completed = entry.max_page >= pages;
+        } else {
+            entry.last_page_index = clampedIndex;
+            entry.last_page = clampedIndex + 1;
+            entry.max_page_index = updatedMaxIndex;
+            entry.max_page = updatedMaxIndex + 1;
         }
         entry.updated_at = Date.now();
 
@@ -716,6 +769,8 @@
         saveHiddenTags,
         isTagHidden,
         toggleLike,
+        setLastSearchQuery,
+        getLastSearchQuery,
         isLiked,
         getLikedGalleries: () => Array.from(getLikedSet()),
         getHistory,

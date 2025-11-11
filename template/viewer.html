@@ -1001,6 +1001,74 @@
             display: none;
         }
 
+        .resume-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            z-index: 2000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+        }
+
+        .resume-overlay.is-visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .resume-dialog {
+            background: var(--bg-button);
+            color: var(--text-primary);
+            border-radius: 20px;
+            padding: 24px 28px;
+            width: min(420px, 100%);
+            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.4);
+        }
+
+        body.dark-mode .resume-dialog {
+            background: rgba(15, 23, 42, 0.95);
+        }
+
+        .resume-message {
+            margin: 0 0 20px 0;
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+
+        .resume-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .resume-button {
+            border: none;
+            border-radius: var(--radius-pill);
+            padding: 10px 18px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: rgba(148, 163, 184, 0.18);
+            color: var(--text-primary);
+            transition: background 0.2s ease, transform 0.2s ease;
+        }
+
+        .resume-button:hover,
+        .resume-button:focus-visible {
+            background: rgba(56, 189, 248, 0.35);
+            transform: translateY(-1px);
+        }
+
+        .resume-button.primary {
+            background: linear-gradient(135deg, #38bdf8, #6366f1);
+            color: #fff;
+        }
+
         /* モバイルでのみ表示 */
         @media (max-width: 767px) {
             .mobile-bottom-nav {
@@ -1066,6 +1134,16 @@
             </section>
         </div>
     </main>
+
+    <div class="resume-overlay" id="resumeOverlay" hidden aria-hidden="true">
+        <div class="resume-dialog" role="dialog" aria-modal="true">
+            <p class="resume-message" id="resumeMessage">前回の続きから再開しますか？</p>
+            <div class="resume-actions">
+                <button type="button" class="resume-button primary" id="resumeContinueButton">続きから読む</button>
+                <button type="button" class="resume-button" id="resumeStartOverButton">最初から</button>
+            </div>
+        </div>
+    </div>
 
     <!-- モバイル用ボトムナビゲーション -->
     <div class="mobile-bottom-nav" id="mobileBottomNav">
@@ -1137,6 +1215,7 @@
         let swiperInstance = null;
         let doublePageStartIndices = [];
         let isDownloadingPdf = false;
+        let resumePageIndex = 0;
 
         const ERROR_IMAGE_SRC = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIGZpbGw9IiNmMGYwZjAiLz48dGV4dCB4PSIyNCIgeT0iMjQiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxOCIgZmlsbD0iIzk5OSI+PC90ZXh0Pjwvc3ZnPg==';
 
@@ -1162,6 +1241,15 @@
         const recommendationGrid = document.getElementById('recommendationGrid');
         const readingModeSelect = document.getElementById('readingModeSelect');
         const downloadPdfButton = document.getElementById('downloadPdfButton');
+
+        const resumeOverlay = document.getElementById('resumeOverlay');
+        const resumeMessage = document.getElementById('resumeMessage');
+        const resumeContinueButton = document.getElementById('resumeContinueButton');
+        const resumeStartOverButton = document.getElementById('resumeStartOverButton');
+
+        const lastSearchInfo = (window.MangaApp && typeof MangaApp.getLastSearchQuery === 'function')
+            ? MangaApp.getLastSearchQuery()
+            : { query: '', resolved: '' };
 
         // 画像サイズ調整用DOM要素
         const imageSizeControls = document.getElementById('imageSizeControls');
@@ -1190,6 +1278,89 @@
             }
             return null;
         }
+
+        function buildSearchUrlWithTag(tagValue) {
+            const baseQuery = typeof lastSearchInfo.query === 'string' ? lastSearchInfo.query : '';
+            const tokens = baseQuery
+                .split(/[\s,]+/)
+                .map((value) => value.trim())
+                .filter((value) => value.length > 0);
+            const existingPositive = new Set(
+                tokens
+                    .filter((token) => !token.startsWith('-'))
+                    .map((token) => token.toLowerCase())
+            );
+            const candidate = (tagValue || '').toString();
+            const normalized = candidate.toLowerCase();
+            if (candidate && !existingPositive.has(normalized)) {
+                tokens.push(candidate);
+            }
+            const nextQuery = tokens.join(' ').trim();
+            return nextQuery ? `/?tag=${encodeURIComponent(nextQuery)}` : `/?tag=${encodeURIComponent(candidate)}`;
+        }
+
+        function showResumePrompt(targetIndex) {
+            if (!resumeOverlay || !resumeMessage) {
+                return;
+            }
+            resumeMessage.textContent = `前回は${targetIndex + 1}ページ目まで読みました。続きから読みますか？`;
+            resumeOverlay.hidden = false;
+            resumeOverlay.setAttribute('aria-hidden', 'false');
+            requestAnimationFrame(() => {
+                resumeOverlay.classList.add('is-visible');
+            });
+        }
+
+        function hideResumePrompt() {
+            if (!resumeOverlay) {
+                return;
+            }
+            resumeOverlay.classList.remove('is-visible');
+            resumeOverlay.setAttribute('aria-hidden', 'true');
+            resumeOverlay.hidden = true;
+        }
+
+        function continueFromSavedPage() {
+            if (!imageUrls || !imageUrls.length) {
+                hideResumePrompt();
+                resumePageIndex = 0;
+                return;
+            }
+            const target = Math.max(0, Math.min(resumePageIndex, imageUrls.length - 1));
+            resumePageIndex = 0;
+            hideResumePrompt();
+            if (currentReadingMode === 'vertical' || currentReadingMode === 'horizontal') {
+                preloadMorePagesIfNeeded(target);
+            }
+            currentPageIndex = target;
+            scrollToPage(target, false);
+            onPageChange();
+        }
+
+        resumeContinueButton?.addEventListener('click', (event) => {
+            event.preventDefault();
+            continueFromSavedPage();
+        });
+
+        resumeStartOverButton?.addEventListener('click', (event) => {
+            event.preventDefault();
+            resumePageIndex = 0;
+            hideResumePrompt();
+        });
+
+        resumeOverlay?.addEventListener('click', (event) => {
+            if (event.target === resumeOverlay) {
+                resumePageIndex = 0;
+                hideResumePrompt();
+            }
+        });
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && resumeOverlay && !resumeOverlay.hidden) {
+                resumePageIndex = 0;
+                hideResumePrompt();
+            }
+        });
 
         // 設定を読み込む
         function loadSettings() {
@@ -1779,18 +1950,27 @@
                     return;
                 }
 
+                hideResumePrompt();
+                resumePageIndex = 0;
+
                 const numericGalleryId = Number(galleryData.gallery_id);
                 let savedPageIndex = 0;
                 if (window.MangaApp && typeof MangaApp.getHistory === 'function') {
                     const previousEntry = MangaApp.getHistory().find((item) => item.gallery_id === numericGalleryId);
                     if (previousEntry) {
-                        if (Number.isFinite(previousEntry.last_page_index)) {
+                        if (Number.isFinite(previousEntry.max_page_index)) {
+                            savedPageIndex = Math.max(0, Math.min(previousEntry.max_page_index, imageUrls.length - 1));
+                        } else if (Number.isFinite(previousEntry.last_page_index)) {
                             savedPageIndex = Math.max(0, Math.min(previousEntry.last_page_index, imageUrls.length - 1));
                         } else if (Number.isFinite(previousEntry.last_page)) {
                             savedPageIndex = Math.max(0, Math.min(previousEntry.last_page - 1, imageUrls.length - 1));
+                        } else if (Number.isFinite(previousEntry.max_page)) {
+                            savedPageIndex = Math.max(0, Math.min(previousEntry.max_page - 1, imageUrls.length - 1));
                         }
                     }
                 }
+
+                resumePageIndex = savedPageIndex;
 
                 MangaApp.addHistoryEntry({
                     gallery_id: numericGalleryId,
@@ -1803,6 +1983,7 @@
                 updateGalleryInfo();
 
                 // 読みモードに応じて描画戦略を切り替え
+                currentPageIndex = 0;
                 if (currentReadingMode === 'vertical' || currentReadingMode === 'horizontal') {
                     // 最初は先頭Nページのみ描画
                     renderInitialPages();
@@ -1814,14 +1995,6 @@
                     renderPagesByMode();
                 }
 
-                // 保存済み位置があれば反映（存在しない場合は0）
-                currentPageIndex = Math.max(0, Math.min(savedPageIndex, imageUrls.length - 1));
-                if ((currentReadingMode === 'vertical' || currentReadingMode === 'horizontal') && currentPageIndex > 0) {
-                    // 必要な分だけ先読みしてからスクロール
-                    preloadMorePagesIfNeeded(currentPageIndex);
-                    scrollToPage(currentPageIndex, false);
-                }
-
                 // 表示開始
                 showContent(true);
                 viewerContent.classList.add('is-visible');
@@ -1829,6 +2002,10 @@
                 // いいね状態とおすすめ
                 updateLikeButton(MangaApp.isLiked(numericGalleryId));
                 loadRecommendations(numericGalleryId);
+
+                if (resumePageIndex > 0) {
+                    showResumePrompt(resumePageIndex);
+                }
 
                 // ページインジケーター初期更新
                 updatePageIndicator();
@@ -1949,7 +2126,7 @@
                             const tagItem = document.createElement('span');
                             tagItem.className = 'tag-item';
                             const tagLink = document.createElement('a');
-                            tagLink.href = `/?tag=${encodeURIComponent(tag)}`;
+                            tagLink.href = buildSearchUrlWithTag(tag);
                             tagLink.textContent = MangaApp.translateTag(tag);
                             tagLink.title = tag;
                             tagItem.appendChild(tagLink);
@@ -1976,7 +2153,7 @@
                     const tagItem = document.createElement('span');
                     tagItem.className = 'tag-item';
                     const tagLink = document.createElement('a');
-                    tagLink.href = `/?tag=${encodeURIComponent(galleryData.tags)}`;
+                    tagLink.href = buildSearchUrlWithTag(galleryData.tags);
                     tagLink.textContent = MangaApp.translateTag(galleryData.tags);
                     tagLink.title = galleryData.tags;
                     tagItem.appendChild(tagLink);
