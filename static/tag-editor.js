@@ -13,7 +13,6 @@
     const versionHistoryModal = document.getElementById('versionHistoryModal');
     const closeVersionHistoryModal = document.getElementById('closeVersionHistoryModal');
     const openVersionHistoryButton = document.getElementById('openVersionHistoryButton');
-    const excludePatternsInput = document.getElementById('excludePatternsInput');
 
     const addTranslationButton = document.getElementById('addTranslationButton');
     const autoAddButton = document.getElementById('autoAddButton');
@@ -24,7 +23,6 @@
 
     const AUTO_SAVE_DELAY = 2000;
     const UPDATE_RETRY_DELAY = 5000;
-    const EXCLUDE_PATTERNS_STORAGE_KEY = 'tag_editor_exclude_patterns';
 
     const state = {
         translations: [],
@@ -37,7 +35,6 @@
         pendingChanges: false,
         updateListenerActive: false,
         versions: [],
-        excludePatterns: [],
     };
 function showStatus(message, type = 'success', timeout = 3000) {
     if (!statusBar) return;
@@ -117,29 +114,6 @@ function showProgress(current, total, message = '処理中...') {
                 saveTranslations({ auto: true });
             }
         }, AUTO_SAVE_DELAY);
-    }
-
-    function loadExcludePatterns() {
-        if (!excludePatternsInput) {
-            state.excludePatterns = [];
-            return;
-        }
-        try {
-            const raw = localStorage.getItem(EXCLUDE_PATTERNS_STORAGE_KEY);
-            if (!raw) {
-                state.excludePatterns = [];
-                excludePatternsInput.value = '';
-                return;
-            }
-            const patterns = raw.split(/\r?\n/)
-                .map((line) => line.trim())
-                .filter((line) => line.length > 0);
-            state.excludePatterns = patterns;
-            excludePatternsInput.value = patterns.join('\n');
-        } catch (error) {
-            state.excludePatterns = [];
-            excludePatternsInput.value = '';
-        }
     }
 
     function updateTranslationCount() {
@@ -988,6 +962,7 @@ function showProgress(current, total, message = '処理中...') {
         const rows = Array.from(translationsTableBody.querySelectorAll('tr'));
         const result = {};
         const duplicates = new Map();
+        const aliasDuplicates = new Map();
         for (const row of rows) {
             const { tagInput, translationInput, aliasesInput, descriptionInput } = row._inputs || {};
             if (!tagInput || !translationInput) continue;
@@ -1003,6 +978,15 @@ function showProgress(current, total, message = '処理中...') {
                 throw new Error(`重複しているタグがあります: "${rawTag}" と "${duplicates.get(normalised)}"`);
             }
             duplicates.set(normalised, rawTag);
+
+            rawAliases.forEach((alias) => {
+                const aliasNorm = normaliseTag(alias);
+                if (!aliasNorm) return;
+                if (aliasDuplicates.has(aliasNorm) && aliasDuplicates.get(aliasNorm) !== rawTag) {
+                    throw new Error(`検索キーワードが重複しています: "${alias}"`);
+                }
+                aliasDuplicates.set(aliasNorm, rawTag);
+            });
 
             const entry = {
                 translation: rawTranslation,
@@ -1162,19 +1146,6 @@ function showProgress(current, total, message = '処理中...') {
         updateTranslationCount();
         markDirty();
     });
-
-    excludePatternsInput?.addEventListener('input', () => {
-        const lines = excludePatternsInput.value
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0);
-        state.excludePatterns = lines;
-        try {
-            localStorage.setItem(EXCLUDE_PATTERNS_STORAGE_KEY, lines.join('\n'));
-        } catch (error) {
-            // ignore storage errors
-        }
-    });
     
     // データベースからタグを自動的に追加する機能
     autoAddButton?.addEventListener('click', async () => {
@@ -1197,53 +1168,21 @@ function showProgress(current, total, message = '処理中...') {
             
             // 既存のタグと重複チェック
             const existingTags = new Set(state.translations.map(t => normaliseTag(t.tag)));
-
+            
             // 重複しないタグのみをフィルタリング
             const newTags = popularTags.filter(tagInfo => !existingTags.has(normaliseTag(tagInfo.tag)));
-
+            
             if (newTags.length === 0) {
                 showStatus('すべてのタグが既に登録されています', 'error', 3000);
                 return;
             }
-
-            const compiledPatterns = [];
-            const invalidPatterns = [];
-            (state.excludePatterns || []).forEach((pattern) => {
-                if (!pattern) {
-                    return;
-                }
-                try {
-                    compiledPatterns.push(new RegExp(pattern, 'i'));
-                } catch (error) {
-                    invalidPatterns.push(pattern);
-                }
-            });
-
-            if (invalidPatterns.length) {
-                showStatus(`無効な正規表現をスキップしました: ${invalidPatterns.join(', ')}`, 'error', 5000);
-            }
-
-            let filteredTags = newTags;
-            if (compiledPatterns.length) {
-                filteredTags = newTags.filter((tagInfo) => !compiledPatterns.some((regex) => regex.test(tagInfo.tag)));
-            }
-
-            if (!filteredTags.length) {
-                showStatus('除外設定により追加可能なタグがありません', 'error', 4000);
-                return;
-            }
-
-            const skippedCount = newTags.length - filteredTags.length;
-            if (skippedCount > 0) {
-                showStatus(`${skippedCount}件のタグを除外しました`, 'success', 3000);
-            }
-
+            
             // 新しいタグを翻訳リストに追加（進捗表示付き）
             let addedCount = 0;
-            showProgress(0, filteredTags.length, 'タグを追加中');
-
-            for (let i = 0; i < filteredTags.length; i++) {
-                const tagInfo = filteredTags[i];
+            showProgress(0, newTags.length, 'タグを追加中');
+            
+            for (let i = 0; i < newTags.length; i++) {
+                const tagInfo = newTags[i];
                 const entry = {
                     tag: tagInfo.tag,
                     translation: '',
@@ -1254,10 +1193,10 @@ function showProgress(current, total, message = '処理中...') {
                 const row = createTranslationRow(entry);
                 translationsTableBody?.prepend(row);
                 addedCount++;
-
+                
                 // 進捗を更新
-                showProgress(i + 1, filteredTags.length, 'タグを追加中');
-
+                showProgress(i + 1, newTags.length, 'タグを追加中');
+                
                 // 少し遅延を入れてUIが更新されるようにする
                 await new Promise(resolve => setTimeout(resolve, 10));
             }
@@ -1304,8 +1243,6 @@ function showProgress(current, total, message = '処理中...') {
     translationSearchInput?.addEventListener('input', () => {
         filterTranslations();
     });
-
-    loadExcludePatterns();
 
     loadData()
         .then(() => {

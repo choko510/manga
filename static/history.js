@@ -68,16 +68,14 @@
     function calculateProgress(entry) {
         const total = Number.isFinite(entry?.page_count) && entry.page_count > 0 ? entry.page_count : null;
         const last = Number.isFinite(entry?.last_page) ? Math.max(1, entry.last_page) : 1;
-        const maxProgress = Number.isFinite(entry?.max_page) ? Math.max(1, entry.max_page) : last;
-        const progressPage = Math.max(last, maxProgress);
         if (!total) {
-            return { percent: 0, label: `第${progressPage}ページ` };
+            return { percent: 0, label: `第${last}ページ` };
         }
-        const clamped = Math.min(progressPage, total);
-        const percent = Math.min(100, Math.round((clamped / total) * 100));
+        const clampedLast = Math.min(last, total);
+        const percent = Math.min(100, Math.round((clampedLast / total) * 100));
         return {
             percent,
-            label: `${clamped} / ${total} ページ`
+            label: `${clampedLast} / ${total} ページ`
         };
     }
 
@@ -224,14 +222,8 @@
             if (!item) return false;
             const total = Number.isFinite(item.page_count) && item.page_count > 0 ? item.page_count : null;
             if (!total) return false;
-            const maxIndex = Number.isFinite(item.max_page_index)
-                ? Math.max(0, item.max_page_index)
-                : Number.isFinite(item.last_page_index)
-                    ? Math.max(0, item.last_page_index)
-                    : Number.isFinite(item.last_page)
-                        ? Math.max(0, item.last_page - 1)
-                        : 0;
-            return !item.completed && maxIndex < total - 1;
+            const lastIndex = Number.isFinite(item.last_page_index) ? item.last_page_index : (Number.isFinite(item.last_page) ? item.last_page - 1 : 0);
+            return !item.completed && lastIndex < total - 1;
         });
 
         elements.continueContainer.innerHTML = '';
