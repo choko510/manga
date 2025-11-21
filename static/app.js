@@ -473,7 +473,8 @@
 
         const clampedIndex = Math.max(0, pages ? Math.min(pageIndex, pages - 1) : Math.floor(pageIndex));
         entry.last_page_index = clampedIndex;
-        entry.last_page = clampedIndex + 1;
+        // last_pageには最高ページ数を保存する
+        entry.last_page = pages || clampedIndex + 1;
         if (pages) {
             entry.page_count = pages;
             entry.completed = entry.last_page >= pages;

@@ -35,8 +35,46 @@ logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # =========================
-# グローバルHTTPセッション
+# グローバル変数管理
 # =========================
+class GlobalState:
+    """グローバル変数を管理するクラス"""
+    def __init__(self):
+        self.global_session: Optional[aiohttp.ClientSession] = None
+        self.scheduler_task: Optional[asyncio.Task] = None
+        self.ranking_scheduler_task: Optional[asyncio.Task] = None
+    
+    async def cleanup(self):
+        """クリーンアップ処理"""
+        if self.scheduler_task:
+            self.scheduler_task.cancel()
+            try:
+                await self.scheduler_task
+            except asyncio.CancelledError:
+                logger.info("同期スケジューラ停止")
+        
+        if self.ranking_scheduler_task:
+            self.ranking_scheduler_task.cancel()
+            try:
+                await self.ranking_scheduler_task
+            except asyncio.CancelledError:
+                logger.info("ランキング更新スケジューラ停止")
+        
+        if self.global_session:
+            await self.global_session.close()
+            logger.info("Global session closed")
+
+# グローバル状態のインスタンス
+global_state = GlobalState()
+
+# 後方互換性のためのグローバル変数アクセス
+def get_global_session() -> Optional[aiohttp.ClientSession]:
+    return global_state.global_session
+
+def set_global_session(session: Optional[aiohttp.ClientSession]):
+    global_state.global_session = session
+
+# グローバル変数（後方互換性）
 global_session: Optional[aiohttp.ClientSession] = None
 
 # =========================
@@ -113,90 +151,99 @@ async def init_main_db() -> None:
         import json as _json
         from datetime import datetime
 
-        # 3-1. page_count が NULL の行を補完
-        result = await conn.execute(
-            text(
-                "SELECT gallery_id, files "
-                "FROM galleries "
-                "WHERE page_count IS NULL "
-                "AND files IS NOT NULL "
-                "LIMIT 1000"
-            )
-        )
-        rows = result.fetchall()
-        for gallery_id, files_json in rows:
-            try:
-                if not files_json:
-                    continue
-
-                data = _json.loads(files_json)
-                if not isinstance(data, list):
-                    continue
-
-                count = 0
-                for item in data:
-                    if isinstance(item, dict):
-                        h = item.get("hash")
-                        if isinstance(h, str) and h:
-                            count += 1
-
-                await conn.execute(
-                    text("UPDATE galleries SET page_count = :cnt WHERE gallery_id = :gid"),
-                    {"cnt": count, "gid": gallery_id},
+        # 3-1. page_count が NULL の行を補完（ループ処理）
+        while True:
+            result = await conn.execute(
+                text(
+                    "SELECT gallery_id, files "
+                    "FROM galleries "
+                    "WHERE page_count IS NULL "
+                    "AND files IS NOT NULL "
+                    "LIMIT 1000"
                 )
-            except Exception:
-                continue
+            )
+            rows = result.fetchall()
+            if not rows:
+                break  # 修正対象がなくなったら終了
+                
+            for gallery_id, files_json in rows:
+                try:
+                    if not files_json:
+                        continue
+
+                    data = _json.loads(files_json)
+                    if not isinstance(data, list):
+                        continue
+
+                    count = 0
+                    for item in data:
+                        if isinstance(item, dict):
+                            h = item.get("hash")
+                            if isinstance(h, str) and h:
+                                count += 1
+
+                    await conn.execute(
+                        text("UPDATE galleries SET page_count = :cnt WHERE gallery_id = :gid"),
+                        {"cnt": count, "gid": gallery_id},
+                    )
+                except Exception:
+                    continue
 
         # 3-2. created_at_unix 列が存在する場合のみ補完処理を行う
         #      - 新しいDBには列が無いケースがあるため、PRAGMAで存在確認してから実行する。
         pragma_res = await conn.execute(text("PRAGMA table_info(galleries)"))
         gallery_columns = [row[1] for row in pragma_res.fetchall()]
         if "created_at_unix" in gallery_columns:
-            result = await conn.execute(
-                text(
-                    "SELECT gallery_id, created_at "
-                    "FROM galleries "
-                    "WHERE (created_at_unix IS NULL OR created_at_unix = 0) "
-                    "AND created_at IS NOT NULL "
-                    "LIMIT 1000"
-                )
-            )
-            rows = result.fetchall()
-            for gallery_id, created_at in rows:
-                try:
-                    if not created_at:
-                        continue
-
-                    s = str(created_at).strip()
-                    if not s:
-                        continue
-
-                    iso = s.replace(" ", "T")
-                    dt = None
-                    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
-                        try:
-                            dt = datetime.strptime(iso, fmt)
-                            break
-                        except ValueError:
-                            continue
-                    if dt is None:
-                        try:
-                            dt = datetime.fromisoformat(iso)
-                        except ValueError:
-                            dt = None
-                    if dt is None:
-                        continue
-
-                    unix_ts = int(dt.timestamp())
-                    if unix_ts <= 0:
-                        continue
-
-                    await conn.execute(
-                        text("UPDATE galleries SET created_at_unix = :ts WHERE gallery_id = :gid"),
-                        {"ts": unix_ts, "gid": gallery_id},
+            # ループ処理で全件補完
+            while True:
+                result = await conn.execute(
+                    text(
+                        "SELECT gallery_id, created_at "
+                        "FROM galleries "
+                        "WHERE (created_at_unix IS NULL OR created_at_unix = 0) "
+                        "AND created_at IS NOT NULL "
+                        "LIMIT 1000"
                     )
-                except Exception:
-                    continue
+                )
+                rows = result.fetchall()
+                if not rows:
+                    break  # 修正対象がなくなったら終了
+                    
+                for gallery_id, created_at in rows:
+                    try:
+                        if not created_at:
+                            continue
+
+                        s = str(created_at).strip()
+                        if not s:
+                            continue
+
+                        iso = s.replace(" ", "T")
+                        dt = None
+                        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+                            try:
+                                dt = datetime.strptime(iso, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        if dt is None:
+                            try:
+                                dt = datetime.fromisoformat(iso)
+                            except ValueError:
+                                dt = None
+                        if dt is None:
+                            continue
+
+                        unix_ts = int(dt.timestamp())
+                        if unix_ts <= 0:
+                            continue
+
+                        await conn.execute(
+                            text("UPDATE galleries SET created_at_unix = :ts WHERE gallery_id = :gid"),
+                            {"ts": unix_ts, "gid": gallery_id},
+                        )
+                    except Exception:
+                        continue
 
 
 async def init_tracking_db() -> None:
@@ -273,6 +320,9 @@ class TrackingMangaView(TrackingBase):
     last_page = Column(Integer, default=0)
     last_page_changed_at = Column(String)
 
+# PageViewはTrackingMangaViewの別名
+PageView = TrackingMangaView
+
 class TrackingSearchQuery(TrackingBase):
     """
     よく使う検索タグ/クエリを集計するための元データ。
@@ -313,11 +363,7 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-@app.on_event("startup")
-async def on_startup() -> None:
-    # 初回起動時にDBスキーマとpage_countを整備
-    await init_main_db()
-    await init_tracking_db()
+# 古いstartupハンドラは新しいstartup_eventに統合されたため削除
 
 # =========================
 # HTTP ヘッダ
@@ -582,13 +628,12 @@ RANKING_FILES = {
     "weekly": "week_ids.txt",
     "monthly": "month_ids.txt",
     "yearly": "year_ids.txt",
-    "all_time": "all_ids.txt"
 }
 
 async def _load_ranking_ids(ranking_type: str) -> List[int]:
     """
     ランキング情報をデータベースまたはファイルから読み込む
-    ranking_type: 'daily', 'weekly', 'monthly', 'yearly', 'all_time'
+    ranking_type: 'daily', 'weekly', 'monthly', 'yearly'
     """
     if ranking_type not in RANKING_FILES:
         raise ValueError(f"Invalid ranking type: {ranking_type}")
@@ -1271,7 +1316,7 @@ async def search_galleries(
         Gallery.created_at,
         Gallery.page_count,
         Gallery.created_at_unix,
-    ).where(Gallery.manga_type == 'doujinshi')
+    ).where(Gallery.manga_type.in_(['doujinshi', 'manga']))
 
     if title:
         stmt = stmt.where(Gallery.japanese_title.like(f"%{title}%"))
@@ -1554,7 +1599,7 @@ async def get_recommended_galleries(
     if len(galleries) < limit:
         remaining = limit - len(galleries)
         fallback_params: Dict[str, Any] = {"limit": remaining}
-        fallback_clauses = ["g.manga_type = 'doujinshi'"]
+        fallback_clauses = ["g.manga_type IN ('doujinshi', 'manga')"]
 
         if exclude_terms:
             not_exists, not_params = _build_tag_not_exists_clause("g", exclude_terms)
@@ -1788,10 +1833,6 @@ async def read_index():
 async def read_viewer():
     return _serve_cached_html("template/viewer.html")
 
-@app.get("/recommendations", response_class=HTMLResponse)
-async def read_recommendations():
-    return _serve_cached_html("template/recommendations.html")
-
 @app.get("/history", response_class=HTMLResponse)
 async def read_history():
     return _serve_cached_html("template/history.html")
@@ -1801,77 +1842,6 @@ async def read_history():
 async def read_tag_editor():
     return _serve_cached_html("template/tag-editor.html")
 
-@app.post("/search")
-async def search_galleries_endpoint(request: SearchRequest):
-    try:
-        async with get_db_session() as db:
-            results = await search_galleries_fast(
-                db,
-                title=request.title,
-                tag=request.tag,
-                exclude_tag=request.exclude_tag,
-                character=request.character,
-                limit=request.limit,
-                after_created_at=request.after_created_at,
-                after_gallery_id=request.after_gallery_id,
-                min_pages=request.min_pages,
-                max_pages=request.max_pages,
-            )
-
-            for result in results:
-                try:
-                    raw_files = result.get("files")
-                    # 文字列なら JSON としてパース、辞書/リストならそのまま使用
-                    if isinstance(raw_files, str):
-                        files_data = json.loads(raw_files)
-                    else:
-                        files_data = raw_files
-
-                    if isinstance(files_data, list):
-                        files_list = files_data
-                    else:
-                        files_list = []
-
-                    gallery_info = {
-                        "gallery_id": result["gallery_id"],
-                        "files": files_data,  # geturl 側で旧/新両形式に対応させる前提
-                    }
-
-                    result["image_urls"] = await geturl(gallery_info)
-
-                    stored_pages = result.get("page_count")
-                    if not isinstance(stored_pages, int) or stored_pages < 0:
-                        result["page_count"] = len(files_list)
-                except (json.JSONDecodeError, TypeError, KeyError) as e:
-                    logger.error(f"files 解析エラー: {e}, gallery_id: {result.get('gallery_id')}")
-                    result["image_urls"] = []
-                    result["page_count"] = 0
-                # レスポンスからは生の files は隠す
-                if "files" in result:
-                    del result["files"]
-
-            # Derive the next cursor from the final item in this page
-            next_after_created_at = None
-            next_after_gallery_id = None
-            if results and len(results) == request.limit:
-                last_item = results[-1]
-                next_after_created_at = last_item.get("created_at")
-                next_after_gallery_id = last_item.get("gallery_id")
-
-            return {
-                "results": results,
-                "count": len(results),
-                "has_more": len(results) == request.limit,
-                "next_after_created_at": next_after_created_at,
-                "next_after_gallery_id": next_after_gallery_id,
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
-
-
-# =================================================================================
-# vvvvvvvvvvvvvvvvvvvvvvvv 高速化のための修正箇所 vvvvvvvvvvvvvvvvvvvvvvvv
-# =================================================================================
 @app.get("/api/recommendations")
 async def api_recommendations(
     gallery_id: Optional[int] = None,
@@ -1904,12 +1874,15 @@ async def api_recommendations(
 
             # 2. geturlの呼び出しを並列化
             geturl_tasks = []
+            files_data_cache = []  # パース結果をキャッシュ
+            
             for result in results:
                 try:
                     files_data = json.loads(result.get("files")) if isinstance(result.get("files"), str) else result.get("files")
                 except (json.JSONDecodeError, TypeError):
                     files_data = []
                 files_list = files_data if isinstance(files_data, list) else []
+                files_data_cache.append(files_list)  # キャッシュに保存
                 gallery_info = {"gallery_id": result["gallery_id"], "files": files_list}
                 geturl_tasks.append(geturl(gallery_info))
             
@@ -1924,12 +1897,8 @@ async def api_recommendations(
                     logger.error(f"geturlがギャラリーID {result['gallery_id']} で失敗: {image_urls}")
                     image_urls = []
 
-                # page_countを再計算または検証
-                try:
-                    files_data = json.loads(result.get("files")) if isinstance(result.get("files"), str) else result.get("files")
-                    files_list = files_data if isinstance(files_data, list) else []
-                except (json.JSONDecodeError, TypeError):
-                    files_list = []
+                # キャッシュからfiles_listを取得
+                files_list = files_data_cache[i]
                 
                 page_count = result.get("page_count")
                 if not isinstance(page_count, int) or page_count < 0:
@@ -1963,104 +1932,210 @@ async def search_galleries_get(
     min_pages: Optional[int] = None,
     max_pages: Optional[int] = None,
     sort_by: Optional[str] = None,
+    offset: int = 0,
+    page: int = 1,
 ):
     try:
+        # page パラメータが指定されている場合は offset を上書き
+        if page > 1:
+            offset = (page - 1) * limit
+
         async with get_db_session() as db:
-            # sort_byパラメータがランキングの場合は特別処理
-            if sort_by and sort_by in ['daily', 'weekly', 'monthly', 'yearly', 'all_time']:
-                # ランキングファイルからIDを読み込む
-                ranking_ids = await _load_ranking_ids(sort_by)
-                
-                # タグ検索の場合はタグでフィルタリング
-                if tag:
-                    known_tags = await _get_known_tag_set(db)
-                    tag_terms = _parse_tag_terms(tag, known_tags)
+                # sort_byパラメータがランキングの場合は特別処理
+                if sort_by and sort_by in ['daily', 'weekly', 'monthly', 'yearly', 'all_time']:
+                    # ランキングファイルからIDを読み込む
+                    ranking_ids = await _load_ranking_ids(sort_by)
                     
-                    if tag_terms:
-                        # タグを持つギャラリーIDを取得
-                        tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
+                    # タグ検索の場合はタグでフィルタリング
+                    if tag:
+                        known_tags = await _get_known_tag_set(db)
+                        tag_terms = _parse_tag_terms(tag, known_tags)
+                       
+                        if tag_terms:
+                            # タグを持つギャラリーIDを取得
+                            tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
+                            
+                            tag_query = f"""
+                                SELECT DISTINCT g.gallery_id
+                                FROM galleries AS g
+                                WHERE {' AND '.join(tag_exists_clauses)}
+                            """
+                            
+                            tag_result = await db.execute(text(tag_query), tag_params)
+                            tag_gallery_ids = {row.gallery_id for row in tag_result.fetchall()}
+                            
+                            # ランキングIDとタグを持つギャラリーIDの共通部分を取得
+                            filtered_ranking_ids = [gid for gid in ranking_ids if gid in tag_gallery_ids]
+                        else:
+                            filtered_ranking_ids = []
+                    else:
+                        filtered_ranking_ids = ranking_ids
+                    
+                    # ランキング順にギャラリー情報を取得
+                    if filtered_ranking_ids:
+                        # リミットとオフセットを適用
+                        start_idx = offset
+                        end_idx = min(start_idx + limit, len(filtered_ranking_ids))
+                        paginated_ids = filtered_ranking_ids[start_idx:end_idx]
                         
-                        tag_query = f"""
-                            SELECT DISTINCT g.gallery_id
+                        placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
+                        params = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
+    
+                        order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
+                        order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
+    
+                        query = f"""
+                            SELECT
+                                g.gallery_id,
+                                g.japanese_title,
+                                g.tags,
+                                g.characters,
+                                g.files,
+                                g.manga_type,
+                                g.created_at,
+                                g.page_count,
+                                g.created_at_unix
                             FROM galleries AS g
-                            WHERE {' AND '.join(tag_exists_clauses)}
+                            WHERE g.gallery_id IN ({placeholders})
+                            ORDER BY {order_case}
                         """
                         
-                        tag_result = await db.execute(text(tag_query), tag_params)
-                        tag_gallery_ids = {row.gallery_id for row in tag_result.fetchall()}
+                        result = await db.execute(text(query), params)
+                        results = [_serialize_gallery(row) for row in result.mappings()]
                         
-                        # ランキングIDとタグを持つギャラリーIDの共通部分を取得
-                        filtered_ranking_ids = [gid for gid in ranking_ids if gid in tag_gallery_ids]
+                        # ランキング検索でもファイル情報の処理を行う
+                        for result in results:
+                            try:
+                                files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
+                                files_list = files_data if isinstance(files_data, list) else []
+                                gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
+                                result["image_urls"] = await geturl(gallery_info)
+                                stored_pages = result.get("page_count")
+                                if not isinstance(stored_pages, int) or stored_pages < 0:
+                                    result["page_count"] = len(files_list)
+                            except (json.JSONDecodeError, TypeError) as e:
+                                logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
+                                result["image_urls"] = []
+                                result["page_count"] = 0
+                            if "files" in result:
+                                del result["files"]
                     else:
-                        filtered_ranking_ids = []
+                        results = []
                 else:
-                    filtered_ranking_ids = ranking_ids
-                
-                # ランキング順にギャラリー情報を取得
-                if filtered_ranking_ids:
-                    # リミットとオフセットを適用
-                    start_idx = 0  # 簡略化のため常に先頭から
-                    end_idx = min(start_idx + limit, len(filtered_ranking_ids))
-                    paginated_ids = filtered_ranking_ids[start_idx:end_idx]
-                    
-                    placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
-                    params = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
-
-                    order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
-                    order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
-
-                    query = f"""
-                        SELECT
-                            g.gallery_id,
-                            g.japanese_title,
-                            g.tags,
-                            g.characters,
-                            g.files,
-                            g.manga_type,
-                            g.created_at,
-                            g.page_count,
-                            g.created_at_unix
+                    # 通常の検索
+                    results = await search_galleries_fast(
+                        db,
+                        title=title,
+                        tag=tag,
+                        exclude_tag=exclude_tag,
+                        character=character,
+                        limit=limit,
+                        after_created_at=after_created_at,
+                        after_gallery_id=after_gallery_id,
+                        min_pages=min_pages,
+                        max_pages=max_pages,
+                    )
+                         
+                    for result in results:
+                        try:
+                            files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
+                            files_list = files_data if isinstance(files_data, list) else []
+                            gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
+                            result["image_urls"] = await geturl(gallery_info)
+                            stored_pages = result.get("page_count")
+                            if not isinstance(stored_pages, int) or stored_pages < 0:
+                                result["page_count"] = len(files_list)
+                        except (json.JSONDecodeError, TypeError) as e:
+                            logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
+                            result["image_urls"] = []
+                            result["page_count"] = 0
+                        if "files" in result:
+                            del result["files"]
+        
+            # レスポンス形式を統一
+        if sort_by and sort_by in ['daily', 'weekly', 'monthly', 'yearly', 'all_time']:
+            # ランキングの場合のレスポンス
+            ranking_ids = await _load_ranking_ids(sort_by)
+            
+            # タグフィルタリング後の合計数を計算
+            if tag:
+                known_tags = await _get_known_tag_set(db)
+                tag_terms = _parse_tag_terms(tag, known_tags)
+                if tag_terms:
+                    tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
+                    tag_query = f"""
+                        SELECT DISTINCT g.gallery_id
                         FROM galleries AS g
-                        WHERE g.gallery_id IN ({placeholders})
-                        ORDER BY {order_case}
+                        WHERE {' AND '.join(tag_exists_clauses)}
                     """
-                    
-                    result = await db.execute(text(query), params)
-                    results = [_serialize_gallery(row) for row in result.mappings()]
+                    tag_result = await db.execute(text(tag_query), tag_params)
+                    tag_gallery_ids = {row.gallery_id for row in tag_result.fetchall()}
+                    filtered_ranking_ids = [gid for gid in ranking_ids if gid in tag_gallery_ids]
                 else:
-                    results = []
+                    filtered_ranking_ids = []
             else:
-                # 通常の検索
-                results = await search_galleries_fast(
-                    db,
-                    title=title,
-                    tag=tag,
-                    exclude_tag=exclude_tag,
-                    character=character,
-                    limit=limit,
-                    after_created_at=after_created_at,
-                    after_gallery_id=after_gallery_id,
-                    min_pages=min_pages,
-                    max_pages=max_pages,
-                )
+                filtered_ranking_ids = ranking_ids
+            
+            # ページ数フィルターを適用した合計数を計算
+            total_count = len(filtered_ranking_ids)
+            if min_pages is not None or max_pages is not None:
+                min_val = max(min_pages or 0, 0)
+                max_val = max_pages if max_pages is not None else 10_000
+                if max_val < min_val:
+                    max_val = min_val
 
-            for result in results:
-                try:
-                    files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
-                    files_list = files_data if isinstance(files_data, list) else []
-                    gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
-                    result["image_urls"] = await geturl(gallery_info)
-                    stored_pages = result.get("page_count")
-                    if not isinstance(stored_pages, int) or stored_pages < 0:
-                        result["page_count"] = len(files_list)
-                except (json.JSONDecodeError, TypeError) as e:
-                    logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
-                    result["image_urls"] = []
-                    result["page_count"] = 0
-                if "files" in result:
-                    del result["files"]
+                # タグフィルターとページ数フィルターを組み合わせてカウント
+                if tag:
+                    # 既にタグフィルターされたランキングIDがfiltered_ranking_idsにあるので、
+                    # それにページ数フィルターを適用する
+                    if len(filtered_ranking_ids) == 0:
+                        total_count = 0
+                    else:
+                        # ページ数フィルターを適用（バッチ処理）
+                        count_batch_size = 900
+                        total_count = 0
+                        for i in range(0, len(filtered_ranking_ids), count_batch_size):
+                            batch = filtered_ranking_ids[i:i + count_batch_size]
+                            placeholders = ', '.join([f':id_{j}' for j in range(len(batch))])
+                            params = {f'id_{j}': gallery_id for j, gallery_id in enumerate(batch)}
+                            params["min_pages"] = min_val
+                            params["max_pages"] = max_val
 
-            # Derive the next cursor from the final item in this page
+                            count_query = f"""
+                                SELECT COUNT(*) as count
+                                FROM galleries AS g
+                                WHERE g.gallery_id IN ({placeholders})
+                                AND g.page_count BETWEEN :min_pages AND :max_pages
+                            """
+                            count_result = await db.execute(text(count_query), params)
+                            total_count += count_result.scalar() or 0
+                else:
+                    # タグフィルターがない場合、ランキングテーブルとギャラリーをJOINしてカウント
+                    params = {"min_pages": min_val, "max_pages": max_val, "ranking_type": sort_by}
+                    count_query = """
+                        SELECT COUNT(*) as count
+                        FROM galleries AS g
+                        INNER JOIN gallery_rankings AS gr ON g.gallery_id = gr.gallery_id
+                        WHERE gr.ranking_type = :ranking_type
+                        AND g.page_count BETWEEN :min_pages AND :max_pages
+                    """
+                    count_result = await db.execute(text(count_query), params)
+                    total_count = count_result.scalar() or 0
+            else:
+                # ページフィルターがない場合
+                total_count = len(filtered_ranking_ids)
+            
+            total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+            return {
+                "results": results,
+                "count": len(results),
+                "total": total_count,
+                "total_pages": total_pages,
+                "has_more": (offset + limit) < total_count,
+                "ranking_type": sort_by,
+            }
+        else:
+            # 通常検索の場合のレスポンス
             next_after_created_at = None
             next_after_gallery_id = None
             if results and len(results) == limit:
@@ -2068,9 +2143,54 @@ async def search_galleries_get(
                 next_after_created_at = last_item.get("created_at")
                 next_after_gallery_id = last_item.get("gallery_id")
 
+            # 通常検索の場合は総件数を取得する必要がある
+            count_query = """
+                SELECT COUNT(*) as total_count
+                FROM galleries AS g
+                WHERE g.manga_type IN ('doujinshi', 'manga')
+            """
+            
+            # タグフィルターを含む総件数クエリを構築
+            count_params = {}
+            count_where_clauses = ["g.manga_type IN ('c', 'manga')"]
+            
+            if tag:
+                known_tags = await _get_known_tag_set(db)
+                tag_terms = _parse_tag_terms(tag, known_tags)
+                if tag_terms:
+                    exists_clauses, exists_params = _build_tag_exists_clause("g", tag_terms)
+                    count_where_clauses.extend(exists_clauses)
+                    count_params.update(exists_params)
+            
+            if exclude_tag:
+                known_tags = await _get_known_tag_set(db)
+                exclude_tag_terms = _parse_tag_terms(exclude_tag, known_tags)
+                if exclude_tag_terms:
+                    not_exists_clauses, not_exists_params = _build_tag_not_exists_clause("g", exclude_tag_terms)
+                    count_where_clauses.extend(not_exists_clauses)
+                    count_params.update(not_exists_params)
+            
+            if min_pages is not None or max_pages is not None:
+                min_val = max(min_pages or 0, 0)
+                max_val = max_pages if max_pages is not None else 10_000
+                if max_val < min_val:
+                    max_val = min_val
+                count_params["min_pages"] = min_val
+                count_params["max_pages"] = max_val
+                count_where_clauses.append("g.page_count BETWEEN :min_pages AND :max_pages")
+            
+            if count_where_clauses:
+                count_query += " AND " + " AND ".join(count_where_clauses)
+            
+            count_result = await db.execute(text(count_query), count_params)
+            total_count = count_result.scalar() or 0
+            total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+            
             return {
                 "results": results,
                 "count": len(results),
+                "total": total_count,
+                "total_pages": total_pages,
                 "has_more": len(results) == limit,
                 "next_after_created_at": next_after_created_at,
                 "next_after_gallery_id": next_after_gallery_id,
@@ -2229,12 +2349,35 @@ async def _download_single_url(session: aiohttp.ClientSession, url: str, headers
     except Exception as exc:
         return {"url": url, "status": "error", "content": str(exc), "status_code": "500"}
 
+# 同時ダウンロード数の制限
+MAX_CONCURRENT_DOWNLOADS = 20
+
 @app.post("/download-multiple", response_model=DownloadResponse)
 async def download_multiple(request: DownloadRequest):
     headers = _build_headers()
-    tasks = [_download_single_url(global_session, url, headers) for url in request.urls]
-    results = await asyncio.gather(*tasks)
-    return DownloadResponse(results=results)
+    
+    # global_sessionがNoneの場合はローカルセッションを作成
+    if global_session is None:
+        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), headers=headers)
+        created_local = True
+    else:
+        session = global_session
+        created_local = False
+    
+    try:
+        # セマフォで同時実行数を制限
+        sem = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+        
+        async def _download_with_semaphore(url: str):
+            async with sem:
+                return await _download_single_url(session, url, headers)
+        
+        tasks = [_download_with_semaphore(url) for url in request.urls]
+        results = await asyncio.gather(*tasks)
+        return DownloadResponse(results=results)
+    finally:
+        if created_local:
+            await session.close()
 
 @app.post("/download-multipart")
 async def download_multipart(request: MultipartDownloadRequest):
@@ -3031,105 +3174,129 @@ async def get_rankings(
     ranking_type: str = "daily",
     limit: int = 50,
     offset: int = 0,
-    tag: Optional[str] = None
+    tag: Optional[str] = None,
+    request: Request = None
 ):
     """
-    ランキングデータを取得するAPI
+    ランキングデータを取得するAPI - searchエンドポイントにリダイレクト
     ranking_type: 'daily', 'weekly', 'monthly', 'yearly', 'all_time'
     tag: タグでフィルタリング（オプション）
     """
     try:
-        # ファイルからランキングIDを読み込む
-        ranking_ids = await _load_ranking_ids(ranking_type)
+        # searchエンドポイントのURLを構築
+        base_url = str(request.base_url).rstrip('/')
+        search_url = f"{base_url}/search"
         
-        # オフセットとリミットを適用
-        start_index = offset
-        end_index = offset + limit
-        paginated_ids = ranking_ids[start_index:end_index]
+        # クエリパラメータを構築
+        params = {
+            "sort_by": ranking_type,
+            "limit": limit,
+            "offset": offset,
+        }
+        if tag:
+            params["tag"] = tag
         
-        if not paginated_ids:
-            return {
-                "rankings": [],
-                "count": 0,
-                "total": len(ranking_ids),
-                "has_more": False
-            }
-        
-        # データベースからギャラリー情報を取得
-        async with get_db_session() as db:
-            placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
-            params = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
-            order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
-            order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
-            
-            # タグフィルタリング用のWHERE句を構築
-            tag_filter_clause = ""
-            if tag:
-                known_tags = await _get_known_tag_set(db)
-                tag_terms = _parse_tag_terms(tag, known_tags)
-                if tag_terms:
-                    # EXISTS句を使用してタグAND検索を実装
-                    tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
-                    params.update(tag_params)
-                    tag_filter_clause = f"AND {' AND '.join(tag_exists_clauses)}"
-            
-            query = f"""
-                SELECT
-                    g.gallery_id,
-                    g.japanese_title,
-                    g.tags,
-                    g.characters,
-                    g.files,
-                    g.page_count,
-                    g.created_at,
-                    g.created_at_unix
-                FROM galleries AS g
-                WHERE g.gallery_id IN ({placeholders}) {tag_filter_clause}
-                ORDER BY {order_case}
-            """
-            
-            result = await db.execute(text(query), params)
-            rows = result.fetchall()
-            
-            # ギャラリーIDをキーとして行をマッピング
-            gallery_dict = {row.gallery_id: row for row in rows}
-            
-            rankings = []
-            for rank_position, gallery_id in enumerate(paginated_ids, start=offset + 1):
-                if gallery_id in gallery_dict:
-                    row = gallery_dict[gallery_id]
-                    ranking_data = {
-                        "gallery_id": row.gallery_id,
-                        "ranking_type": ranking_type,
-                        "rank": rank_position,
-                        "japanese_title": row.japanese_title,
-                        "tags": row.tags,
-                        "characters": row.characters,
-                        "page_count": row.page_count,
-                        "created_at": row.created_at,
-                        "created_at_unix": row.created_at_unix
+        # searchエンドポイントを呼び出して結果を取得
+        try:
+            async with get_db_session() as db:
+                # ランキングデータを取得
+                ranking_ids = await _load_ranking_ids(ranking_type)
+                
+                # タグフィルタリング
+                if tag:
+                    known_tags = await _get_known_tag_set(db)
+                    tag_terms = _parse_tag_terms(tag, known_tags)
+                    if tag_terms:
+                        tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
+                        tag_query = f"""
+                            SELECT DISTINCT g.gallery_id
+                            FROM galleries AS g
+                            WHERE {' AND '.join(tag_exists_clauses)}
+                        """
+                        tag_result = await db.execute(text(tag_query), tag_params)
+                        tag_gallery_ids = {row.gallery_id for row in tag_result.fetchall()}
+                        filtered_ranking_ids = [gid for gid in ranking_ids if gid in tag_gallery_ids]
+                    else:
+                        filtered_ranking_ids = []
+                else:
+                    filtered_ranking_ids = ranking_ids
+                
+                # ページネーションを適用
+                start_idx = offset
+                end_idx = min(start_idx + limit, len(filtered_ranking_ids))
+                paginated_ids = filtered_ranking_ids[start_idx:end_idx]
+                
+                # ギャラリー情報を取得
+                if paginated_ids:
+                    placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
+                    params_db = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
+                    order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
+                    order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
+                    
+                    query = f"""
+                        SELECT
+                            g.gallery_id,
+                            g.japanese_title,
+                            g.tags,
+                            g.characters,
+                            g.files,
+                            g.page_count,
+                            g.created_at,
+                            g.created_at_unix
+                        FROM galleries AS g
+                        WHERE g.gallery_id IN ({placeholders})
+                        ORDER BY {order_case}
+                    """
+                    
+                    result = await db.execute(text(query), params_db)
+                    rows = result.fetchall()
+                    
+                    # 画像URLを取得してレスポンスを構築
+                    rankings = []
+                    for rank_position, row in enumerate(rows, start=offset + 1):
+                        ranking_data = {
+                            "gallery_id": row.gallery_id,
+                            "ranking_type": ranking_type,
+                            "rank": rank_position,
+                            "japanese_title": row.japanese_title,
+                            "tags": row.tags,
+                            "characters": row.characters,
+                            "page_count": row.page_count,
+                            "created_at": row.created_at,
+                            "created_at_unix": row.created_at_unix
+                        }
+                        
+                        # 画像URLを取得
+                        try:
+                            files_data = json.loads(row.files) if hasattr(row, 'files') and row.files else []
+                            files_list = files_data if isinstance(files_data, list) else []
+                            gallery_info = {"gallery_id": row.gallery_id, "files": files_list}
+                            ranking_data["image_urls"] = await geturl(gallery_info)
+                        except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                            logger.error(f"ランキングデータの画像URL取得エラー: {e}, gallery_id: {row.gallery_id}")
+                            ranking_data["image_urls"] = []
+                        
+                        rankings.append(ranking_data)
+                    
+                    return {
+                        "rankings": rankings,
+                        "count": len(rankings),
+                        "total": len(filtered_ranking_ids),
+                        "has_more": (offset + limit) < len(filtered_ranking_ids)
                     }
-                    
-                    # 画像URLを取得
-                    try:
-                        files_data = json.loads(row.files) if hasattr(row, 'files') and row.files else []
-                        files_list = files_data if isinstance(files_data, list) else []
-                        gallery_info = {"gallery_id": row.gallery_id, "files": files_list}
-                        ranking_data["image_urls"] = await geturl(gallery_info)
-                    except (json.JSONDecodeError, TypeError, AttributeError) as e:
-                        logger.error(f"ランキングデータの画像URL取得エラー: {e}, gallery_id: {row.gallery_id}")
-                        ranking_data["image_urls"] = []
-                    
-                    rankings.append(ranking_data)
+                else:
+                    return {
+                        "rankings": [],
+                        "count": 0,
+                        "total": 0,
+                        "has_more": False
+                    }
+        except Exception as e:
+            logger.error(f"ランキングデータの取得エラー: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"ランキングデータの取得エラー: {str(e)}")
             
-            return {
-                "rankings": rankings,
-                "count": len(rankings),
-                "total": len(ranking_ids),
-                "has_more": (offset + limit) < len(ranking_ids)
-            }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ランキングデータの取得エラー: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"ランキングAPIエラー: {str(e)}")
 
 @app.post("/api/rankings/update")
 async def update_rankings():
@@ -3178,23 +3345,29 @@ async def daily_ranking_update_task():
             try:
                 # hitomi.pyのdownload_all_popular_files()を実行
                 import sys
-                import subprocess
                 
-                # スクリプトを実行
-                result = subprocess.run(
-                    [sys.executable, "scraper/hitomi.py"],
-                    capture_output=True,
-                    text=True,
-                    timeout=300  # 5分タイムアウト
+                # スクリプトを非同期で実行
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, "scraper/hitomi.py",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    text=True
                 )
                 
-                if result.returncode == 0:
-                    logger.info("ランキングファイル更新完了")
-                    logger.info(f"出力: {result.stdout}")
-                else:
-                    logger.error(f"ランキングファイル更新エラー: {result.stderr}")
-            except subprocess.TimeoutExpired:
-                logger.error("ランキングファイル更新がタイムアウトしました")
+                try:
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)  # 5分タイムアウト
+                    
+                    if process.returncode == 0:
+                        logger.info("ランキングファイル更新完了")
+                        logger.info(f"出力: {stdout}")
+                    else:
+                        logger.error(f"ランキングファイル更新エラー: {stderr}")
+                except asyncio.TimeoutError:
+                    process.terminate()
+                    await process.wait()
+                    logger.error("ランキングファイル更新がタイムアウトしました")
+            except Exception as e:
+                logger.error(f"ランキングファイル更新中にエラー: {str(e)}")
             except Exception as e:
                 logger.error(f"ランキングファイル更新中にエラー: {str(e)}")
         except Exception as e:
@@ -3206,7 +3379,7 @@ async def daily_ranking_update_task():
 # =========================
 @app.on_event("startup")
 async def startup_event():
-    global global_session, scheduler_task
+    global global_session
 
     # DB 初期化
     await init_database()
@@ -3232,6 +3405,7 @@ async def startup_event():
         force_close=False,
     )
     global_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), headers=_build_headers(), connector=connector)
+    global_state.global_session = global_session
 
     # 事前ウォームアップ
     try:
@@ -3240,31 +3414,16 @@ async def startup_event():
         logger.error(f"事前接続エラー: {str(e)}")
 
     # 同期スケジューラ開始
-    scheduler_task = asyncio.create_task(hourly_sync_task())
+    global_state.scheduler_task = asyncio.create_task(hourly_sync_task())
     logger.info("同期スケジューラ開始")
     
     # ランキング更新スケジューラ開始
-    ranking_scheduler_task = asyncio.create_task(daily_ranking_update_task())
+    global_state.ranking_scheduler_task = asyncio.create_task(daily_ranking_update_task())
     logger.info("ランキングファイル更新スケジューラ開始")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global global_session, scheduler_task, ranking_scheduler_task
-    if 'scheduler_task' in globals() and scheduler_task:
-        scheduler_task.cancel()
-        try:
-            await scheduler_task
-        except asyncio.CancelledError:
-            logger.info("同期スケジューラ停止")
-    if 'ranking_scheduler_task' in globals() and ranking_scheduler_task:
-        ranking_scheduler_task.cancel()
-        try:
-            await ranking_scheduler_task
-        except asyncio.CancelledError:
-            logger.info("ランキング更新スケジューラ停止")
-    if global_session:
-        await global_session.close()
-        logger.info("Global session closed")
+    await global_state.cleanup()
 
 # =========================
 # エントリポイント

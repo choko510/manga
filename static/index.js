@@ -1,6 +1,6 @@
 (function () {
     const LIMIT = 20;
-    let currentAfterCreatedAt = null;
+    let currentPage = 1;
     let currentQuery = '';
     let currentResolvedQuery = '';
     let currentMinPages = 0;
@@ -50,8 +50,6 @@
             maxPagesSelect: document.getElementById('maxPagesSelect'),
             cardGrid: document.getElementById('cardGrid'),
             loadingIndicator: document.getElementById('loadingIndicator'),
-            loadMoreButton: document.getElementById('loadMoreButton'),
-            loadMoreContainer: document.getElementById('loadMoreContainer'),
             historySection: document.getElementById('historySection'),
             historyGrid: document.getElementById('historyGrid'),
             resultMeta: document.getElementById('resultMeta'),
@@ -105,23 +103,6 @@
                     cardObserver.unobserve(card);
                 });
             }, { rootMargin: '200px 0px' });
-
-            // 無限スクロール用のオブザーバー
-            const loadMoreContainer = document.getElementById('loadMoreContainer');
-            if (loadMoreContainer) {
-                const infiniteScrollObserver = new IntersectionObserver((entries) => {
-                    entries.forEach((entry) => {
-                        if (entry.isIntersecting && !isLoading) {
-                            const loadMoreButton = document.getElementById('loadMoreButton');
-                            if (loadMoreButton && loadMoreContainer.style.display !== 'none') {
-                                loadMoreButton.click();
-                            }
-                        }
-                    });
-                }, { rootMargin: '300px 0px' });
-                
-                infiniteScrollObserver.observe(loadMoreContainer);
-            }
         }
     }
 
@@ -170,34 +151,11 @@
             ensureValidPageRange(elements);
             performSearch(elements, true);
         });
-        
+
         // 並び順の変更イベントリスナーを追加
         elements.sortBySelect.addEventListener('change', () => {
             performSearch(elements, true);
         });
-        elements.loadMoreButton.addEventListener('click', () => performSearch(elements, false));
-        
-        // 初期状態で無限スクロールを有効化
-        toggleInfiniteScroll(true);
-        
-        // 設定パネルに無限スクロールのオン/オフ切り替えを追加
-        const infiniteScrollToggle = document.createElement('div');
-        infiniteScrollToggle.innerHTML = `
-            <label style="display: flex; align-items: center; gap: 8px; margin-top: 16px;">
-                <input type="checkbox" id="infiniteScrollCheckbox" checked>
-                <span>無限スクロールを有効にする</span>
-            </label>
-        `;
-        
-        const settingsPanel = document.getElementById('settingsPanel');
-        if (settingsPanel) {
-            settingsPanel.insertBefore(infiniteScrollToggle, settingsPanel.querySelector('.settings-actions'));
-            
-            // チェックボックスのイベントリスナー
-            document.getElementById('infiniteScrollCheckbox').addEventListener('change', (e) => {
-                toggleInfiniteScroll(e.target.checked);
-            });
-        }
         elements.themeToggle.addEventListener('click', () => {
             const theme = MangaApp.toggleTheme();
             updateThemeToggleIcon(elements.themeToggle, theme);
@@ -313,7 +271,7 @@
         if (isLoading) return;
 
         if (reset) {
-            currentAfterCreatedAt = null;
+            currentPage = 1;
             currentQuery = elements.searchInput.value.trim();
             currentResolvedQuery = typeof MangaApp.resolveTagQueryString === 'function'
                 ? MangaApp.resolveTagQueryString(currentQuery)
@@ -339,12 +297,12 @@
             const data = await fetchSearchResults(
                 currentResolvedQuery,
                 currentQuery,
-                currentAfterCreatedAt,
+                currentPage,
                 currentMinPages,
                 currentMaxPages,
                 sortBy
             );
-            const { results, hasMore, nextAfterCreatedAt } = data;
+            const { results, totalPages, totalCount } = data;
 
             if (reset && typeof MangaApp.recordTagUsage === 'function' && currentQuery) {
                 const tags = extractTagsFromQuery(currentResolvedQuery || currentQuery);
@@ -360,26 +318,16 @@
                 renderResults(elements, results, reset);
             }
 
-            currentAfterCreatedAt = nextAfterCreatedAt;
-            
-            // 無限スクロールが有効な場合はボタンを非表示に、そうでなければ表示
-            if (infiniteScrollEnabled) {
-                elements.loadMoreContainer.style.display = hasMore ? 'block' : 'none';
-                const loadMoreButton = document.getElementById('loadMoreButton');
-                if (loadMoreButton) {
-                    loadMoreButton.style.display = 'none';
-                }
-            } else {
-                elements.loadMoreContainer.style.display = hasMore ? 'block' : 'none';
-                const loadMoreButton = document.getElementById('loadMoreButton');
-                if (loadMoreButton) {
-                    loadMoreButton.style.display = 'block';
-                }
+            // ページネーションを表示
+            if (data.total_pages !== undefined) {
+                renderPagination(elements, currentPage, data.total_pages, totalCount);
             }
-            
+
             if (results.length) {
                 const hiddenTags = MangaApp.getHiddenTags();
-                elements.resultMeta.textContent = `表示件数: ${results.length}${hasMore ? ' / さらに表示可能' : ''}${hiddenTags.length ? '（除外タグ反映）' : ''}`;
+                const startItem = (currentPage - 1) * LIMIT + 1;
+                const endItem = Math.min(currentPage * LIMIT, totalCount);
+                elements.resultMeta.textContent = `${startItem}-${endItem} 件を表示中 / 合計 ${totalCount} 件${hiddenTags.length ? '（除外タグ反映）' : ''}`;
             }
         } catch (error) {
             console.error('検索エラー', error);
@@ -390,96 +338,62 @@
             showLoading(elements, false);
         }
     }
-async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minPages, maxPages, sortBy = 'created_at') {
-    const cacheKey = `${resolvedQuery}|${userQuery}|${afterCreatedAt ?? 'start'}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
-    if (searchCache.has(cacheKey)) {
-        return searchCache.get(cacheKey);
-    }
+    async function fetchSearchResults(resolvedQuery, userQuery, page, minPages, maxPages, sortBy = 'created_at') {
+        const cacheKey = `${resolvedQuery}|${userQuery}|${page}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
+        if (searchCache.has(cacheKey)) {
+            return searchCache.get(cacheKey);
+        }
 
-    const params = new URLSearchParams();
-    params.append('limit', LIMIT.toString());
-    const queryForRequest = resolvedQuery || userQuery;
-    if (queryForRequest) {
-        params.append('tag', queryForRequest);
-    }
-    if (afterCreatedAt) {
-        params.append('after_created_at', afterCreatedAt);
-    }
-    if (typeof minPages === 'number' && minPages > 0) {
-        params.append('min_pages', minPages.toString());
-    }
-    if (typeof maxPages === 'number' && maxPages > 0) {
-        params.append('max_pages', maxPages.toString());
-    }
-    const hiddenTags = MangaApp.getHiddenTags();
-    if (hiddenTags.length) {
-        params.append('exclude_tag', hiddenTags.join(','));
-    }
-
-    // ランキングソートの場合:
-    // - タグまたはクエリ入力あり: 通常の検索API(/search)を使用し sort_by パラメータで並び替え
-    // - タグ無し: ランキングAPI(/api/rankings)を使用
-    let response;
-    if (sortBy !== 'created_at' && ['daily', 'weekly', 'monthly', 'yearly', 'all_time'].includes(sortBy)) {
+        const params = new URLSearchParams();
+        params.append('limit', LIMIT.toString());
+        params.append('page', page.toString());
+        const queryForRequest = resolvedQuery || userQuery;
         if (queryForRequest) {
-            // タグ検索（クエリあり）の場合は通常の検索APIを使用し、パラメータにソート順を追加
+            params.append('tag', queryForRequest);
+        }
+        if (typeof minPages === 'number' && minPages > 0) {
+            params.append('min_pages', minPages.toString());
+        }
+        if (typeof maxPages === 'number' && maxPages > 0) {
+            params.append('max_pages', maxPages.toString());
+        }
+        const hiddenTags = MangaApp.getHiddenTags();
+        if (hiddenTags.length) {
+            params.append('exclude_tag', hiddenTags.join(','));
+        }
+
+        // 統合されたsearchエンドポイントを使用
+        // sort_byパラメータでランキング機能も対応
+        if (sortBy !== 'created_at' && ['daily', 'weekly', 'monthly', 'yearly', 'all_time'].includes(sortBy)) {
             params.append('sort_by', sortBy);
-            response = await fetch(`/search?${params.toString()}`);
-        } else {
-            // タグなしの場合はランキングAPIを使用
-            const rankingParams = new URLSearchParams();
-            rankingParams.append('ranking_type', sortBy);
-            rankingParams.append('limit', LIMIT.toString());
-            response = await fetch(`/api/rankings?${rankingParams.toString()}`);
         }
-    } else {
-        // 通常の新着順検索
-        response = await fetch(`/search?${params.toString()}`);
-    }
-    if (!response.ok) {
-        throw new Error(`HTTP error ${response.status}`);
-    }
-    const data = await response.json();
 
-    // ランキングAPIと検索APIでレスポンス形式が異なるため、それぞれに対応
-    let filtered, hasMore, nextAfterCreatedAt;
-    
-    if (sortBy !== 'created_at' && ['daily', 'weekly', 'monthly', 'yearly', 'all_time'].includes(sortBy)) {
-        if (queryForRequest) {
-            // タグ/クエリありランキングソート:
-            // /search のレスポンス形式 { results, has_more, ... } をそのまま利用
-            filtered = data.results || [];
-            hasMore = Boolean(data.has_more);
-            const lastItem = filtered[filtered.length - 1];
-            nextAfterCreatedAt = lastItem ? lastItem.created_at : null;
-        } else {
-            // タグ無しランキングソート:
-            // /api/rankings のレスポンス形式 { rankings, has_more, ... } に対応
-            filtered = data.rankings || [];
-            hasMore = Boolean(data.has_more);
-            const lastItem = filtered[filtered.length - 1];
-            nextAfterCreatedAt = null; // ランキングでは使用しない
+        const response = await fetch(`/search?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error ${response.status}`);
         }
-    } else {
-        // 通常の検索APIレスポンスを処理
+        const data = await response.json();
+
+        // 統合されたsearchエンドポイントのレスポンス形式に対応
+        let filtered, totalPages, totalCount;
+
+        // APIレスポンス形式は統一されているため、常に同じ処理を適用
         filtered = data.results || [];
-        hasMore = Boolean(data.has_more);
-        const lastItem = filtered[filtered.length - 1];
-        nextAfterCreatedAt = lastItem ? lastItem.created_at : null;
+        totalPages = data.total_pages || 1;
+        totalCount = data.total_count || filtered.length;
+
+        const result = {
+            results: filtered,
+            totalPages: totalPages,
+            totalCount: totalCount,
+        };
+        searchCache.set(cacheKey, result);
+        if (searchCache.size > 60) {
+            const firstKey = searchCache.keys().next().value;
+            searchCache.delete(firstKey);
+        }
+        return result;
     }
-    
-    const result = {
-        results: filtered,
-        hasMore: hasMore,
-        nextAfterCreatedAt: nextAfterCreatedAt,
-    };
-    searchCache.set(cacheKey, result);
-    if (searchCache.size > 60) {
-        const firstKey = searchCache.keys().next().value;
-        searchCache.delete(firstKey);
-    }
-    return result;
-}
 
     function renderResults(elements, results, reset) {
         const fragment = document.createDocumentFragment();
@@ -518,7 +432,7 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
         } else if (gallery.thumbnail_url) {
             firstImage = gallery.thumbnail_url;
         }
-        
+
         if (firstImage) {
             const resolved = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
             img.dataset.src = resolved;
@@ -676,52 +590,144 @@ async function fetchSearchResults(resolvedQuery, userQuery, afterCreatedAt, minP
     function showLoading(elements, visible) {
         isLoading = visible;
         elements.loadingIndicator.style.display = visible ? 'block' : 'none';
-        if (visible) {
-            elements.loadMoreContainer.style.display = 'none';
+    }
+
+    // ページネーションをレンダリングする関数
+    function renderPagination(elements, page, totalPages, totalCount) {
+        // 既存のページネーションを削除
+        const existingPagination = document.getElementById('paginationContainer');
+        if (existingPagination) {
+            existingPagination.remove();
+        }
+
+        // デバッグ情報をコンソールに出力
+        console.log('renderPagination called:', { page, totalPages, totalCount });
+
+        if (totalPages <= 1) {
+            console.log('Total pages <= 1, not showing pagination');
+            return; // 1ページのみの場合はページネーションを表示しない
+        }
+
+        const paginationContainer = document.createElement('div');
+        paginationContainer.id = 'paginationContainer';
+        paginationContainer.className = 'pagination-container';
+        paginationContainer.style.cssText = `
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            margin: 24px 0;
+            flex-wrap: wrap;
+        `;
+
+        // 前のページボタン
+        const prevButton = createPaginationButton('« 前へ', page > 1, () => {
+            if (page > 1) {
+                currentPage = page - 1;
+                performSearch(elements, false);
+            }
+        });
+        paginationContainer.appendChild(prevButton);
+
+        // ページ番号ボタン
+        const maxButtons = 5;
+        let startPage = Math.max(1, page - Math.floor(maxButtons / 2));
+        let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+
+        if (endPage - startPage < maxButtons - 1) {
+            startPage = Math.max(1, endPage - maxButtons + 1);
+        }
+
+        if (startPage > 1) {
+            paginationContainer.appendChild(createPaginationButton('1', true, () => {
+                currentPage = 1;
+                performSearch(elements, false);
+            }));
+            if (startPage > 2) {
+                const dots = document.createElement('span');
+                dots.textContent = '...';
+                dots.style.cssText = 'padding: 0 8px; color: var(--text-secondary);';
+                paginationContainer.appendChild(dots);
+            }
+        }
+
+        for (let i = startPage; i <= endPage; i++) {
+            const pageButton = createPaginationButton(i.toString(), true, () => {
+                currentPage = i;
+                performSearch(elements, false);
+            });
+            if (i === page) {
+                pageButton.style.cssText += `
+                    background: var(--accent);
+                    color: white;
+                    border-color: var(--accent);
+                `;
+            }
+            paginationContainer.appendChild(pageButton);
+        }
+
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) {
+                const dots = document.createElement('span');
+                dots.textContent = '...';
+                dots.style.cssText = 'padding: 0 8px; color: var(--text-secondary);';
+                paginationContainer.appendChild(dots);
+            }
+            paginationContainer.appendChild(createPaginationButton(totalPages.toString(), true, () => {
+                currentPage = totalPages;
+                performSearch(elements, false);
+            }));
+        }
+
+        // 次のページボタン
+        const nextButton = createPaginationButton('次へ »', page < totalPages, () => {
+            if (page < totalPages) {
+                currentPage = page + 1;
+                performSearch(elements, false);
+            }
+        });
+        paginationContainer.appendChild(nextButton);
+
+        // ページネーションコンテナを検索結果の後に挿入
+        const searchSection = document.getElementById('searchSection');
+        if (searchSection) {
+            searchSection.appendChild(paginationContainer);
+            console.log('Pagination container added to DOM');
+        } else {
+            console.error('searchSection not found');
         }
     }
 
-    // 無限スクロールの状態を管理
-    let infiniteScrollEnabled = true;
-    let lastScrollPosition = 0;
-    let scrollThreshold = 100; // ページ下部からの距離（ピクセル）
+    function createPaginationButton(text, enabled, onClick) {
+        const button = document.createElement('button');
+        button.textContent = text;
+        button.className = 'pagination-button';
+        button.style.cssText = `
+            padding: 8px 12px;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            background: var(--bg-button);
+            color: var(--text-secondary);
+            border-radius: 6px;
+            cursor: ${enabled ? 'pointer' : 'not-allowed'};
+            opacity: ${enabled ? '1' : '0.5'};
+            transition: all 0.2s ease;
+            font-size: 14px;
+            min-width: 40px;
+        `;
 
-    // スクロールイベントリスナーを追加
-    document.addEventListener('scroll', () => {
-        if (!infiniteScrollEnabled || isLoading) return;
-
-        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-        const windowHeight = window.innerHeight;
-        const documentHeight = document.documentElement.scrollHeight;
-        
-        // 下部に近づいたら自動読み込み
-        if (scrollTop + windowHeight >= documentHeight - scrollThreshold) {
-            const loadMoreButton = document.getElementById('loadMoreButton');
-            const loadMoreContainer = document.getElementById('loadMoreContainer');
-            
-            if (loadMoreButton && loadMoreContainer && loadMoreContainer.style.display !== 'none') {
-                loadMoreButton.click();
-            }
+        if (enabled) {
+            button.addEventListener('click', onClick);
+            button.addEventListener('mouseenter', () => {
+                button.style.borderColor = 'var(--accent)';
+                button.style.color = 'var(--accent)';
+            });
+            button.addEventListener('mouseleave', () => {
+                button.style.borderColor = 'rgba(148, 163, 184, 0.3)';
+                button.style.color = 'var(--text-secondary)';
+            });
         }
-        
-        lastScrollPosition = scrollTop;
-    });
 
-    // 無限スクロールのオン/オフを切り替える関数
-    function toggleInfiniteScroll(enabled) {
-        infiniteScrollEnabled = enabled;
-        const loadMoreButton = document.getElementById('loadMoreButton');
-        const loadMoreContainer = document.getElementById('loadMoreContainer');
-        
-        if (loadMoreButton && loadMoreContainer) {
-            if (enabled) {
-                loadMoreButton.textContent = 'さらに表示（自動読み込み有効）';
-                loadMoreButton.style.display = 'none'; // 自動読み込み時はボタンを非表示
-            } else {
-                loadMoreButton.textContent = 'さらに表示';
-                loadMoreButton.style.display = 'block'; // 手動読み込み時はボタンを表示
-            }
-        }
+        return button;
     }
 
     function debounce(fn, delay) {

@@ -46,7 +46,13 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             const limit = 20; // 1回の表示数
-            const response = await fetch(`/api/rankings?ranking_type=${currentRankingType}&limit=${limit}&offset=${currentRankingOffset}`);
+            // 統合されたsearchエンドポイントを使用
+            const params = new URLSearchParams();
+            params.append('sort_by', currentRankingType);
+            params.append('limit', limit.toString());
+            params.append('offset', currentRankingOffset.toString());
+            
+            const response = await fetch(`/search?${params.toString()}`);
             const data = await response.json();
             
             if (reset) {
@@ -54,12 +60,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             // ランキングカードを生成
-            data.rankings.forEach((gallery, index) => {
+            data.results.forEach((gallery, index) => {
                 const card = createRankingCard(gallery, currentRankingOffset + index + 1);
                 rankingGrid.appendChild(card);
             });
             
-            currentRankingOffset += data.rankings.length;
+            currentRankingOffset += data.results.length;
             hasMoreRankings = data.has_more;
             
             // さらに表示ボタンの表示/非表示

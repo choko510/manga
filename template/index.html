@@ -454,9 +454,42 @@
             font-size: 15px;
         }
 
-        .load-more-container {
-            text-align: center;
-            padding: 24px 0;
+        .pagination-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            margin: 24px 0;
+            flex-wrap: wrap;
+        }
+
+        .pagination-button {
+            padding: 8px 12px;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            background: var(--bg-button);
+            color: var(--text-secondary);
+            border-radius: 6px;
+            cursor: pointer;
+            opacity: 1;
+            transition: all 0.2s ease;
+            font-size: 14px;
+            min-width: 40px;
+        }
+
+        .pagination-button:hover:not(:disabled) {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .pagination-button:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .pagination-button.active {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
         }
 
         .primary-button {
@@ -475,6 +508,7 @@
             transform: translateY(-1px);
             box-shadow: 0 10px 25px rgba(37, 99, 235, 0.3);
         }
+
 
         .ghost-button {
             border: 1px solid rgba(148, 163, 184, 0.3);
@@ -698,9 +732,12 @@
                     <button id="searchButton" class="search-button">検索</button>
                 </div>
                 <div class="action-buttons">
-                    <button id="themeToggle" class="icon-button" aria-label="ダークモード切替"><i class="fas fa-moon" aria-hidden="true"></i></button>
-                    <button id="settingsToggle" class="icon-button" aria-label="表示設定"><i class="fas fa-cog" aria-hidden="true"></i></button>
-                    <button id="filtersToggle" class="icon-button filters-toggle" aria-label="検索フィルターの表示切替" aria-expanded="false" aria-controls="searchOptions">
+                    <button id="themeToggle" class="icon-button" aria-label="ダークモード切替"><i class="fas fa-moon"
+                            aria-hidden="true"></i></button>
+                    <button id="settingsToggle" class="icon-button" aria-label="表示設定"><i class="fas fa-cog"
+                            aria-hidden="true"></i></button>
+                    <button id="filtersToggle" class="icon-button filters-toggle" aria-label="検索フィルターの表示切替"
+                        aria-expanded="false" aria-controls="searchOptions">
                         <i class="fas fa-sliders-h"></i>
                     </button>
                 </div>
@@ -762,9 +799,6 @@
             </div>
             <div class="card-grid" id="cardGrid"></div>
             <div class="loading" id="loadingIndicator" style="display:none;">読み込み中...</div>
-            <div class="load-more-container" id="loadMoreContainer" style="display:none;">
-                <button id="loadMoreButton" class="primary-button">さらに表示</button>
-            </div>
         </section>
     </main>
 

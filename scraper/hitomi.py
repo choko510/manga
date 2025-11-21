@@ -1,12 +1,11 @@
 from __future__ import annotations
 import aiohttp
-import argparse
 import mmap
 import os
 import struct
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -15,7 +14,7 @@ from urllib.request import Request, urlopen
 NOZOMI_DEFAULT_PER_PAGE = 25
 
 # Hitomi.la の人気ランキング URL
-AllURL = "https://ltn.gold-usergeneratedcontent.net/index-all.nozomi"
+AllURL = "https://ltn.gold-usergeneratedcontent.net/index-japanese.nozomi"
 YearURL = "https://ltn.gold-usergeneratedcontent.net/popular/year-all.nozomi"
 MonthURL = "https://ltn.gold-usergeneratedcontent.net/popular/month-all.nozomi"
 WeekURL = "https://ltn.gold-usergeneratedcontent.net/popular/week-all.nozomi"
@@ -330,36 +329,6 @@ class NozomiReader:
             total_items = total_bytes // 4 if total_bytes is not None else None
             return NozomiFileInfo(self.source, total_items, total_bytes)
 
-async def fetch_hitomi_data(session: aiohttp.ClientSession, url: str) -> Dict[str, Any]:
-    """
-    Hitomi.la から非同期でデータを取得する
-
-    Args:
-        session: aiohttp クライアントセッション
-        url: 取得先 URL
-
-    Returns:
-        取得した JSON データ
-
-    Raises:
-        aiohttp.ClientError: HTTP エラーが発生した場合
-        ValueError: JSON データが不正な場合
-    """
-    try:
-        async with session.get(url) as response:
-            if response.status >= 400:
-                raise aiohttp.ClientError(f"HTTP エラー: {response.status} - {response.reason}")
-            
-            content_type = response.headers.get("Content-Type", "")
-            if "application/json" not in content_type:
-                raise ValueError(f"期待されるコンテンツタイプではありません: {content_type}")
-            
-            return await response.json()
-    except aiohttp.ClientError as e:
-        raise aiohttp.ClientError(f"Hitomi.la データ取得エラー: {str(e)}")
-    except Exception as e:
-        raise ValueError(f"データ解析エラー: {str(e)}")
-
 def load_existing_galleries(galleries_file: str = "galleries.txt") -> Set[int]:
     """
     既存のギャラリーIDをgalleries.txtから読み込む
@@ -372,10 +341,10 @@ def load_existing_galleries(galleries_file: str = "galleries.txt") -> Set[int]:
         既存のギャラリーIDのセット
     """
     existing_ids = set()
-    
-    # ファイルが存在しない場合はread_galleries.pyで生成
-    if not os.path.exists(galleries_file):
-        print(f"{galleries_file}が見つかりません。read_galleries.pyで生成します。")
+
+    # ファイルが存在しないか、10行以下の場合もread_galleries.pyで再生成
+    if not os.path.exists(galleries_file) or sum(1 for line in open(galleries_file, 'r', encoding='utf-8')) <= 10:
+        print(f"{galleries_file}が見つからないか10行以下です。read_galleries.pyで再生成します。")
         try:
             # read_galleries.pyの関数をインポートして実行
             import sys
@@ -391,9 +360,9 @@ def load_existing_galleries(galleries_file: str = "galleries.txt") -> Set[int]:
             
             # read_all_galleries関数を実行
             read_galleries_module.read_all_galleries()
-            print(f"{galleries_file}を生成しました。")
+            print(f"{galleries_file}を再生成しました。")
         except Exception as e:
-            print(f"{galleries_file}の生成中にエラーが発生しました: {e}")
+            print(f"{galleries_file}の再生成中にエラーが発生しました: {e}")
             return existing_ids
     
     # ファイルから既存のIDを読み込む
@@ -440,18 +409,22 @@ async def download_all_popular_files() -> None:
             with reader:
                 ids = reader.read_all()
             
-            # 既存IDとの重複のみを抽出
-            duplicate_ids = [id for id in ids if id in existing_ids]
-            filtered_count = len(duplicate_ids)
+            if file_info["name"] == "all":
+                # AllURLの場合はフィルタリングせずにすべて出力
+                output_ids = ids
+                print(f"✓ {file_info['name']} ランキング: {len(output_ids)}件のIDを {file_info['output']} に出力しました")
+            else:
+                # 既存IDとの重複のみを抽出
+                output_ids = [id for id in ids if id in existing_ids]
+                filtered_count = len(output_ids)
+                print(f"✓ {file_info['name']} ランキング: {len(output_ids)}件の重複IDを {file_info['output']} に出力しました")
+                if len(ids) - filtered_count > 0:
+                    print(f"  (新規ID除外: {len(ids) - filtered_count}件)")
             
-            # テキストファイルに出力（重複IDのみ）
+            # テキストファイルに出力
             with open(file_info["output"], "w", encoding="utf-8") as f:
-                for id in duplicate_ids:
+                for id in output_ids:
                     f.write(f"{id}\n")
-            
-            print(f"✓ {file_info['name']} ランキング: {len(duplicate_ids)}件の重複IDを {file_info['output']} に出力しました")
-            if len(ids) - filtered_count > 0:
-                print(f"  (新規ID除外: {len(ids) - filtered_count}件)")
             
         except Exception as e:
             print(f"✗ {file_info['name']} ランキングのダウンロードに失敗しました: {e}")
@@ -466,69 +439,6 @@ def _cli():
     if len(sys.argv) == 1:
         asyncio.run(download_all_popular_files())
         return
-    
-    p = argparse.ArgumentParser(
-        description="Hitomi.la の nozomi バイナリ索引を読むためのツール",
-        epilog=(
-            "例:\n"
-            "  python hitomi.py                    # すべての人気ランキングをダウンロード\n"
-            "  python hitomi.py path/to/file.nozomi --page 1\n"
-            "  python hitomi.py https://example.com/female:filming-german.nozomi --start 0 --count 25\n"
-            "  python hitomi.py file.nozomi --all --output ids.txt\n"
-        ),
-        formatter_class=argparse.RawTextHelpFormatter,
-    )
-
-    args = p.parse_args()
-    
-    # source が指定されていない場合はヘルプを表示
-    if not args.source:
-        p.print_help()
-        return
-
-    if args.all and (args.page or args.start is not None or args.count):
-        p.error("--all は --page / --start / --count と同時には使えません。")
-
-    if (args.start is None) ^ (args.count is None):
-        p.error("--start と --count は両方指定してください。")
-
-    reader = NozomiReader(
-        args.source,
-        big_endian=not args.little_endian,
-        unsigned=not args.signed,
-    )
-
-    try:
-        if args.all:
-            ids = reader.read_all()
-        elif args.page is not None:
-            ids = reader.read_page(args.page, args.per_page)
-        elif args.start is not None and args.count is not None:
-            ids = reader.read_range(args.start, args.count)
-        else:
-            ids = reader.read_page(1, args.per_page)
-    except (HTTPError, URLError) as e:
-        print(f"[ERROR] HTTPエラー: {e}", file=sys.stderr)
-        sys.exit(2)
-    except Exception as e:
-        print(f"[ERROR] {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # 出力処理
-    if args.output:
-        # ファイルに出力
-        try:
-            with open(args.output, "w", encoding="utf-8") as f:
-                for x in ids:
-                    f.write(f"{x}\n")
-            print(f"結果を {args.output} に書き出しました。", file=sys.stderr)
-        except Exception as e:
-            print(f"[ERROR] ファイル書き込みエラー: {e}", file=sys.stderr)
-            sys.exit(3)
-    else:
-        # 標準出力に出力
-        for x in ids:
-            print(x)
 
 if __name__ == "__main__":
     _cli()

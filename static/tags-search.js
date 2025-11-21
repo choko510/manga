@@ -65,9 +65,7 @@
     }
 
     async function fetchJson(url) {
-        // キャッシュを完全に回避するため、タイムスタンプを付与しつつ cache: 'no-store' を指定
-        const noCacheUrl = url + (url.includes('?') ? '&' : '?') + 'ts=' + Date.now();
-        const res = await fetch(noCacheUrl, { cache: 'no-store' });
+        const res = await fetch(url, { cache: 'no-cache' });
         if (!res.ok) {
             throw new Error('Failed to fetch ' + url + ' (' + res.status + ')');
         }
