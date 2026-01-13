@@ -1,5 +1,5 @@
 (function () {
-    const LIMIT = 20;
+    const LIMIT = 30;
     let currentPage = 1;
     let currentQuery = '';
     let currentResolvedQuery = '';
@@ -76,11 +76,29 @@
             currentQuery = initialTag;
         }
 
+        // URLからページ番号を読み取る
+        const initialPage = parseInt(urlParams.get('page'), 10);
+        if (initialPage && initialPage > 0) {
+            currentPage = initialPage;
+        }
+
         setupObservers();
         attachEventHandlers(elements);
         updateHiddenTagsUI(elements);
         renderHistory(elements);
-        performSearch(elements, true);
+        // 初回は reset=false でURLのページを維持
+        performSearch(elements, currentPage === 1);
+
+        // ブラウザの戻る/進むボタン対応
+        window.addEventListener('popstate', () => {
+            const params = new URLSearchParams(window.location.search);
+            const page = parseInt(params.get('page'), 10) || 1;
+            const tag = params.get('tag') || '';
+            currentPage = page;
+            currentQuery = tag;
+            elements.searchInput.value = tag;
+            performSearch(elements, false);
+        });
     });
 
     function setupObservers() {
@@ -319,9 +337,12 @@
             }
 
             // ページネーションを表示
-            if (data.total_pages !== undefined) {
-                renderPagination(elements, currentPage, data.total_pages, totalCount);
+            if (data.totalPages !== undefined) {
+                renderPagination(elements, currentPage, data.totalPages, totalCount);
             }
+
+            // URLにページ番号を反映
+            updateUrlWithPage(currentPage, currentQuery);
 
             if (results.length) {
                 const hiddenTags = MangaApp.getHiddenTags();
@@ -405,9 +426,8 @@
             fragment.appendChild(card);
         });
 
-        if (reset) {
-            elements.cardGrid.innerHTML = '';
-        }
+        // ページネーション対応: ページ変更時も常にクリアして入れ替える
+        elements.cardGrid.innerHTML = '';
         elements.cardGrid.appendChild(fragment);
     }
 
@@ -595,9 +615,13 @@
     // ページネーションをレンダリングする関数
     function renderPagination(elements, page, totalPages, totalCount) {
         // 既存のページネーションを削除
-        const existingPagination = document.getElementById('paginationContainer');
-        if (existingPagination) {
-            existingPagination.remove();
+        const existingPaginationTop = document.getElementById('paginationContainerTop');
+        const existingPaginationBottom = document.getElementById('paginationContainerBottom');
+        if (existingPaginationTop) {
+            existingPaginationTop.remove();
+        }
+        if (existingPaginationBottom) {
+            existingPaginationBottom.remove();
         }
 
         // デバッグ情報をコンソールに出力
@@ -608,93 +632,110 @@
             return; // 1ページのみの場合はページネーションを表示しない
         }
 
-        const paginationContainer = document.createElement('div');
-        paginationContainer.id = 'paginationContainer';
-        paginationContainer.className = 'pagination-container';
-        paginationContainer.style.cssText = `
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 8px;
-            margin: 24px 0;
-            flex-wrap: wrap;
-        `;
+        // ページネーションコンテナを生成する関数
+        function createPaginationContainer(id) {
+            const paginationContainer = document.createElement('div');
+            paginationContainer.id = id;
+            paginationContainer.className = 'pagination-container';
+            paginationContainer.style.cssText = `
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                gap: 8px;
+                margin: 24px 0;
+                flex-wrap: wrap;
+            `;
 
-        // 前のページボタン
-        const prevButton = createPaginationButton('« 前へ', page > 1, () => {
-            if (page > 1) {
-                currentPage = page - 1;
-                performSearch(elements, false);
-            }
-        });
-        paginationContainer.appendChild(prevButton);
-
-        // ページ番号ボタン
-        const maxButtons = 5;
-        let startPage = Math.max(1, page - Math.floor(maxButtons / 2));
-        let endPage = Math.min(totalPages, startPage + maxButtons - 1);
-
-        if (endPage - startPage < maxButtons - 1) {
-            startPage = Math.max(1, endPage - maxButtons + 1);
-        }
-
-        if (startPage > 1) {
-            paginationContainer.appendChild(createPaginationButton('1', true, () => {
-                currentPage = 1;
-                performSearch(elements, false);
-            }));
-            if (startPage > 2) {
-                const dots = document.createElement('span');
-                dots.textContent = '...';
-                dots.style.cssText = 'padding: 0 8px; color: var(--text-secondary);';
-                paginationContainer.appendChild(dots);
-            }
-        }
-
-        for (let i = startPage; i <= endPage; i++) {
-            const pageButton = createPaginationButton(i.toString(), true, () => {
-                currentPage = i;
-                performSearch(elements, false);
+            // 前のページボタン
+            const prevButton = createPaginationButton('« 前へ', page > 1, () => {
+                if (page > 1) {
+                    currentPage = page - 1;
+                    performSearch(elements, false);
+                    window.scrollTo({ top: 0, behavior: 'instant' });
+                }
             });
-            if (i === page) {
-                pageButton.style.cssText += `
-                    background: var(--accent);
-                    color: white;
-                    border-color: var(--accent);
-                `;
+            paginationContainer.appendChild(prevButton);
+
+            // ページ番号ボタン
+            const maxButtons = 5;
+            let startPage = Math.max(1, page - Math.floor(maxButtons / 2));
+            let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+
+            if (endPage - startPage < maxButtons - 1) {
+                startPage = Math.max(1, endPage - maxButtons + 1);
             }
-            paginationContainer.appendChild(pageButton);
+
+            if (startPage > 1) {
+                paginationContainer.appendChild(createPaginationButton('1', true, () => {
+                    currentPage = 1;
+                    performSearch(elements, false);
+                    window.scrollTo({ top: 0, behavior: 'instant' });
+                }));
+                if (startPage > 2) {
+                    const dots = document.createElement('span');
+                    dots.textContent = '...';
+                    dots.style.cssText = 'padding: 0 8px; color: var(--text-secondary);';
+                    paginationContainer.appendChild(dots);
+                }
+            }
+
+            for (let i = startPage; i <= endPage; i++) {
+                const pageButton = createPaginationButton(i.toString(), true, () => {
+                    currentPage = i;
+                    performSearch(elements, false);
+                    window.scrollTo({ top: 0, behavior: 'instant' });
+                });
+                if (i === page) {
+                    pageButton.style.cssText += `
+                        background: var(--accent);
+                        color: white;
+                        border-color: var(--accent);
+                    `;
+                }
+                paginationContainer.appendChild(pageButton);
+            }
+
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) {
+                    const dots = document.createElement('span');
+                    dots.textContent = '...';
+                    dots.style.cssText = 'padding: 0 8px; color: var(--text-secondary);';
+                    paginationContainer.appendChild(dots);
+                }
+                paginationContainer.appendChild(createPaginationButton(totalPages.toString(), true, () => {
+                    currentPage = totalPages;
+                    performSearch(elements, false);
+                    window.scrollTo({ top: 0, behavior: 'instant' });
+                }));
+            }
+
+            // 次のページボタン
+            const nextButton = createPaginationButton('次へ »', page < totalPages, () => {
+                if (page < totalPages) {
+                    currentPage = page + 1;
+                    performSearch(elements, false);
+                    window.scrollTo({ top: 0, behavior: 'instant' });
+                }
+            });
+            paginationContainer.appendChild(nextButton);
+
+            return paginationContainer;
         }
 
-        if (endPage < totalPages) {
-            if (endPage < totalPages - 1) {
-                const dots = document.createElement('span');
-                dots.textContent = '...';
-                dots.style.cssText = 'padding: 0 8px; color: var(--text-secondary);';
-                paginationContainer.appendChild(dots);
-            }
-            paginationContainer.appendChild(createPaginationButton(totalPages.toString(), true, () => {
-                currentPage = totalPages;
-                performSearch(elements, false);
-            }));
-        }
+        // 上下にページネーションを挿入
+        const cardGrid = document.getElementById('cardGrid');
+        if (cardGrid) {
+            // 上のページネーション
+            const topPagination = createPaginationContainer('paginationContainerTop');
+            cardGrid.parentNode.insertBefore(topPagination, cardGrid);
 
-        // 次のページボタン
-        const nextButton = createPaginationButton('次へ »', page < totalPages, () => {
-            if (page < totalPages) {
-                currentPage = page + 1;
-                performSearch(elements, false);
-            }
-        });
-        paginationContainer.appendChild(nextButton);
+            // 下のページネーション
+            const bottomPagination = createPaginationContainer('paginationContainerBottom');
+            cardGrid.parentNode.insertBefore(bottomPagination, cardGrid.nextSibling);
 
-        // ページネーションコンテナを検索結果の後に挿入
-        const searchSection = document.getElementById('searchSection');
-        if (searchSection) {
-            searchSection.appendChild(paginationContainer);
-            console.log('Pagination container added to DOM');
+            console.log('Pagination containers added to DOM (top and bottom)');
         } else {
-            console.error('searchSection not found');
+            console.error('cardGrid not found');
         }
     }
 
@@ -736,5 +777,27 @@
             clearTimeout(timer);
             timer = setTimeout(() => fn.apply(this, args), delay);
         };
+    }
+
+    // URLにページ番号を反映する関数
+    function updateUrlWithPage(page, query) {
+        const url = new URL(window.location);
+
+        // ページ番号を設定（1ページ目の場合は削除してURLをきれいに）
+        if (page > 1) {
+            url.searchParams.set('page', page.toString());
+        } else {
+            url.searchParams.delete('page');
+        }
+
+        // タグを設定
+        if (query) {
+            url.searchParams.set('tag', query);
+        } else {
+            url.searchParams.delete('tag');
+        }
+
+        // URLを更新（履歴に追加）
+        window.history.replaceState({ page, query }, '', url.toString());
     }
 })();

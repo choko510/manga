@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, Computed, Index, Integer, String, Text, select
+from sqlalchemy import Column, Index, Integer, String, Text, select
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -26,13 +26,6 @@ import secrets
 import string
 from datetime import datetime, timedelta
 from lib import ImageUriResolver
-import logging
-
-# =========================
-# ログ設定
-# =========================
-logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger(__name__)
 
 # =========================
 # グローバル変数管理
@@ -51,28 +44,21 @@ class GlobalState:
             try:
                 await self.scheduler_task
             except asyncio.CancelledError:
-                logger.info("同期スケジューラ停止")
+                print("同期スケジューラ停止")
         
         if self.ranking_scheduler_task:
             self.ranking_scheduler_task.cancel()
             try:
                 await self.ranking_scheduler_task
             except asyncio.CancelledError:
-                logger.info("ランキング更新スケジューラ停止")
+                print("ランキング更新スケジューラ停止")
         
         if self.global_session:
             await self.global_session.close()
-            logger.info("Global session closed")
+            print("Global session closed")
 
 # グローバル状態のインスタンス
 global_state = GlobalState()
-
-# 後方互換性のためのグローバル変数アクセス
-def get_global_session() -> Optional[aiohttp.ClientSession]:
-    return global_state.global_session
-
-def set_global_session(session: Optional[aiohttp.ClientSession]):
-    global_state.global_session = session
 
 # グローバル変数（後方互換性）
 global_session: Optional[aiohttp.ClientSession] = None
@@ -89,7 +75,6 @@ engine: AsyncEngine = create_async_engine(
     echo=False,
     connect_args={
         "timeout": 20,
-        "isolation_level": None,  # autocommit mode
     },
     pool_pre_ping=True,
     pool_recycle=3600,
@@ -101,7 +86,6 @@ tracking_engine: AsyncEngine = create_async_engine(
     echo=False,
     connect_args={
         "timeout": 20,
-        "isolation_level": None,  # autocommit mode
     },
     pool_pre_ping=True,
     pool_recycle=3600,
@@ -123,136 +107,6 @@ def get_tracking_db_session() -> AsyncSession:
 Base = declarative_base()
 TrackingBase = declarative_base()
 
-
-async def init_main_db() -> None:
-    """
-    アプリ初回起動時用:
-    - galleriesテーブルが存在しない場合: 現在のモデル定義通りで作成
-    - 既存テーブルにpage_count列が無い場合: files(JSON)中のhash数を元にpage_count列を追加・更新
-    """
-    async with engine.begin() as conn:
-        # 1. テーブル作成（存在しない場合のみ）
-        await conn.run_sync(Base.metadata.create_all)
-
-        # 2. 不足している列を追加
-        #    - page_count: INTEGER
-        #    - created_at_unix: INTEGER (存在しない場合のみ追加)
-        res = await conn.execute(text("PRAGMA table_info(galleries)"))
-        columns = [row[1] for row in res.fetchall()]
-        if "page_count" not in columns:
-            await conn.execute(text("ALTER TABLE galleries ADD COLUMN page_count INTEGER"))
-        if "created_at_unix" not in columns:
-            await conn.execute(text("ALTER TABLE galleries ADD COLUMN created_at_unix INTEGER"))
-
-        # 3. page_count / created_at_unix の補完
-        #    - page_count: files(JSON配列)中の hash を数える
-        #    - created_at_unix: created_at(ISO8601想定) をUNIX秒に変換して保存
-        #    - いずれも JSONパース・日時パース失敗は best-effort でスキップ
-        import json as _json
-        from datetime import datetime
-
-        # 3-1. page_count が NULL の行を補完（ループ処理）
-        while True:
-            result = await conn.execute(
-                text(
-                    "SELECT gallery_id, files "
-                    "FROM galleries "
-                    "WHERE page_count IS NULL "
-                    "AND files IS NOT NULL "
-                    "LIMIT 1000"
-                )
-            )
-            rows = result.fetchall()
-            if not rows:
-                break  # 修正対象がなくなったら終了
-                
-            for gallery_id, files_json in rows:
-                try:
-                    if not files_json:
-                        continue
-
-                    data = _json.loads(files_json)
-                    if not isinstance(data, list):
-                        continue
-
-                    count = 0
-                    for item in data:
-                        if isinstance(item, dict):
-                            h = item.get("hash")
-                            if isinstance(h, str) and h:
-                                count += 1
-
-                    await conn.execute(
-                        text("UPDATE galleries SET page_count = :cnt WHERE gallery_id = :gid"),
-                        {"cnt": count, "gid": gallery_id},
-                    )
-                except Exception:
-                    continue
-
-        # 3-2. created_at_unix 列が存在する場合のみ補完処理を行う
-        #      - 新しいDBには列が無いケースがあるため、PRAGMAで存在確認してから実行する。
-        pragma_res = await conn.execute(text("PRAGMA table_info(galleries)"))
-        gallery_columns = [row[1] for row in pragma_res.fetchall()]
-        if "created_at_unix" in gallery_columns:
-            # ループ処理で全件補完
-            while True:
-                result = await conn.execute(
-                    text(
-                        "SELECT gallery_id, created_at "
-                        "FROM galleries "
-                        "WHERE (created_at_unix IS NULL OR created_at_unix = 0) "
-                        "AND created_at IS NOT NULL "
-                        "LIMIT 1000"
-                    )
-                )
-                rows = result.fetchall()
-                if not rows:
-                    break  # 修正対象がなくなったら終了
-                    
-                for gallery_id, created_at in rows:
-                    try:
-                        if not created_at:
-                            continue
-
-                        s = str(created_at).strip()
-                        if not s:
-                            continue
-
-                        iso = s.replace(" ", "T")
-                        dt = None
-                        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
-                            try:
-                                dt = datetime.strptime(iso, fmt)
-                                break
-                            except ValueError:
-                                continue
-                        if dt is None:
-                            try:
-                                dt = datetime.fromisoformat(iso)
-                            except ValueError:
-                                dt = None
-                        if dt is None:
-                            continue
-
-                        unix_ts = int(dt.timestamp())
-                        if unix_ts <= 0:
-                            continue
-
-                        await conn.execute(
-                            text("UPDATE galleries SET created_at_unix = :ts WHERE gallery_id = :gid"),
-                            {"ts": unix_ts, "gid": gallery_id},
-                        )
-                    except Exception:
-                        continue
-
-
-async def init_tracking_db() -> None:
-    """
-    アプリ初回起動時用: トラッキング用テーブル群を作成（存在しない場合のみ）。
-    """
-    async with tracking_engine.begin() as conn:
-        await conn.run_sync(TrackingBase.metadata.create_all)
-
 class Gallery(Base):
     __tablename__ = 'galleries'
     gallery_id = Column(Integer, primary_key=True)
@@ -263,10 +117,10 @@ class Gallery(Base):
     manga_type = Column(String)
     created_at = Column(String) # ISO8601 文字列想定
     page_count = Column(Integer, nullable=True)
-    created_at_unix = Column(
-        Integer,
-        Computed("CAST(strftime('%s', created_at) AS INTEGER)", persisted=True),
-    )
+    # 注意: Computedではなく通常のINTEGERカラム
+    # SQLiteのstrftimeはタイムゾーン付き日付をパースできないため
+    # Pythonのバックフィル処理で値を設定する
+    created_at_unix = Column(Integer, nullable=True)
 
     def __repr__(self):
         return f"<Gallery(id={self.gallery_id}, title='{self.japanese_title}')>"
@@ -320,9 +174,6 @@ class TrackingMangaView(TrackingBase):
     last_page = Column(Integer, default=0)
     last_page_changed_at = Column(String)
 
-# PageViewはTrackingMangaViewの別名
-PageView = TrackingMangaView
-
 class TrackingSearchQuery(TrackingBase):
     """
     よく使う検索タグ/クエリを集計するための元データ。
@@ -363,7 +214,7 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-# 古いstartupハンドラは新しいstartup_eventに統合されたため削除
+
 
 # =========================
 # HTTP ヘッダ
@@ -630,65 +481,215 @@ RANKING_FILES = {
     "yearly": "year_ids.txt",
 }
 
+# ランキングIDのキャッシュ (60秒保持)
+_RANKING_CACHE: Dict[str, Tuple[float, List[int]]] = {}
+_RANKING_CACHE_TTL = 60.0  # 秒
+_RANKING_CACHE_LOCK = asyncio.Lock()
+
+# ページ数条件に該当するギャラリーIDのセット（永続キャッシュ - 再起動までメモリ保持）
+# キー: (min_pages, max_pages) -> セット of gallery_ids
+_PAGE_RANGE_GALLERY_IDS_CACHE: Dict[Tuple[int, int], Set[int]] = {}
+
+# 検索結果COUNTクエリキャッシュ（永続キャッシュ - 再起動までメモリ保持）
+# キー: (title, tag, exclude_tag, character, min_pages, max_pages) のハッシュ
+_SEARCH_COUNT_CACHE: Dict[str, int] = {}
+
+async def _get_page_range_gallery_ids(min_pages: int, max_pages: int) -> Set[int]:
+    """
+    指定されたページ数範囲に該当するギャラリーIDのセットを取得（永続キャッシュ）。
+    ランキング+ページ数フィルターの高速化に使用。
+    """
+    cache_key = (min_pages, max_pages)
+    
+    # キャッシュにあればそのまま返す（TTLチェックなし）
+    if cache_key in _PAGE_RANGE_GALLERY_IDS_CACHE:
+        return _PAGE_RANGE_GALLERY_IDS_CACHE[cache_key]
+    
+    # キャッシュミス: DBから取得
+    async with get_db_session() as db:
+        query = """
+            SELECT gallery_id FROM galleries
+            WHERE manga_type IN ('doujinshi', 'manga')
+            AND page_count BETWEEN :min_pages AND :max_pages
+        """
+        result = await db.execute(text(query), {"min_pages": min_pages, "max_pages": max_pages})
+        ids = {row.gallery_id for row in result.fetchall()}
+    
+    _PAGE_RANGE_GALLERY_IDS_CACHE[cache_key] = ids
+    return ids
+
+def _make_search_count_cache_key(
+    title: Optional[str],
+    tag: Optional[str],
+    exclude_tag: Optional[str],
+    character: Optional[str],
+    min_pages: Optional[int],
+    max_pages: Optional[int],
+) -> str:
+    """検索条件からキャッシュキーを生成"""
+    import hashlib
+    key_parts = [
+        title or "",
+        tag or "",
+        exclude_tag or "",
+        character or "",
+        str(min_pages) if min_pages is not None else "",
+        str(max_pages) if max_pages is not None else "",
+    ]
+    return hashlib.md5("|".join(key_parts).encode()).hexdigest()
+
+async def _get_search_count(
+    title: Optional[str],
+    tag: Optional[str],
+    exclude_tag: Optional[str],
+    character: Optional[str],
+    min_pages: Optional[int],
+    max_pages: Optional[int],
+    known_tags: Set[str],
+) -> int:
+    """
+    検索条件に基づく総件数を取得する（永続キャッシュ）。
+    独自のDBセッションを使用することで、検索クエリと並列実行可能。
+    """
+    cache_key = _make_search_count_cache_key(
+        title, tag, exclude_tag, character, min_pages, max_pages
+    )
+    
+    # キャッシュにあればそのまま返す（TTLチェックなし）
+    if cache_key in _SEARCH_COUNT_CACHE:
+        return _SEARCH_COUNT_CACHE[cache_key]
+    
+    # キャッシュミス: 独自のセッションでDBからCOUNT取得
+    async with get_db_session() as db_session:
+        count_query = """
+            SELECT COUNT(*) as total_count
+            FROM galleries AS g
+            WHERE g.manga_type IN ('doujinshi', 'manga')
+        """
+        
+        count_params: Dict[str, Any] = {}
+        count_where_clauses: List[str] = []
+        
+        if title:
+            count_where_clauses.append("g.japanese_title LIKE :title_val")
+            count_params["title_val"] = f"%{title}%"
+        
+        if character:
+            count_where_clauses.append("g.characters LIKE :character_val")
+            count_params["character_val"] = f"%{character}%"
+        
+        if tag:
+            tag_terms = _parse_tag_terms(tag, known_tags)
+            if tag_terms:
+                exists_clauses, exists_params = _build_tag_exists_clause("g", tag_terms)
+                count_where_clauses.extend(exists_clauses)
+                count_params.update(exists_params)
+        
+        if exclude_tag:
+            exclude_tag_terms = _parse_tag_terms(exclude_tag, known_tags)
+            if exclude_tag_terms:
+                not_exists_clauses, not_exists_params = _build_tag_not_exists_clause("g", exclude_tag_terms)
+                count_where_clauses.extend(not_exists_clauses)
+                count_params.update(not_exists_params)
+        
+        if min_pages is not None or max_pages is not None:
+            min_val = max(min_pages or 0, 0)
+            max_val = max_pages if max_pages is not None else 10_000
+            if max_val < min_val:
+                max_val = min_val
+            count_params["min_pages"] = min_val
+            count_params["max_pages"] = max_val
+            count_where_clauses.append("g.page_count BETWEEN :min_pages AND :max_pages")
+        
+        if count_where_clauses:
+            count_query += " AND " + " AND ".join(count_where_clauses)
+        
+        count_result = await db_session.execute(text(count_query), count_params)
+        total_count = count_result.scalar() or 0
+    
+    # キャッシュに保存（永続）
+    _SEARCH_COUNT_CACHE[cache_key] = total_count
+    return total_count
+
+
 async def _load_ranking_ids(ranking_type: str) -> List[int]:
     """
-    ランキング情報をデータベースまたはファイルから読み込む
+    ランキング情報をデータベースまたはファイルから読み込む（キャッシュ付き）
     ranking_type: 'daily', 'weekly', 'monthly', 'yearly'
     """
-    if ranking_type not in RANKING_FILES:
+    if ranking_type not in RANKING_FILES and ranking_type != 'all_time':
         raise ValueError(f"Invalid ranking type: {ranking_type}")
 
-    async def _read_from_db() -> List[int]:
-        try:
-            async with get_db_session() as db:
-                stmt = text(
-                    """
-                    SELECT gallery_id
-                    FROM gallery_rankings
-                    WHERE ranking_type = :ranking_type
-                    ORDER BY score DESC, view_count DESC, last_updated DESC, gallery_id DESC
-                    """
-                )
-                result = await db.execute(stmt, {"ranking_type": ranking_type})
-                rows = result.fetchall()
-        except Exception as exc:
-            logger.warning("ランキングデータのDB読込に失敗: %s", exc)
-            return []
+    # キャッシュをチェック（ロックなし高速パス）
+    now = time.time()
+    cached = _RANKING_CACHE.get(ranking_type)
+    if cached and now - cached[0] < _RANKING_CACHE_TTL:
+        return cached[1]
 
-        ids: List[int] = []
-        for row in rows:
+    async with _RANKING_CACHE_LOCK:
+        # ロック内で再チェック
+        now = time.time()
+        cached = _RANKING_CACHE.get(ranking_type)
+        if cached and now - cached[0] < _RANKING_CACHE_TTL:
+            return cached[1]
+
+        async def _read_from_db() -> List[int]:
             try:
-                gallery_id = (
-                    row[0]
-                    if isinstance(row, (list, tuple))
-                    else row.gallery_id
-                    if hasattr(row, "gallery_id")
-                    else None
-                )
-                if isinstance(gallery_id, int):
-                    ids.append(gallery_id)
-            except Exception:
-                continue
-        return ids
+                async with get_db_session() as db:
+                    stmt = text(
+                        """
+                        SELECT gallery_id
+                        FROM gallery_rankings
+                        WHERE ranking_type = :ranking_type
+                        ORDER BY score DESC, view_count DESC, last_updated DESC, gallery_id DESC
+                        """
+                    )
+                    result = await db.execute(stmt, {"ranking_type": ranking_type})
+                    rows = result.fetchall()
+            except Exception as exc:
+                print("ランキングデータのDB読込に失敗: %s", exc)
+                return []
 
-    db_ids = await _read_from_db()
-    if db_ids:
-        return db_ids
+            ids: List[int] = []
+            for row in rows:
+                try:
+                    gallery_id = (
+                        row[0]
+                        if isinstance(row, (list, tuple))
+                        else row.gallery_id
+                        if hasattr(row, "gallery_id")
+                        else None
+                    )
+                    if isinstance(gallery_id, int):
+                        ids.append(gallery_id)
+                except Exception:
+                    continue
+            return ids
 
-    file_path = RANKING_FILES[ranking_type]
+        db_ids = await _read_from_db()
+        if db_ids:
+            _RANKING_CACHE[ranking_type] = (now, db_ids)
+            return db_ids
 
-    def _read_ids() -> List[int]:
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return [int(line.strip()) for line in f if line.strip().isdigit()]
-        except FileNotFoundError:
-            logger.error(f"ランキングファイルが見つかりません: {file_path}")
+        file_path = RANKING_FILES.get(ranking_type, "")
+        if not file_path:
+            _RANKING_CACHE[ranking_type] = (now, [])
             return []
-        except Exception as e:
-            logger.error(f"ランキングファイル読み込みエラー: {e}")
-            return []
 
-    return await asyncio.to_thread(_read_ids)
+        def _read_ids() -> List[int]:
+            try:
+                with open("cache/"+file_path, 'r', encoding='utf-8') as f:
+                    return [int(line.strip()) for line in f if line.strip().isdigit()]
+            except FileNotFoundError:
+                print(f"ランキングファイルが見つかりません: {file_path}")
+                return []
+            except Exception as e:
+                print(f"ランキングファイル読み込みエラー: {e}")
+                return []
+
+        file_ids = await asyncio.to_thread(_read_ids)
+        _RANKING_CACHE[ranking_type] = (now, file_ids)
+        return file_ids
 
 
 def _load_static_file(path: str) -> str:
@@ -741,6 +742,275 @@ class MultipartDownloadError(Exception):
 # DB 初期化
 # =========================
 
+def _parse_page_count_from_files(files_json: str) -> Optional[int]:
+    """filesのJSONからpage_countを算出（スレッドプール向け）"""
+    try:
+        if not files_json:
+            return None
+        data = json.loads(files_json)
+        if not isinstance(data, list):
+            return None
+        count = sum(
+            1 for item in data
+            if isinstance(item, dict)
+            and isinstance(item.get("hash"), str)
+            and item.get("hash")
+        )
+        return count
+    except Exception:
+        return None
+
+
+def _parse_created_at_to_unix(created_at: str) -> Optional[int]:
+    """created_at文字列をUNIXタイムスタンプに変換（スレッドプール向け）"""
+    try:
+        if not created_at:
+            return None
+        s = str(created_at).strip()
+        if not s:
+            return None
+        iso = s.replace(" ", "T")
+        # 最も一般的なフォーマットを最初に試す
+        dt = None
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(iso, fmt)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            try:
+                dt = datetime.fromisoformat(iso)
+            except ValueError:
+                return None
+        if dt is None:
+            return None
+        unix_ts = int(dt.timestamp())
+        return unix_ts if unix_ts > 0 else None
+    except Exception:
+        return None
+
+
+def _process_page_count_batch(rows: List[Tuple[int, str]]) -> Tuple[List[Dict[str, int]], int]:
+    """バッチ内の全行のpage_countを計算（スレッドプール用）"""
+    updates = []
+    errors = 0
+    for gallery_id, files_json in rows:
+        count = _parse_page_count_from_files(files_json)
+        if count is not None:
+            updates.append({"gid": gallery_id, "cnt": count})
+        elif files_json:  # files_jsonがあるのにパースできなかった場合
+            errors += 1
+    return updates, errors
+
+
+def _process_created_at_batch(rows: List[Tuple[int, str]]) -> Tuple[List[Dict[str, int]], int]:
+    """バッチ内の全行のcreated_at_unixを計算（スレッドプール用）"""
+    updates = []
+    errors = 0
+    for gallery_id, created_at in rows:
+        unix_ts = _parse_created_at_to_unix(created_at)
+        if unix_ts is not None:
+            updates.append({"gid": gallery_id, "ts": unix_ts})
+        elif created_at:  # created_atがあるのにパースできなかった場合
+            errors += 1
+    return updates, errors
+
+
+def _batch_parse_files_json(results: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """検索結果のfilesフィールドをバッチでJSONパースする（スレッドプール用）"""
+    parsed_files = []
+    for r in results:
+        try:
+            files_str = r.get("files")
+            if isinstance(files_str, str):
+                files_data = json.loads(files_str)
+                files_list = files_data if isinstance(files_data, list) else []
+            elif isinstance(files_str, list):
+                files_list = files_str
+            else:
+                files_list = []
+        except (json.JSONDecodeError, TypeError):
+            files_list = []
+        parsed_files.append(files_list)
+    return parsed_files
+
+
+async def _process_results_with_image_urls(results: List[Dict[str, Any]]) -> None:
+    """
+    検索結果にimage_urlsを追加し、filesキーを削除する共通処理。
+    results引数はin-placeで変更される。
+    """
+    if not results:
+        return
+    
+    # 1. JSONパースをスレッドプールで実行
+    files_data_cache = await asyncio.to_thread(_batch_parse_files_json, results)
+    
+    # 2. geturl タスクを作成して並列実行
+    geturl_tasks = [
+        geturl({"gallery_id": r["gallery_id"], "files": files_data_cache[i]})
+        for i, r in enumerate(results)
+    ]
+    image_urls_results = await asyncio.gather(*geturl_tasks, return_exceptions=True)
+    
+    # 3. 結果をマージ
+    for i, r in enumerate(results):
+        image_urls = image_urls_results[i]
+        if isinstance(image_urls, Exception):
+            r["image_urls"] = []
+        else:
+            r["image_urls"] = image_urls
+        
+        files_list = files_data_cache[i]
+        stored_pages = r.get("page_count")
+        if not isinstance(stored_pages, int) or stored_pages < 0:
+            r["page_count"] = len(files_list)
+        
+        if "files" in r:
+            del r["files"]
+
+
+async def _backfill_database_data():
+    """
+    バックグラウンドで実行するデータ補完処理
+    - page_count: files(JSON配列)中の hash を数える
+    - created_at_unix: created_at(ISO8601想定) をUNIX秒に変換して保存
+    
+    最適化:
+    - バッチサイズを5000に増加
+    - JSONパースと日付パースをスレッドプールで並列実行
+    - executemanyで一括UPDATE
+    """
+    print("[backfill] === バックグラウンドデータ補完処理を開始 ===")
+    start_time = time.time()
+    BATCH_SIZE = 5000  # バッチサイズを増加
+    
+    try:
+        # 3-1. page_count が NULL の行を補完（バッチごとにコミット）
+        total_page_count_updated = 0
+        total_page_count_errors = 0
+        batch_num = 0
+        print("[backfill] page_count 補完処理開始...")
+        
+        while True:
+            batch_num += 1
+            
+            try:
+                async with engine.begin() as conn:
+                    result = await conn.execute(
+                        text(
+                            "SELECT gallery_id, files "
+                            "FROM galleries "
+                            "WHERE page_count IS NULL "
+                            "AND files IS NOT NULL "
+                            f"LIMIT {BATCH_SIZE}"
+                        )
+                    )
+                    rows = result.fetchall()
+                    
+                    if not rows:
+                        if batch_num == 1:
+                            print("[backfill] page_count: 補完対象なし（全件処理済み）")
+                        break
+                    
+                    # スレッドプールでJSONパースを実行（CPUバウンドな処理をオフロード）
+                    updates, batch_errors = await asyncio.to_thread(
+                        _process_page_count_batch, rows
+                    )
+                    
+                    # 一括UPDATEで効率化
+                    if updates:
+                        await conn.execute(
+                            text("UPDATE galleries SET page_count = :cnt WHERE gallery_id = :gid"),
+                            updates,
+                        )
+                    
+                    total_page_count_updated += len(updates)
+                    total_page_count_errors += batch_errors
+                    
+                    # バッチ完了ログ（エラーがあればサマリー表示）
+                    if batch_errors > 0:
+                        print(f"[backfill] バッチ {batch_num}: {len(updates)}件更新, {batch_errors}件エラー")
+                    elif batch_num % 10 == 0:  # 10バッチごとに進捗表示
+                        print(f"[backfill] バッチ {batch_num}: 累計 {total_page_count_updated}件更新")
+                        
+            except Exception as batch_err:
+                print(f"[backfill] バッチ {batch_num} 致命的エラー: {type(batch_err).__name__}: {batch_err}")
+                import traceback
+                traceback.print_exc()
+                break
+                
+            # バッチ処理後に短い遅延を入れて他の処理に譲る
+            await asyncio.sleep(0.001)
+        
+        if total_page_count_updated > 0 or total_page_count_errors > 0:
+            print(f"[backfill] page_count 補完完了: 成功 {total_page_count_updated}件, エラー {total_page_count_errors}件")
+
+        # 3-2. created_at_unix 列が存在する場合のみ補完処理を行う
+        total_created_at_unix_updated = 0
+        total_created_at_unix_errors = 0
+        
+        async with engine.begin() as conn:
+            pragma_res = await conn.execute(text("PRAGMA table_info(galleries)"))
+            gallery_columns = [row[1] for row in pragma_res.fetchall()]
+        
+        if "created_at_unix" in gallery_columns:
+            print("[backfill] created_at_unix 補完処理開始...")
+            batch_num = 0
+            
+            while True:
+                batch_num += 1
+                
+                async with engine.begin() as conn:
+                    result = await conn.execute(
+                        text(
+                            "SELECT gallery_id, created_at "
+                            "FROM galleries "
+                            "WHERE (created_at_unix IS NULL OR created_at_unix = 0) "
+                            "AND created_at IS NOT NULL "
+                            f"LIMIT {BATCH_SIZE}"
+                        )
+                    )
+                    rows = result.fetchall()
+                    
+                    if not rows:
+                        if batch_num == 1:
+                            print("[backfill] created_at_unix: 補完対象なし（全件処理済み）")
+                        break
+                    
+                    # スレッドプールで日付パースを実行
+                    updates, batch_errors = await asyncio.to_thread(
+                        _process_created_at_batch, rows
+                    )
+                    
+                    # 一括UPDATEで効率化
+                    if updates:
+                        await conn.execute(
+                            text("UPDATE galleries SET created_at_unix = :ts WHERE gallery_id = :gid"),
+                            updates,
+                        )
+                    
+                    total_created_at_unix_updated += len(updates)
+                    total_created_at_unix_errors += batch_errors
+                    
+                    if batch_num % 10 == 0:
+                        print(f"[backfill] created_at_unix バッチ {batch_num}: 累計 {total_created_at_unix_updated}件更新")
+                        
+                # バッチ処理後に短い遅延を入れて他の処理に譲る
+                await asyncio.sleep(0.001)
+            
+            if total_created_at_unix_updated > 0 or total_created_at_unix_errors > 0:
+                print(f"[backfill] created_at_unix 補完完了: 成功 {total_created_at_unix_updated}件, エラー {total_created_at_unix_errors}件")
+        
+        elapsed = time.time() - start_time
+        print(f"[backfill] === バックグラウンドデータ補完処理完了 ({elapsed:.1f}秒) ===")
+        
+    except Exception as e:
+        print(f"[backfill] 致命的エラー: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+
 async def init_database():
     """
     - 通常テーブル作成
@@ -749,23 +1019,31 @@ async def init_database():
     - gallery_tags 正規化テーブル + 強インデックス
     - tag_stats 集約テーブル（インクリメンタル更新）
     - 初回/不一致時の REBUILD と BACKFILL
+    
+    最適化:
+    - SQL文をバッチ実行してオーバーヘッド削減
+    - 重複したDROP TRIGGER文を削除
     """
     import os
     import shutil
 
     global engine, SessionLocal
+    
+    print("[init_db] === データベース初期化開始 ===")
+    start_time = time.time()
 
     # 接続確認
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
     except Exception as e:
-        logger.warning(f"データベース再作成: {e}")
+        print(f"[init_db] 接続エラー、データベース再作成: {type(e).__name__}: {e}")
         await engine.dispose()
         # バックアップして削除
         if os.path.exists(f"db/{DB_FILE}"):
             try:
                 shutil.copy2(f"db/{DB_FILE}", f"db/{DB_FILE}.corrupt_backup")
+                print(f"[init_db] バックアップ作成: db/{DB_FILE}.corrupt_backup")
             except Exception:
                 pass
             for suffix in ["-wal", "-shm"]:
@@ -777,57 +1055,94 @@ async def init_database():
                         pass
             try:
                 os.remove(f"db/{DB_FILE}")
+                print(f"[init_db] 破損DBファイル削除完了")
             except Exception:
                 pass
         engine = create_async_engine(
             f"sqlite+aiosqlite:///db/{DB_FILE}",
             echo=False,
-            connect_args={
-                "timeout": 20,
-                "isolation_level": None,
-            },
+            connect_args={"timeout": 20},
             pool_pre_ping=True,
             pool_recycle=3600,
         )
         SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
     async with engine.begin() as conn:
+        # テーブル作成
         await conn.run_sync(Base.metadata.create_all)
 
+        # 不足している列を追加
+        res = await conn.execute(text("PRAGMA table_info(galleries)"))
+        columns = {row[1] for row in res.fetchall()}
+        if "page_count" not in columns:
+            await conn.execute(text("ALTER TABLE galleries ADD COLUMN page_count INTEGER"))
+        if "created_at_unix" not in columns:
+            await conn.execute(text("ALTER TABLE galleries ADD COLUMN created_at_unix INTEGER"))
+
+    print("[init_db] スキーマとインデックス構築中...")
     async with engine.begin() as conn:
-        # PRAGMA
-        await conn.execute(text("PRAGMA journal_mode=WAL"))
-        await conn.execute(text("PRAGMA synchronous=NORMAL"))
-        await conn.execute(text("PRAGMA cache_size=20000"))
-        await conn.execute(text("PRAGMA temp_store=MEMORY"))
-        await conn.execute(text("PRAGMA foreign_keys=ON"))
-        await conn.execute(text("PRAGMA mmap_size=536870912"))  # 512MB
+        # --- PRAGMA設定（バッチ実行） ---
+        pragma_statements = [
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA synchronous=NORMAL",
+            "PRAGMA cache_size=20000",
+            "PRAGMA temp_store=MEMORY",
+            "PRAGMA foreign_keys=ON",
+            "PRAGMA mmap_size=536870912",  # 512MB
+        ]
+        for stmt in pragma_statements:
+            await conn.execute(text(stmt))
 
-        # 重要インデックス
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_created ON galleries(created_at DESC, gallery_id DESC)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_type_created_id ON galleries(manga_type, created_at DESC, gallery_id DESC)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_characters ON galleries(characters)"))
+        # --- インデックス作成（バッチ実行） ---
+        index_statements = [
+            "CREATE INDEX IF NOT EXISTS idx_galleries_created ON galleries(created_at DESC, gallery_id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_galleries_type_created_id ON galleries(manga_type, created_at DESC, gallery_id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_galleries_characters ON galleries(characters)",
+            # パーシャルインデックス: backfill対象のNULL行を高速検索
+            "CREATE INDEX IF NOT EXISTS idx_galleries_page_count_null ON galleries(gallery_id) WHERE page_count IS NULL AND files IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS idx_galleries_created_at_unix_null ON galleries(gallery_id) WHERE (created_at_unix IS NULL OR created_at_unix = 0) AND created_at IS NOT NULL",
+        ]
+        for stmt in index_statements:
+            await conn.execute(text(stmt))
 
-        # 正規化タグテーブル
-        await conn.execute(text(
-            """
+        # --- 正規化タグテーブル ---
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS gallery_tags (
                 gallery_id INTEGER NOT NULL,
                 tag TEXT NOT NULL,
                 PRIMARY KEY (gallery_id, tag),
                 FOREIGN KEY (gallery_id) REFERENCES galleries(gallery_id) ON DELETE CASCADE
             )
-            """
-        ))
-        # 交差（AND）検索向けの強インデックス
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_tags_tag_gallery ON gallery_tags(tag, gallery_id)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_tags_gallery_tag ON gallery_tags(gallery_id, tag)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_tags_tag ON gallery_tags(tag)"))
+        """))
+        
+        # gallery_tags インデックス（バッチ実行）
+        gallery_tags_indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_gallery_tags_tag_gallery ON gallery_tags(tag, gallery_id)",
+            "CREATE INDEX IF NOT EXISTS idx_gallery_tags_gallery_tag ON gallery_tags(gallery_id, tag)",
+            "CREATE INDEX IF NOT EXISTS idx_gallery_tags_tag ON gallery_tags(tag)",
+        ]
+        for stmt in gallery_tags_indexes:
+            await conn.execute(text(stmt))
+        
+        # galleriesテーブルの追加インデックス（page_countフィルタリング高速化用）
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_page_count ON galleries(page_count)"))
+        # manga_type + page_count 複合インデックス（min_pages/max_pagesフィルター高速化用）
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_type_page_count ON galleries(manga_type, page_count)"))
 
-        # FTS5
-        await conn.execute(text(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS galleries_fts USING fts5(
+        # --- FTS5 再構築（トリガーとテーブルをまとめて削除→作成） ---
+        fts_cleanup = [
+            "DROP TRIGGER IF EXISTS galleries_ai",
+            "DROP TRIGGER IF EXISTS galleries_ad",
+            "DROP TRIGGER IF EXISTS galleries_au",
+            "DROP TABLE IF EXISTS galleries_fts",
+            "DROP TRIGGER IF EXISTS galleries_created_at_unix_ai",
+            "DROP TRIGGER IF EXISTS galleries_created_at_unix_au",
+        ]
+        for stmt in fts_cleanup:
+            await conn.execute(text(stmt))
+        
+        await conn.execute(text("""
+            CREATE VIRTUAL TABLE galleries_fts USING fts5(
                 japanese_title,
                 tags,
                 characters,
@@ -835,129 +1150,78 @@ async def init_database():
                 content_rowid='gallery_id',
                 tokenize = 'unicode61 remove_diacritics 2 tokenchars ''-_+&/#:."()[]{}'''
             )
-            """
-        ))
+        """))
 
-        # FTS 同期トリガ
-        await conn.execute(text(
-            """
-            CREATE TRIGGER IF NOT EXISTS galleries_ai AFTER INSERT ON galleries BEGIN
+        # --- FTS 同期トリガ ---
+        await conn.execute(text("""
+            CREATE TRIGGER galleries_ai AFTER INSERT ON galleries BEGIN
                 INSERT INTO galleries_fts(rowid, japanese_title, tags, characters)
                 VALUES (new.gallery_id, new.japanese_title, new.tags, new.characters);
-            END;
-            """
-        ))
-        await conn.execute(text(
-            """
-            CREATE TRIGGER IF NOT EXISTS galleries_ad AFTER DELETE ON galleries BEGIN
-                DELETE FROM galleries_fts WHERE rowid = old.gallery_id;
-            END;
-            """
-        ))
-        await conn.execute(text(
-            """
-            CREATE TRIGGER IF NOT EXISTS galleries_au AFTER UPDATE ON galleries BEGIN
-                UPDATE galleries_fts
-                SET japanese_title = new.japanese_title,
-                    tags           = new.tags,
-                    characters     = new.characters
-                WHERE rowid = old.gallery_id;
-            END;
-            """
-        ))
+            END
+        """))
+        await conn.execute(text("""
+            CREATE TRIGGER galleries_ad AFTER DELETE ON galleries BEGIN
+                INSERT INTO galleries_fts(galleries_fts, rowid, japanese_title, tags, characters)
+                VALUES ('delete', old.gallery_id, old.japanese_title, old.tags, old.characters);
+            END
+        """))
+        await conn.execute(text("""
+            CREATE TRIGGER galleries_au AFTER UPDATE OF japanese_title, tags, characters ON galleries BEGIN
+                INSERT INTO galleries_fts(galleries_fts, rowid, japanese_title, tags, characters)
+                VALUES ('delete', old.gallery_id, old.japanese_title, old.tags, old.characters);
+                INSERT INTO galleries_fts(rowid, japanese_title, tags, characters)
+                VALUES (new.gallery_id, new.japanese_title, new.tags, new.characters);
+            END
+        """))
 
-        # gallery_tags 同期トリガ（galleries.tags JSON -> gallery_tags）
-        await conn.execute(text(
-            """
+        # --- gallery_tags 同期トリガ ---
+        await conn.execute(text("""
             CREATE TRIGGER IF NOT EXISTS gallery_tags_ai AFTER INSERT ON galleries BEGIN
                 INSERT OR IGNORE INTO gallery_tags(gallery_id, tag)
                 SELECT NEW.gallery_id, LOWER(TRIM(value))
                 FROM json_each(CASE WHEN json_valid(NEW.tags) THEN NEW.tags ELSE '[]' END)
                 WHERE value IS NOT NULL AND TRIM(value) <> '';
-            END;
-            """
-        ))
-        await conn.execute(text(
-            """
+            END
+        """))
+        await conn.execute(text("""
             CREATE TRIGGER IF NOT EXISTS gallery_tags_ad AFTER DELETE ON galleries BEGIN
                 DELETE FROM gallery_tags WHERE gallery_id = OLD.gallery_id;
-            END;
-            """
-        ))
-        await conn.execute(text(
-            """
+            END
+        """))
+        await conn.execute(text("""
             CREATE TRIGGER IF NOT EXISTS gallery_tags_au AFTER UPDATE OF tags ON galleries BEGIN
                 DELETE FROM gallery_tags WHERE gallery_id = NEW.gallery_id;
                 INSERT OR IGNORE INTO gallery_tags(gallery_id, tag)
                 SELECT NEW.gallery_id, LOWER(TRIM(value))
                 FROM json_each(CASE WHEN json_valid(NEW.tags) THEN NEW.tags ELSE '[]' END)
                 WHERE value IS NOT NULL AND TRIM(value) <> '';
-            END;
-            """
-        ))
+            END
+        """))
 
-        # ---- 集約テーブル: tag_stats（タグ毎の件数を高速に返す）----
-        await conn.execute(text(
-            """
+        # --- tag_stats テーブル ---
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS tag_stats (
                 tag TEXT PRIMARY KEY,
                 count INTEGER NOT NULL DEFAULT 0
             )
-            """
-        ))
+        """))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tag_stats_count_tag ON tag_stats(count DESC, tag ASC)"))
 
-        # gallery_tags 変更に追随するトリガ（増減）
-        await conn.execute(text(
-            """
+        # --- tag_stats 同期トリガ ---
+        await conn.execute(text("""
             CREATE TRIGGER IF NOT EXISTS tag_stats_ins AFTER INSERT ON gallery_tags BEGIN
                 INSERT INTO tag_stats(tag, count) VALUES (NEW.tag, 1)
                 ON CONFLICT(tag) DO UPDATE SET count = count + 1;
-            END;
-            """
-        ))
-        await conn.execute(text(
-            """
+            END
+        """))
+        await conn.execute(text("""
             CREATE TRIGGER IF NOT EXISTS tag_stats_del AFTER DELETE ON gallery_tags BEGIN
                 UPDATE tag_stats SET count = MAX(count - 1, 0) WHERE tag = OLD.tag;
-            END;
-            """
-        ))
+            END
+        """))
 
-        # FTS REBUILD 必要時のみ実施
-        rebuild_result = await conn.execute(text("SELECT COUNT(*) = 0 FROM galleries_fts"))
-        need_rebuild = rebuild_result.scalar()
-        if need_rebuild:
-            await conn.execute(text("INSERT INTO galleries_fts(galleries_fts) VALUES('rebuild')"))
-
-        # gallery_tags 初期同期
-        tag_sync_result = await conn.execute(text("SELECT COUNT(*) = 0 FROM gallery_tags"))
-        need_tag_sync = tag_sync_result.scalar()
-        if need_tag_sync:
-            await conn.execute(text(
-                """
-                INSERT OR IGNORE INTO gallery_tags(gallery_id, tag)
-                SELECT g.gallery_id, LOWER(TRIM(value))
-                FROM galleries AS g,
-                     json_each(CASE WHEN json_valid(g.tags) THEN g.tags ELSE '[]' END)
-                WHERE value IS NOT NULL AND TRIM(value) <> ''
-                """
-            ))
-
-        # tag_stats 初期バックフィル（空の時のみ）
-        tag_stats_result = await conn.execute(text("SELECT COUNT(*) = 0 FROM tag_stats"))
-        need_tag_stats_backfill = tag_stats_result.scalar()
-        if need_tag_stats_backfill:
-            await conn.execute(text(
-                """
-                INSERT INTO tag_stats(tag, count)
-                SELECT tag, COUNT(*) FROM gallery_tags GROUP BY tag
-                """
-            ))
-
-        # ---- ランキングテーブル ----
-        await conn.execute(text(
-            """
+        # --- ランキングテーブル ---
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS gallery_rankings (
                 gallery_id INTEGER NOT NULL,
                 ranking_type TEXT NOT NULL,
@@ -968,17 +1232,58 @@ async def init_database():
                 PRIMARY KEY (gallery_id, ranking_type),
                 FOREIGN KEY (gallery_id) REFERENCES galleries(gallery_id) ON DELETE CASCADE
             )
-            """
-        ))
+        """))
         
-        # ランキングテーブルのインデックス
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_rankings_type_score ON gallery_rankings(ranking_type, score DESC)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_rankings_gallery_id ON gallery_rankings(gallery_id)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_gallery_rankings_last_updated ON gallery_rankings(last_updated)"))
+        ranking_indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_gallery_rankings_type_score ON gallery_rankings(ranking_type, score DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_gallery_rankings_gallery_id ON gallery_rankings(gallery_id)",
+            "CREATE INDEX IF NOT EXISTS idx_gallery_rankings_last_updated ON gallery_rankings(last_updated)",
+        ]
+        for stmt in ranking_indexes:
+            await conn.execute(text(stmt))
+
+    # --- 初期データ同期（別トランザクション） ---
+    print("[init_db] 初期データ同期確認中...")
+    async with engine.begin() as conn:
+        # FTS REBUILD
+        rebuild_result = await conn.execute(text("SELECT COUNT(*) = 0 FROM galleries_fts"))
+        if rebuild_result.scalar():
+            print("[init_db] FTS5 rebuild 開始...")
+            rebuild_start = time.time()
+            await conn.execute(text("INSERT INTO galleries_fts(galleries_fts) VALUES('rebuild')"))
+            print(f"[init_db] FTS5 rebuild 完了 ({time.time() - rebuild_start:.1f}秒)")
+
+        # gallery_tags 初期同期
+        tag_sync_result = await conn.execute(text("SELECT COUNT(*) = 0 FROM gallery_tags"))
+        if tag_sync_result.scalar():
+            print("[init_db] gallery_tags 初期同期中...")
+            sync_start = time.time()
+            await conn.execute(text("""
+                INSERT OR IGNORE INTO gallery_tags(gallery_id, tag)
+                SELECT g.gallery_id, LOWER(TRIM(value))
+                FROM galleries AS g,
+                     json_each(CASE WHEN json_valid(g.tags) THEN g.tags ELSE '[]' END)
+                WHERE value IS NOT NULL AND TRIM(value) <> ''
+            """))
+            print(f"[init_db] gallery_tags 同期完了 ({time.time() - sync_start:.1f}秒)")
+
+        # tag_stats 初期バックフィル
+        tag_stats_result = await conn.execute(text("SELECT COUNT(*) = 0 FROM tag_stats"))
+        if tag_stats_result.scalar():
+            print("[init_db] tag_stats バックフィル中...")
+            stats_start = time.time()
+            await conn.execute(text("""
+                INSERT INTO tag_stats(tag, count)
+                SELECT tag, COUNT(*) FROM gallery_tags GROUP BY tag
+            """))
+            print(f"[init_db] tag_stats 完了 ({time.time() - stats_start:.1f}秒)")
 
         # 統計最適化
         await conn.execute(text("ANALYZE"))
         await conn.execute(text("PRAGMA optimize"))
+    
+    elapsed = time.time() - start_time
+    print(f"[init_db] === データベース初期化完了 ({elapsed:.1f}秒) ===")
 
 async def init_tracking_database():
     """
@@ -1034,33 +1339,42 @@ def _build_fts_query(title: Optional[str] = None, character: Optional[str] = Non
 
 _KNOWN_TAGS_CACHE: Set[str] = set()
 _KNOWN_TAGS_FETCHED_AT: float = 0.0
+_TAG_CACHE_LOCK = asyncio.Lock()
 
 
 async def _get_known_tag_set(db_session: AsyncSession) -> Set[str]:
     global _KNOWN_TAGS_CACHE, _KNOWN_TAGS_FETCHED_AT
+    
+    # Fast path check without lock
     now = time.time()
     if _KNOWN_TAGS_CACHE and now - _KNOWN_TAGS_FETCHED_AT < 300:
         return _KNOWN_TAGS_CACHE
 
-    try:
-        result = await db_session.execute(text("SELECT tag FROM tag_stats"))
-        rows = result.fetchall()
-    except Exception as exc:
-        logger.warning("タグ一覧の取得に失敗しました: %s", exc)
+    async with _TAG_CACHE_LOCK:
+        # Double-check inside lock
+        now = time.time()
+        if _KNOWN_TAGS_CACHE and now - _KNOWN_TAGS_FETCHED_AT < 300:
+            return _KNOWN_TAGS_CACHE
+
+        try:
+            result = await db_session.execute(text("SELECT tag FROM tag_stats"))
+            rows = result.fetchall()
+        except Exception as exc:
+            print("タグ一覧の取得に失敗しました: %s", exc)
+            return _KNOWN_TAGS_CACHE
+
+        tags: Set[str] = set()
+        for row in rows:
+            tag_value = row[0] if isinstance(row, (list, tuple)) else row.tag if hasattr(row, "tag") else None
+            if not tag_value:
+                continue
+            normalized = str(tag_value).strip().lower()
+            if normalized:
+                tags.add(normalized)
+
+        _KNOWN_TAGS_CACHE = tags
+        _KNOWN_TAGS_FETCHED_AT = now
         return _KNOWN_TAGS_CACHE
-
-    tags: Set[str] = set()
-    for row in rows:
-        tag_value = row[0] if isinstance(row, (list, tuple)) else row.tag if hasattr(row, "tag") else None
-        if not tag_value:
-            continue
-        normalized = str(tag_value).strip().lower()
-        if normalized:
-            tags.add(normalized)
-
-    _KNOWN_TAGS_CACHE = tags
-    _KNOWN_TAGS_FETCHED_AT = now
-    return _KNOWN_TAGS_CACHE
 
 
 def _parse_tag_terms(tag_query: Optional[str], known_tags: Optional[Set[str]] = None) -> Tuple[str, ...]:
@@ -1180,6 +1494,7 @@ async def search_galleries_fast(
     tag: str = None,
     character: str = None,
     limit: int = 50,
+    offset: int = 0,
     after_created_at: str | None = None,
     after_gallery_id: int | None = None,
     exclude_tag: str | None = None,
@@ -1193,7 +1508,7 @@ async def search_galleries_fast(
     fts = _build_fts_query(title, character)
 
     async def run_query(use_fts: bool) -> List[Dict[str, Any]]:
-        params: Dict[str, object] = {"limit": limit}
+        params: Dict[str, object] = {"limit": limit, "offset": offset}
         joins: List[str] = []
         where_clauses: List[str] = []
         cte_segment: Optional[str] = None
@@ -1217,6 +1532,14 @@ async def search_galleries_fast(
         if use_fts and fts:
             base_limit = max(limit, 1)
             prelimit = min(max(base_limit * _FTS_CANDIDATE_MULTIPLIER, base_limit), _FTS_CANDIDATE_MAX)
+            # Offsetがある場合はprelimitを増やす必要があるかも知れないが、
+            # FTSの場合は通常スコア順などでLimitをかけるため、Offsetとの相性は悪い。
+            # ここでは単純にLimitをOffset分増やす簡易的な対応とするか、
+            # あるいはFTS利用時はOffset非推奨とするか。
+            # 一旦、prelimitにlimit + offsetを加味するようにする。
+            if offset > 0:
+                 prelimit = min(max((limit + offset) * _FTS_CANDIDATE_MULTIPLIER, (limit + offset)), _FTS_CANDIDATE_MAX)
+
             params["fts"] = fts
             params["prelimit"] = prelimit
             cte_segment = (
@@ -1273,7 +1596,7 @@ async def search_galleries_fast(
         if where_clauses:
             sql_segments.append("WHERE " + " AND ".join(where_clauses))
         sql_segments.append("ORDER BY g.created_at DESC, g.gallery_id DESC")
-        sql_segments.append("LIMIT :limit")
+        sql_segments.append("LIMIT :limit OFFSET :offset")
         sql = "\n".join(sql_segments)
 
         result = await db_session.execute(text(sql), params)
@@ -1295,6 +1618,7 @@ async def search_galleries_fast(
             tag=tag,
             character=character,
             limit=limit,
+            offset=offset,
             exclude_tag=exclude_tag,
         )
 async def search_galleries(
@@ -1389,15 +1713,15 @@ async def build_session_tag_profile(
     try:
         async with get_tracking_db_session() as tracking_db:
             stmt = (
-                select(PageView)
-                .where(PageView.session_id == session_id)
-                .order_by(PageView.id.desc())
+                select(TrackingMangaView)
+                .where(TrackingMangaView.session_id == session_id)
+                .order_by(TrackingMangaView.id.desc())
                 .limit(max_page_views)
             )
             result = await tracking_db.execute(stmt)
             page_views = result.scalars().all()
     except Exception as exc:
-        logger.error("セッションプロファイル取得エラー: %s", exc)
+        print("セッションプロファイル取得エラー: %s", exc)
         return {}
 
     if not page_views:
@@ -1459,7 +1783,7 @@ async def build_session_tag_profile(
         result = await db_session.execute(stmt)
         gallery_rows = result.all()
     except Exception as exc:
-        logger.error("ギャラリータグ取得エラー: %s", exc)
+        print("ギャラリータグ取得エラー: %s", exc)
         return {}
 
     tag_weights: Dict[str, float] = {}
@@ -1491,10 +1815,6 @@ async def build_session_tag_profile(
         return {}
     return {tag: weight / max_weight for tag, weight in tag_weights.items() if weight > 0}
 
-
-# =================================================================================
-# vvvvvvvvvvvvvvvvvvvvvvvv 高速化のための修正箇所 vvvvvvvvvvvvvvvvvvvvvvvv
-# =================================================================================
 RECOMMENDATION_CANDIDATE_MULTIPLIER = 10
 RECOMMENDATION_CANDIDATE_MAX = 200
 
@@ -1657,10 +1977,6 @@ async def get_recommended_galleries(
 
     return galleries[:limit]
 
-# =================================================================================
-# ^^^^^^^^^^^^^^^^^^^^^^^^ 高速化のための修正箇所 ^^^^^^^^^^^^^^^^^^^^^^^^^
-# =================================================================================
-
 def _derive_filename(url: str) -> str:
     trimmed = url.split("?", 1)[0].rstrip("/")
     candidate = trimmed.split("/")[-1] if trimmed else ""
@@ -1670,27 +1986,48 @@ def _derive_filename(url: str) -> str:
 _IMAGE_RESOLVER_FAILURE_AT: float = 0.0
 _IMAGE_RESOLVER_FAILURE_COOLDOWN = 120.0
 _IMAGE_RESOLVER_TIMEOUT = 3.0
+_IMAGE_RESOLVER_READY = False
+_IMAGE_RESOLVER_READY_UNTIL: float = 0.0
+_IMAGE_RESOLVER_READY_TTL = 30.0  # 30秒間キャッシュ
+_IMAGE_RESOLVER_LOCK = asyncio.Lock()
 
 
 async def _ensure_image_resolver_ready() -> bool:
     """Initialise the image resolver without blocking the event loop."""
 
-    global _IMAGE_RESOLVER_FAILURE_AT
+    global _IMAGE_RESOLVER_FAILURE_AT, _IMAGE_RESOLVER_READY, _IMAGE_RESOLVER_READY_UNTIL
 
     now = time.monotonic()
+    
+    # 高速パス: 既に準備完了している場合
+    if _IMAGE_RESOLVER_READY and now < _IMAGE_RESOLVER_READY_UNTIL:
+        return True
+    
+    # 失敗クールダウン中
     if _IMAGE_RESOLVER_FAILURE_AT and now - _IMAGE_RESOLVER_FAILURE_AT < _IMAGE_RESOLVER_FAILURE_COOLDOWN:
         return False
 
-    try:
-        await asyncio.wait_for(ImageUriResolver.async_synchronize(), timeout=_IMAGE_RESOLVER_TIMEOUT)
-        return True
-    except asyncio.TimeoutError:
-        logger.warning("ImageUriResolver 同期がタイムアウトしました")
-    except Exception as exc:
-        logger.error("ImageUriResolver 初期化エラー: %s", exc)
+    async with _IMAGE_RESOLVER_LOCK:
+        # ロック内で再チェック
+        now = time.monotonic()
+        if _IMAGE_RESOLVER_READY and now < _IMAGE_RESOLVER_READY_UNTIL:
+            return True
+        if _IMAGE_RESOLVER_FAILURE_AT and now - _IMAGE_RESOLVER_FAILURE_AT < _IMAGE_RESOLVER_FAILURE_COOLDOWN:
+            return False
 
-    _IMAGE_RESOLVER_FAILURE_AT = now
-    return False
+        try:
+            await asyncio.wait_for(ImageUriResolver.async_synchronize(), timeout=_IMAGE_RESOLVER_TIMEOUT)
+            _IMAGE_RESOLVER_READY = True
+            _IMAGE_RESOLVER_READY_UNTIL = now + _IMAGE_RESOLVER_READY_TTL
+            return True
+        except asyncio.TimeoutError:
+            print("ImageUriResolver 同期がタイムアウトしました")
+        except Exception as exc:
+            print("ImageUriResolver 初期化エラー: %s", exc)
+
+        _IMAGE_RESOLVER_FAILURE_AT = now
+        _IMAGE_RESOLVER_READY = False
+        return False
 
 
 async def geturl(gi: Dict[str, Any]) -> List[str]:
@@ -1702,22 +2039,25 @@ async def geturl(gi: Dict[str, Any]) -> List[str]:
     if not resolver_ready:
         return []
 
-    urls: List[str] = []
-    for idx, f in enumerate(files):
-        image = SimpleNamespace(
-            hash=(f.get("hash") or "").lower(),
-            has_avif=bool(f.get("hasavif")),
-            has_webp=True,
-            has_jxl=False,
-        )
-        ext = "avif" if image.has_avif else "webp"
-        try:
-            url_img = ImageUriResolver.get_image_uri(image, ext)  # type: ignore
-            urls.append(url_img)
-        except Exception as e:
-            logger.error(f"画像URL生成エラー: {e}, hash: {image.hash}")
-            continue
-    return urls
+    # CPUバウンドなURL生成処理をスレッドプールで実行
+    def _generate_urls() -> List[str]:
+        urls: List[str] = []
+        for f in files:
+            image = SimpleNamespace(
+                hash=(f.get("hash") or "").lower(),
+                has_avif=bool(f.get("hasavif")),
+                has_webp=True,
+                has_jxl=False,
+            )
+            ext = "avif" if image.has_avif else "webp"
+            try:
+                url_img = ImageUriResolver.get_image_uri(image, ext)
+                urls.append(url_img)
+            except Exception:
+                continue
+        return urls
+    
+    return await asyncio.to_thread(_generate_urls)
 
 # =========================
 # リクエスト/レスポンスモデル
@@ -1857,7 +2197,7 @@ async def api_recommendations(
                     # NOTE: さらなる高速化のため、この結果をキャッシュすることも検討できます
                     session_tag_weights = await build_session_tag_profile(db, session_id)
                 except Exception as exc:
-                    logger.error("おすすめ個人化プロファイル作成エラー: %s", exc)
+                    print("おすすめ個人化プロファイル作成エラー: %s", exc)
                     session_tag_weights = None
 
             # 1. 高速化された関数でギャラリーリストを取得
@@ -1894,7 +2234,7 @@ async def api_recommendations(
             for i, result in enumerate(results):
                 image_urls = image_urls_results[i]
                 if isinstance(image_urls, Exception):
-                    logger.error(f"geturlがギャラリーID {result['gallery_id']} で失敗: {image_urls}")
+                    print(f"geturlがギャラリーID {result['gallery_id']} で失敗: {image_urls}")
                     image_urls = []
 
                 # キャッシュからfiles_listを取得
@@ -1913,12 +2253,8 @@ async def api_recommendations(
             return {"results": payload, "count": len(payload)}
 
     except Exception as e:
-        logger.exception("おすすめ取得APIで予期せぬエラーが発生しました")
+        print("おすすめ取得APIで予期せぬエラーが発生しました")
         raise HTTPException(status_code=500, detail=f"おすすめ取得エラー: {str(e)}")
-
-# =================================================================================
-# ^^^^^^^^^^^^^^^^^^^^^^^^ 高速化のための修正箇所 ^^^^^^^^^^^^^^^^^^^^^^^^^
-# =================================================================================
 
 @app.get("/search")
 async def search_galleries_get(
@@ -1935,12 +2271,19 @@ async def search_galleries_get(
     offset: int = 0,
     page: int = 1,
 ):
+    MAX_LIMIT = 200
+    if limit > MAX_LIMIT:
+        limit = MAX_LIMIT
+
     try:
         # page パラメータが指定されている場合は offset を上書き
         if page > 1:
             offset = (page - 1) * limit
 
         async with get_db_session() as db:
+                # known_tagsを一度だけ取得してキャッシュ（複数回のawaitを避ける）
+                known_tags = await _get_known_tag_set(db)
+                
                 # sort_byパラメータがランキングの場合は特別処理
                 if sort_by and sort_by in ['daily', 'weekly', 'monthly', 'yearly', 'all_time']:
                     # ランキングファイルからIDを読み込む
@@ -1948,7 +2291,6 @@ async def search_galleries_get(
                     
                     # タグ検索の場合はタグでフィルタリング
                     if tag:
-                        known_tags = await _get_known_tag_set(db)
                         tag_terms = _parse_tag_terms(tag, known_tags)
                        
                         if tag_terms:
@@ -1970,6 +2312,19 @@ async def search_galleries_get(
                             filtered_ranking_ids = []
                     else:
                         filtered_ranking_ids = ranking_ids
+                    
+                    # ページ数フィルターがある場合は、キャッシュ付きでフィルタリング
+                    if filtered_ranking_ids and (min_pages is not None or max_pages is not None):
+                        min_val = max(min_pages or 0, 0)
+                        max_val = max_pages if max_pages is not None else 10_000
+                        if max_val < min_val:
+                            max_val = min_val
+                        
+                        # ページ数範囲に該当するギャラリーIDのセットを取得（キャッシュ付き）
+                        valid_ids_set = await _get_page_range_gallery_ids(min_val, max_val)
+                        
+                        # ランキング順序を維持したまま、有効なIDだけを残す
+                        filtered_ranking_ids = [gid for gid in filtered_ranking_ids if gid in valid_ids_set]
                     
                     # ランキング順にギャラリー情報を取得
                     if filtered_ranking_ids:
@@ -2003,198 +2358,86 @@ async def search_galleries_get(
                         result = await db.execute(text(query), params)
                         results = [_serialize_gallery(row) for row in result.mappings()]
                         
-                        # ランキング検索でもファイル情報の処理を行う
-                        for result in results:
-                            try:
-                                files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
-                                files_list = files_data if isinstance(files_data, list) else []
-                                gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
-                                result["image_urls"] = await geturl(gallery_info)
-                                stored_pages = result.get("page_count")
-                                if not isinstance(stored_pages, int) or stored_pages < 0:
-                                    result["page_count"] = len(files_list)
-                            except (json.JSONDecodeError, TypeError) as e:
-                                logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
-                                result["image_urls"] = []
-                                result["page_count"] = 0
-                            if "files" in result:
-                                del result["files"]
+                        # ファイル情報の処理を並列化
+                        await _process_results_with_image_urls(results)
                     else:
                         results = []
                 else:
-                    # 通常の検索
-                    results = await search_galleries_fast(
+                    # 通常の検索 - 検索クエリとCOUNTクエリを並列実行
+                    search_task = search_galleries_fast(
                         db,
                         title=title,
                         tag=tag,
                         exclude_tag=exclude_tag,
                         character=character,
                         limit=limit,
+                        offset=offset,
                         after_created_at=after_created_at,
                         after_gallery_id=after_gallery_id,
                         min_pages=min_pages,
                         max_pages=max_pages,
                     )
+                    
+                    count_task = _get_search_count(
+                        title=title,
+                        tag=tag,
+                        exclude_tag=exclude_tag,
+                        character=character,
+                        min_pages=min_pages,
+                        max_pages=max_pages,
+                        known_tags=known_tags,
+                    )
+                    
+                    # 検索とCOUNTを同時に実行
+                    results, total_count = await asyncio.gather(search_task, count_task)
                          
-                    for result in results:
-                        try:
-                            files_data = json.loads(result["files"]) if isinstance(result.get("files"), str) else result.get("files")
-                            files_list = files_data if isinstance(files_data, list) else []
-                            gallery_info = {"gallery_id": result["gallery_id"], "files": files_data}
-                            result["image_urls"] = await geturl(gallery_info)
-                            stored_pages = result.get("page_count")
-                            if not isinstance(stored_pages, int) or stored_pages < 0:
-                                result["page_count"] = len(files_list)
-                        except (json.JSONDecodeError, TypeError) as e:
-                            logger.error(f"files 解析エラー: {e}, gallery_id: {result['gallery_id']}")
-                            result["image_urls"] = []
-                            result["page_count"] = 0
-                        if "files" in result:
-                            del result["files"]
-        
-            # レスポンス形式を統一
-        if sort_by and sort_by in ['daily', 'weekly', 'monthly', 'yearly', 'all_time']:
-            # ランキングの場合のレスポンス
-            ranking_ids = await _load_ranking_ids(sort_by)
-            
-            # タグフィルタリング後の合計数を計算
-            if tag:
-                known_tags = await _get_known_tag_set(db)
-                tag_terms = _parse_tag_terms(tag, known_tags)
-                if tag_terms:
-                    tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
-                    tag_query = f"""
-                        SELECT DISTINCT g.gallery_id
-                        FROM galleries AS g
-                        WHERE {' AND '.join(tag_exists_clauses)}
-                    """
-                    tag_result = await db.execute(text(tag_query), tag_params)
-                    tag_gallery_ids = {row.gallery_id for row in tag_result.fetchall()}
-                    filtered_ranking_ids = [gid for gid in ranking_ids if gid in tag_gallery_ids]
-                else:
-                    filtered_ranking_ids = []
-            else:
-                filtered_ranking_ids = ranking_ids
-            
-            # ページ数フィルターを適用した合計数を計算
-            total_count = len(filtered_ranking_ids)
-            if min_pages is not None or max_pages is not None:
-                min_val = max(min_pages or 0, 0)
-                max_val = max_pages if max_pages is not None else 10_000
-                if max_val < min_val:
-                    max_val = min_val
+                    # ファイル情報の処理を並列化
+                    await _process_results_with_image_urls(results)
 
-                # タグフィルターとページ数フィルターを組み合わせてカウント
-                if tag:
-                    # 既にタグフィルターされたランキングIDがfiltered_ranking_idsにあるので、
-                    # それにページ数フィルターを適用する
-                    if len(filtered_ranking_ids) == 0:
-                        total_count = 0
+                # レスポンス形式を統一
+                if sort_by and sort_by in ['daily', 'weekly', 'monthly', 'yearly', 'all_time']:
+                    # ランキングの場合のレスポンス
+                    # filtered_ranking_idsには既にタグフィルターとページ数フィルターが適用済み
+                    total_count = len(filtered_ranking_ids)
+                    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+                    return {
+                        "results": results,
+                        "count": len(results),
+                        "total": total_count,
+                        "total_count": total_count,
+                        "total_pages": total_pages,
+                        "has_more": (offset + limit) < total_count,
+                        "ranking_type": sort_by,
+                    }
+                else:
+                    # 通常検索の場合のレスポンス
+                    next_after_created_at = None
+                    next_after_gallery_id = None
+                    if results and len(results) == limit:
+                        last_item = results[-1]
+                        next_after_created_at = last_item.get("created_at")
+                        next_after_gallery_id = last_item.get("gallery_id")
+                    
+                    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+                    
+                    # カーソルページネーションを使っているかどうかで判定ロジックを変える
+                    # after_created_at/id が指定されている場合は offset ベースの判定はできない（offset=0前提のため）
+                    is_cursor_pagination = after_created_at is not None or after_gallery_id is not None
+                    if is_cursor_pagination:
+                        has_more = len(results) == limit
                     else:
-                        # ページ数フィルターを適用（バッチ処理）
-                        count_batch_size = 900
-                        total_count = 0
-                        for i in range(0, len(filtered_ranking_ids), count_batch_size):
-                            batch = filtered_ranking_ids[i:i + count_batch_size]
-                            placeholders = ', '.join([f':id_{j}' for j in range(len(batch))])
-                            params = {f'id_{j}': gallery_id for j, gallery_id in enumerate(batch)}
-                            params["min_pages"] = min_val
-                            params["max_pages"] = max_val
+                        has_more = (offset + limit) < total_count
 
-                            count_query = f"""
-                                SELECT COUNT(*) as count
-                                FROM galleries AS g
-                                WHERE g.gallery_id IN ({placeholders})
-                                AND g.page_count BETWEEN :min_pages AND :max_pages
-                            """
-                            count_result = await db.execute(text(count_query), params)
-                            total_count += count_result.scalar() or 0
-                else:
-                    # タグフィルターがない場合、ランキングテーブルとギャラリーをJOINしてカウント
-                    params = {"min_pages": min_val, "max_pages": max_val, "ranking_type": sort_by}
-                    count_query = """
-                        SELECT COUNT(*) as count
-                        FROM galleries AS g
-                        INNER JOIN gallery_rankings AS gr ON g.gallery_id = gr.gallery_id
-                        WHERE gr.ranking_type = :ranking_type
-                        AND g.page_count BETWEEN :min_pages AND :max_pages
-                    """
-                    count_result = await db.execute(text(count_query), params)
-                    total_count = count_result.scalar() or 0
-            else:
-                # ページフィルターがない場合
-                total_count = len(filtered_ranking_ids)
-            
-            total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-            return {
-                "results": results,
-                "count": len(results),
-                "total": total_count,
-                "total_pages": total_pages,
-                "has_more": (offset + limit) < total_count,
-                "ranking_type": sort_by,
-            }
-        else:
-            # 通常検索の場合のレスポンス
-            next_after_created_at = None
-            next_after_gallery_id = None
-            if results and len(results) == limit:
-                last_item = results[-1]
-                next_after_created_at = last_item.get("created_at")
-                next_after_gallery_id = last_item.get("gallery_id")
-
-            # 通常検索の場合は総件数を取得する必要がある
-            count_query = """
-                SELECT COUNT(*) as total_count
-                FROM galleries AS g
-                WHERE g.manga_type IN ('doujinshi', 'manga')
-            """
-            
-            # タグフィルターを含む総件数クエリを構築
-            count_params = {}
-            count_where_clauses = ["g.manga_type IN ('c', 'manga')"]
-            
-            if tag:
-                known_tags = await _get_known_tag_set(db)
-                tag_terms = _parse_tag_terms(tag, known_tags)
-                if tag_terms:
-                    exists_clauses, exists_params = _build_tag_exists_clause("g", tag_terms)
-                    count_where_clauses.extend(exists_clauses)
-                    count_params.update(exists_params)
-            
-            if exclude_tag:
-                known_tags = await _get_known_tag_set(db)
-                exclude_tag_terms = _parse_tag_terms(exclude_tag, known_tags)
-                if exclude_tag_terms:
-                    not_exists_clauses, not_exists_params = _build_tag_not_exists_clause("g", exclude_tag_terms)
-                    count_where_clauses.extend(not_exists_clauses)
-                    count_params.update(not_exists_params)
-            
-            if min_pages is not None or max_pages is not None:
-                min_val = max(min_pages or 0, 0)
-                max_val = max_pages if max_pages is not None else 10_000
-                if max_val < min_val:
-                    max_val = min_val
-                count_params["min_pages"] = min_val
-                count_params["max_pages"] = max_val
-                count_where_clauses.append("g.page_count BETWEEN :min_pages AND :max_pages")
-            
-            if count_where_clauses:
-                count_query += " AND " + " AND ".join(count_where_clauses)
-            
-            count_result = await db.execute(text(count_query), count_params)
-            total_count = count_result.scalar() or 0
-            total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-            
-            return {
-                "results": results,
-                "count": len(results),
-                "total": total_count,
-                "total_pages": total_pages,
-                "has_more": len(results) == limit,
-                "next_after_created_at": next_after_created_at,
-                "next_after_gallery_id": next_after_gallery_id,
-            }
+                    return {
+                        "results": results,
+                        "count": len(results),
+                        "total": total_count,
+                        "total_count": total_count,
+                        "total_pages": total_pages,
+                        "has_more": has_more,
+                        "next_after_created_at": next_after_created_at,
+                        "next_after_gallery_id": next_after_gallery_id,
+                    }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
 
@@ -2202,7 +2445,7 @@ async def search_galleries_get(
 async def proxy_request(path: str):
     # パスにプロトコルがない場合は https:// を付与
     url = path if path.startswith(("http://", "https://")) else f"https://{path}"
-    logger.info(f"プロキシリクエスト: {url}")
+    print(f"プロキシリクエスト: {url}")
     headers = _build_headers()
 
     # セッションが未初期化でも動くようフォールバック
@@ -2215,7 +2458,7 @@ async def proxy_request(path: str):
         for attempt in range(max_retries + 1):
             try:
                 async with session.get(url, headers=headers) as resp:
-                    logger.info(f"レスポンス: Status={resp.status}, Content-Type={resp.content_type}")
+                    print(f"レスポンス: Status={resp.status}, Content-Type={resp.content_type}")
                     if resp.status >= 500:
                         if attempt < max_retries:
                             await asyncio.sleep(retry_delay * (2 ** attempt))
@@ -2223,12 +2466,20 @@ async def proxy_request(path: str):
                         raise HTTPException(status_code=resp.status, detail=f"Upstream 5xx: {resp.status}")
                     if resp.status == 404:
                         # 404エラーの場合はImageUriResolverを強制同期して再試行
-                        logger.info("404エラーを検出、ImageUriResolverを再同期します")
-                        try:
-                            await ImageUriResolver.async_synchronize(force=True)
-                            logger.info("ImageUriResolverの再同期が完了しました。再試行します")
-                        except Exception as e:
-                            logger.error(f"ImageUriResolver再同期エラー: {e}")
+                        # DoS防止のための簡易的なレートリミット: 最終同期から一定時間経過していない場合はスキップ
+                        global _IMAGE_RESOLVER_FAILURE_AT
+                        now_ts = time.monotonic()
+                        if now_ts - _IMAGE_RESOLVER_FAILURE_AT > _IMAGE_RESOLVER_FAILURE_COOLDOWN:
+                            print("404エラーを検出、ImageUriResolverを再同期します")
+                            try:
+                                await ImageUriResolver.async_synchronize(force=True)
+                                _IMAGE_RESOLVER_FAILURE_AT = now_ts
+                                print("ImageUriResolverの再同期が完了しました。再試行します")
+                            except Exception as e:
+                                print(f"ImageUriResolver再同期エラー: {e}")
+                        else:
+                            print("404エラーを検出しましたが、再同期のクールダウン中です")
+
                         if attempt < max_retries:
                             await asyncio.sleep(retry_delay * (2 ** attempt))
                             continue
@@ -2337,9 +2588,9 @@ async def _warmup_connections(session: aiohttp.ClientSession):
         url = f"https://{domain}"
         try:
             async with session.head(url) as resp:
-                logger.info(f"事前接続成功: {url} (Status: {resp.status})")
+                print(f"事前接続成功: {url} (Status: {resp.status})")
         except Exception as e:
-            logger.error(f"事前接続失敗: {url} (Error: {str(e)})")
+            print(f"事前接続失敗: {url} (Error: {str(e)})")
 
 async def _download_single_url(session: aiohttp.ClientSession, url: str, headers: Dict[str, str]) -> Dict[str, str]:
     try:
@@ -2383,8 +2634,13 @@ async def download_multiple(request: DownloadRequest):
 async def download_multipart(request: MultipartDownloadRequest):
     if request.chunk_size <= 0:
         raise HTTPException(status_code=400, detail="chunk_size must be > 0")
+    if request.chunk_size > 10 * 1024 * 1024:  # 10MB limit
+         request.chunk_size = 10 * 1024 * 1024
+
     if request.max_connections <= 0:
         raise HTTPException(status_code=400, detail="max_connections must be > 0")
+    if request.max_connections > 16:
+        request.max_connections = 16
 
     headers = _build_headers(request.headers)
     timeout = aiohttp.ClientTimeout(total=None)
@@ -2440,7 +2696,7 @@ async def get_gallery(gallery_id: int):
                 gallery_info = {"gallery_id": gallery.gallery_id, "files": files_list}
                 image_urls = await geturl(gallery_info)
             except (json.JSONDecodeError, TypeError) as e:
-                logger.error(f"files 解析エラー: {e}, gallery_id: {gallery.gallery_id}")
+                print(f"files 解析エラー: {e}, gallery_id: {gallery.gallery_id}")
                 image_urls = []
                 files_list = []
             return {
@@ -2560,6 +2816,7 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"タグ情報の取得エラー: {str(e)}")
+
 @app.get("/api/popular-tags")
 async def get_popular_tags(limit: int = 10, offset: int = 0, exclude_existing: bool = True):
     """
@@ -3175,139 +3432,117 @@ async def get_rankings(
     limit: int = 50,
     offset: int = 0,
     tag: Optional[str] = None,
-    request: Request = None
 ):
     """
     ランキングデータを取得するAPI - searchエンドポイントにリダイレクト
     ranking_type: 'daily', 'weekly', 'monthly', 'yearly', 'all_time'
     tag: タグでフィルタリング（オプション）
     """
+    if limit > 200:
+        limit = 200
+        
     try:
-        # searchエンドポイントのURLを構築
-        base_url = str(request.base_url).rstrip('/')
-        search_url = f"{base_url}/search"
-        
-        # クエリパラメータを構築
-        params = {
-            "sort_by": ranking_type,
-            "limit": limit,
-            "offset": offset,
-        }
-        if tag:
-            params["tag"] = tag
-        
-        # searchエンドポイントを呼び出して結果を取得
-        try:
-            async with get_db_session() as db:
-                # ランキングデータを取得
-                ranking_ids = await _load_ranking_ids(ranking_type)
+        async with get_db_session() as db:
+            # ランキングデータを取得
+            ranking_ids = await _load_ranking_ids(ranking_type)
                 
-                # タグフィルタリング
-                if tag:
-                    known_tags = await _get_known_tag_set(db)
-                    tag_terms = _parse_tag_terms(tag, known_tags)
-                    if tag_terms:
-                        tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
-                        tag_query = f"""
-                            SELECT DISTINCT g.gallery_id
-                            FROM galleries AS g
-                            WHERE {' AND '.join(tag_exists_clauses)}
-                        """
-                        tag_result = await db.execute(text(tag_query), tag_params)
-                        tag_gallery_ids = {row.gallery_id for row in tag_result.fetchall()}
-                        filtered_ranking_ids = [gid for gid in ranking_ids if gid in tag_gallery_ids]
-                    else:
-                        filtered_ranking_ids = []
-                else:
-                    filtered_ranking_ids = ranking_ids
-                
-                # ページネーションを適用
-                start_idx = offset
-                end_idx = min(start_idx + limit, len(filtered_ranking_ids))
-                paginated_ids = filtered_ranking_ids[start_idx:end_idx]
-                
-                # ギャラリー情報を取得
-                if paginated_ids:
-                    placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
-                    params_db = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
-                    order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
-                    order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
-                    
-                    query = f"""
-                        SELECT
-                            g.gallery_id,
-                            g.japanese_title,
-                            g.tags,
-                            g.characters,
-                            g.files,
-                            g.page_count,
-                            g.created_at,
-                            g.created_at_unix
+            # タグフィルタリング
+            if tag:
+                known_tags = await _get_known_tag_set(db)
+                tag_terms = _parse_tag_terms(tag, known_tags)
+                if tag_terms:
+                    tag_exists_clauses, tag_params = _build_tag_exists_clause("g", tag_terms)
+                    tag_query = f"""
+                        SELECT DISTINCT g.gallery_id
                         FROM galleries AS g
-                        WHERE g.gallery_id IN ({placeholders})
-                        ORDER BY {order_case}
+                        WHERE {' AND '.join(tag_exists_clauses)}
                     """
-                    
-                    result = await db.execute(text(query), params_db)
-                    rows = result.fetchall()
-                    
-                    # 画像URLを取得してレスポンスを構築
-                    rankings = []
-                    for rank_position, row in enumerate(rows, start=offset + 1):
-                        ranking_data = {
-                            "gallery_id": row.gallery_id,
-                            "ranking_type": ranking_type,
-                            "rank": rank_position,
-                            "japanese_title": row.japanese_title,
-                            "tags": row.tags,
-                            "characters": row.characters,
-                            "page_count": row.page_count,
-                            "created_at": row.created_at,
-                            "created_at_unix": row.created_at_unix
-                        }
-                        
-                        # 画像URLを取得
-                        try:
-                            files_data = json.loads(row.files) if hasattr(row, 'files') and row.files else []
-                            files_list = files_data if isinstance(files_data, list) else []
-                            gallery_info = {"gallery_id": row.gallery_id, "files": files_list}
-                            ranking_data["image_urls"] = await geturl(gallery_info)
-                        except (json.JSONDecodeError, TypeError, AttributeError) as e:
-                            logger.error(f"ランキングデータの画像URL取得エラー: {e}, gallery_id: {row.gallery_id}")
-                            ranking_data["image_urls"] = []
-                        
-                        rankings.append(ranking_data)
-                    
-                    return {
-                        "rankings": rankings,
-                        "count": len(rankings),
-                        "total": len(filtered_ranking_ids),
-                        "has_more": (offset + limit) < len(filtered_ranking_ids)
-                    }
+                    tag_result = await db.execute(text(tag_query), tag_params)
+                    tag_gallery_ids = {row.gallery_id for row in tag_result.fetchall()}
+                    filtered_ranking_ids = [gid for gid in ranking_ids if gid in tag_gallery_ids]
                 else:
-                    return {
-                        "rankings": [],
-                        "count": 0,
-                        "total": 0,
-                        "has_more": False
-                    }
-        except Exception as e:
-            logger.error(f"ランキングデータの取得エラー: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"ランキングデータの取得エラー: {str(e)}")
+                    filtered_ranking_ids = []
+            else:
+                filtered_ranking_ids = ranking_ids
             
+            # ページネーションを適用
+            start_idx = offset
+            end_idx = min(start_idx + limit, len(filtered_ranking_ids))
+            paginated_ids = filtered_ranking_ids[start_idx:end_idx]
+            
+            # ギャラリー情報を取得
+            if paginated_ids:
+                placeholders = ', '.join([f':id_{i}' for i in range(len(paginated_ids))])
+                params_db = {f'id_{i}': gallery_id for i, gallery_id in enumerate(paginated_ids)}
+                order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
+                order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
+                
+                query = f"""
+                    SELECT
+                        g.gallery_id,
+                        g.japanese_title,
+                        g.tags,
+                        g.characters,
+                        g.files,
+                        g.page_count,
+                        g.created_at,
+                        g.created_at_unix
+                    FROM galleries AS g
+                    WHERE g.gallery_id IN ({placeholders})
+                    ORDER BY {order_case}
+                """
+                
+                result = await db.execute(text(query), params_db)
+                rows = result.fetchall()
+                
+                # 画像URLを並列で取得（高速化）
+                rankings = []
+                geturl_tasks = []
+                
+                for row in rows:
+                    try:
+                        files_data = json.loads(row.files) if hasattr(row, 'files') and row.files else []
+                        files_list = files_data if isinstance(files_data, list) else []
+                    except (json.JSONDecodeError, TypeError, AttributeError):
+                        files_list = []
+                    gallery_info = {"gallery_id": row.gallery_id, "files": files_list}
+                    geturl_tasks.append(geturl(gallery_info))
+                
+                # asyncio.gatherで全てのgeturlコルーチンを並列実行
+                image_urls_results = await asyncio.gather(*geturl_tasks, return_exceptions=True)
+                
+                # 結果をマージしてレスポンスを構築
+                for rank_position, (row, image_urls) in enumerate(zip(rows, image_urls_results), start=offset + 1):
+                    ranking_data = {
+                        "gallery_id": row.gallery_id,
+                        "ranking_type": ranking_type,
+                        "rank": rank_position,
+                        "japanese_title": row.japanese_title,
+                        "tags": row.tags,
+                        "characters": row.characters,
+                        "page_count": row.page_count,
+                        "created_at": row.created_at,
+                        "created_at_unix": row.created_at_unix,
+                        "image_urls": image_urls if not isinstance(image_urls, Exception) else []
+                    }
+                    rankings.append(ranking_data)
+                
+                return {
+                    "rankings": rankings,
+                    "count": len(rankings),
+                    "total": len(filtered_ranking_ids),
+                    "has_more": (offset + limit) < len(filtered_ranking_ids)
+                }
+            else:
+                return {
+                    "rankings": [],
+                    "count": 0,
+                    "total": 0,
+                    "has_more": False
+                }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ランキングAPIエラー: {str(e)}")
-
-@app.post("/api/rankings/update")
-async def update_rankings():
-    """
-    ランキングデータを更新するAPI（現在は無効化）
-    *_ids.txtファイルから直接読み込むため、このエンドポイントは不要
-    """
-    return {"status": "disabled", "message": "ランキング更新は無効化されています。*_ids.txtファイルから直接読み込まれます。"}
-
-# ランキング更新関数は不要になったため削除
-# *_ids.txtファイルから直接読み込むため
+        print(f"ランキングデータの取得エラー: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"ランキングデータの取得エラー: {str(e)}")
 
 # =========================
 # 定期同期タスク
@@ -3318,13 +3553,13 @@ async def hourly_sync_task():
             current_time = datetime.now()
             next_hour = (current_time + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
             wait_seconds = (next_hour - current_time).total_seconds()
-            logger.info(f"次回の ImageUriResolver 同期は {next_hour.strftime('%Y-%m-%d %H:%M:%S')} に実行")
+            print(f"次回の ImageUriResolver 同期は {next_hour.strftime('%Y-%m-%d %H:%M:%S')} に実行")
             await asyncio.sleep(wait_seconds)
-            logger.info("ImageUriResolver.async_synchronize() 実行")
+            print("ImageUriResolver.async_synchronize() 実行")
             await ImageUriResolver.async_synchronize()
-            logger.info("ImageUriResolver 同期完了")
+            print("ImageUriResolver 同期完了")
         except Exception as e:
-            logger.error(f"同期中にエラー: {str(e)}")
+            print(f"同期中にエラー: {str(e)}")
             await asyncio.sleep(3600)
 
 async def daily_ranking_update_task():
@@ -3338,10 +3573,10 @@ async def daily_ranking_update_task():
                 next_update = next_update + timedelta(days=1)
             
             wait_seconds = (next_update - now).total_seconds()
-            logger.info(f"次回のランキングファイル更新は {next_update.strftime('%Y-%m-%d %H:%M:%S')} に実行")
+            print(f"次回のランキングファイル更新は {next_update.strftime('%Y-%m-%d %H:%M:%S')} に実行")
             await asyncio.sleep(wait_seconds)
             
-            logger.info("ランキングファイル更新開始")
+            print("ランキングファイル更新開始")
             try:
                 # hitomi.pyのdownload_all_popular_files()を実行
                 import sys
@@ -3358,21 +3593,76 @@ async def daily_ranking_update_task():
                     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)  # 5分タイムアウト
                     
                     if process.returncode == 0:
-                        logger.info("ランキングファイル更新完了")
-                        logger.info(f"出力: {stdout}")
+                        print("ランキングファイル更新完了")
+                        print(f"出力: {stdout}")
                     else:
-                        logger.error(f"ランキングファイル更新エラー: {stderr}")
+                        print(f"ランキングファイル更新エラー: {stderr}")
                 except asyncio.TimeoutError:
                     process.terminate()
                     await process.wait()
-                    logger.error("ランキングファイル更新がタイムアウトしました")
+                    print("ランキングファイル更新がタイムアウトしました")
             except Exception as e:
-                logger.error(f"ランキングファイル更新中にエラー: {str(e)}")
-            except Exception as e:
-                logger.error(f"ランキングファイル更新中にエラー: {str(e)}")
+                print(f"ランキングファイル更新中にエラー: {str(e)}")
         except Exception as e:
-            logger.error(f"ランキング更新タスク全体でエラー: {str(e)}")
+            print(f"ランキング更新タスク全体でエラー: {str(e)}")
             await asyncio.sleep(3600)  # エラーの場合は1時間待って再試行
+
+async def _precache_search_counts():
+    """
+    起動時に人気の検索条件に対するCOUNT結果をプリキャッシュする。
+    これにより、ユーザーの初回リクエストを高速化。
+    """
+    try:
+        print("[precache] 検索結果COUNTプリキャッシュ開始...")
+        start_time = time.time()
+        
+        # 人気のmin_pages値をプリキャッシュ
+        popular_min_pages = [10, 15, 20, 30, 50]
+        
+        # 1. ページ数範囲のギャラリーIDセットをプリキャッシュ（ランキング+min_pages用）
+        for min_pages in popular_min_pages:
+            try:
+                await _get_page_range_gallery_ids(min_pages, 10_000)
+            except Exception as e:
+                print(f"[precache] page_range min_pages={min_pages}のプリキャッシュ失敗: {e}")
+        
+        print(f"[precache] ページ数範囲キャッシュ完了 ({time.time() - start_time:.1f}秒)")
+        
+        # 2. COUNTクエリのプリキャッシュ（通常検索用）
+        async with get_db_session() as db:
+            for min_pages in [None] + popular_min_pages:
+                try:
+                    cache_key = _make_search_count_cache_key(
+                        None, None, None, None, min_pages, None
+                    )
+                    
+                    # 既にキャッシュされている場合はスキップ
+                    if cache_key in _SEARCH_COUNT_CACHE:
+                        continue
+                    
+                    count_query = """
+                        SELECT COUNT(*) as total_count
+                        FROM galleries AS g
+                        WHERE g.manga_type IN ('doujinshi', 'manga')
+                    """
+                    count_params = {}
+                    
+                    if min_pages is not None:
+                        count_params["min_pages"] = min_pages
+                        count_params["max_pages"] = 10_000
+                        count_query += " AND g.page_count BETWEEN :min_pages AND :max_pages"
+                    
+                    count_result = await db.execute(text(count_query), count_params)
+                    total_count = count_result.scalar() or 0
+                    
+                    _SEARCH_COUNT_CACHE[cache_key] = total_count
+                except Exception as e:
+                    print(f"[precache] min_pages={min_pages}のプリキャッシュ失敗: {e}")
+        
+        elapsed = time.time() - start_time
+        print(f"[precache] 全プリキャッシュ完了 ({elapsed:.1f}秒)")
+    except Exception as e:
+        print(f"[precache] プリキャッシュエラー: {e}")
 
 # =========================
 # ライフサイクル
@@ -3383,17 +3673,20 @@ async def startup_event():
 
     # DB 初期化
     await init_database()
-    logger.info("メインDB初期化完了")
+    print("メインDB初期化完了")
+    # バックフィル処理は同期的に実行（バックグラウンド実行すると他の操作と競合してDB破損の原因になる）
+    await _backfill_database_data()
+
     await init_tracking_database()
-    logger.info("トラッキングDB初期化完了")
+    print("トラッキングDB初期化完了")
 
     # ImageUriResolver 初期化
     try:
-        logger.info("ImageUriResolver 初期化")
+        print("ImageUriResolver 初期化")
         await ImageUriResolver.async_synchronize()
-        logger.info("ImageUriResolver 初期化完了")
+        print("ImageUriResolver 初期化完了")
     except Exception as e:
-        logger.error(f"ImageUriResolver 初期化エラー: {str(e)}")
+        print(f"ImageUriResolver 初期化エラー: {str(e)}")
 
     # HTTP セッション
     connector = aiohttp.TCPConnector(
@@ -3411,15 +3704,18 @@ async def startup_event():
     try:
         await _warmup_connections(global_session)
     except Exception as e:
-        logger.error(f"事前接続エラー: {str(e)}")
+        print(f"事前接続エラー: {str(e)}")
 
     # 同期スケジューラ開始
     global_state.scheduler_task = asyncio.create_task(hourly_sync_task())
-    logger.info("同期スケジューラ開始")
+    print("同期スケジューラ開始")
     
     # ランキング更新スケジューラ開始
     global_state.ranking_scheduler_task = asyncio.create_task(daily_ranking_update_task())
-    logger.info("ランキングファイル更新スケジューラ開始")
+    print("ランキングファイル更新スケジューラ開始")
+    
+    # 検索結果COUNTクエリのプリキャッシュ（初回リクエスト高速化）
+    asyncio.create_task(_precache_search_counts())
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -3439,4 +3735,5 @@ if __name__ == "__main__":
                         default="info", help="Logging level (default: info)")
     args = parser.parse_args()
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log)
+    #uvicorn.run(app, host=args.host, port=args.port, log_level=args.log)
+    uvicorn.run(app, host=args.host, port=args.port)
