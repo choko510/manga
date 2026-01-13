@@ -3735,5 +3735,4 @@ if __name__ == "__main__":
                         default="info", help="Logging level (default: info)")
     args = parser.parse_args()
 
-    #uvicorn.run(app, host=args.host, port=args.port, log_level=args.log)
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log)

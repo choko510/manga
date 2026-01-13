@@ -2,13 +2,18 @@
     "ahegao": {
         "aliases": [
             "あへがお",
-            "変顔"
+            "あへかお"
         ],
+        "description": "性行為時のキャラクターのオーガズムの表情。白目・舌出し・ヨダレの3点が揃ったものを指すことが多い。",
         "translation": "アへ顔"
+    },
+    "amputee": {
+        "translation": "欠損"
     },
     "anal": {
         "aliases": [
-            "アナニー"
+            "お尻",
+            "おしり"
         ],
         "translation": "アナル"
     },
@@ -16,133 +21,494 @@
         "translation": "アナルセックス"
     },
     "anthology": {
+        "description": "複数の作者による作品を、特定のテーマや基準で選び集めた作品集",
         "translation": "アンソロジー"
     },
+    "apron": {
+        "translation": "エプロン"
+    },
+    "artbook": {
+        "description": "一枚絵の集合体。漫画と違いストーリーがない。",
+        "translation": "アートブック"
+    },
+    "bald": {
+        "description": "ありのままという意味もある",
+        "translation": "ハゲ"
+    },
     "bbm": {
+        "aliases": [
+            "ふとっただんせい"
+        ],
         "translation": "太った男性"
     },
+    "bbw": {
+        "aliases": [
+            "ふとったじょせい"
+        ],
+        "translation": "太った女性"
+    },
+    "bdsm": {
+        "aliases": [
+            "しぎゃく"
+        ],
+        "description": "拘束,体罰,加虐,被虐の頭文字をとったもの",
+        "translation": "嗜虐"
+    },
     "beauty mark": {
+        "aliases": [
+            "黒子"
+        ],
         "translation": "ほくろ"
     },
+    "bestiality": {
+        "aliases": [
+            "じゅうかん"
+        ],
+        "description": "人間が人間以外の動物と行う性行為",
+        "translation": "獣姦"
+    },
     "big areolae": {
+        "aliases": [
+            "でかいにゅうりん"
+        ],
         "translation": "でかい乳輪"
     },
     "big ass": {
+        "aliases": [
+            "でかいしり"
+        ],
         "translation": "でかい尻"
+    },
+    "big balls": {
+        "description": "金玉が並はずれて大きいこと。",
+        "translation": "巨玉"
     },
     "big breasts": {
         "aliases": [
-            "oppai",
-            "おっぱい"
+            "きょにゅう"
         ],
         "translation": "巨乳"
     },
+    "big nipples": {
+        "aliases": [
+            "おおきなちくび"
+        ],
+        "translation": "大きな乳首"
+    },
     "big penis": {
+        "aliases": [
+            "だんこん",
+            "きょこん"
+        ],
         "translation": "巨根"
     },
+    "bike shorts": {
+        "description": "自転車競技などの際に用いられるサイクルウェアのズボン",
+        "translation": "レーサーパンツ"
+    },
     "bikini": {
-        "aliases": [
-            "水着"
-        ],
         "translation": "ビキニ"
+    },
+    "bisexual": {
+        "aliases": [
+            "りょうせいあいしゃ",
+            "両性愛者"
+        ],
+        "description": "両性愛者",
+        "translation": "バイセクシャル"
+    },
+    "blackmail": {
+        "aliases": [
+            "きょうはく"
+        ],
+        "translation": "脅迫"
     },
     "blindfold": {
         "aliases": [
-            "アイマスク"
+            "めかくし"
         ],
         "translation": "目隠し"
+    },
+    "blood": {
+        "translation": "血"
+    },
+    "bloomers": {
+        "translation": "ブルマ"
     },
     "blowjob": {
         "translation": "フェラチオ"
     },
+    "blowjob face": {
+        "aliases": [
+            "ふぇらがお"
+        ],
+        "translation": "フェラ顔"
+    },
+    "body writing": {
+        "aliases": [
+            "からだにらくがき",
+            "ボディペイント"
+        ],
+        "translation": "身体に落書き"
+    },
+    "bodysuit": {
+        "translation": "ボディスーツ"
+    },
     "bondage": {
         "aliases": [
-            "縛り",
-            "SM"
+            "そくばく"
         ],
         "translation": "束縛"
     },
-    "bukkake": {
+    "breast expansion": {
         "aliases": [
-            "ぶっかけ",
-            "ぶっ掛け"
+            "ぼうにゅう"
         ],
+        "description": "胸が本来の容姿よりも盛られている",
+        "translation": "膨乳"
+    },
+    "breast feeding": {
+        "aliases": [
+            "じゅにゅう"
+        ],
+        "translation": "授乳"
+    },
+    "bukkake": {
         "translation": "ぶっかけ"
     },
     "bunny girl": {
-        "aliases": [
-            "バニー",
-            "うさぎコス"
-        ],
         "translation": "バニーガール"
     },
+    "business suit": {
+        "translation": "ビジネススーツ"
+    },
+    "c79": {
+        "translation": ""
+    },
+    "c81": {
+        "translation": ""
+    },
+    "c83": {
+        "translation": ""
+    },
+    "c87": {
+        "translation": ""
+    },
+    "c89": {
+        "translation": ""
+    },
+    "c91": {
+        "translation": ""
+    },
+    "c92": {
+        "translation": ""
+    },
+    "c93": {
+        "translation": ""
+    },
+    "c94": {
+        "translation": ""
+    },
+    "c95": {
+        "translation": ""
+    },
+    "c96": {
+        "translation": ""
+    },
+    "c97": {
+        "translation": ""
+    },
+    "catboy": {
+        "description": "ケモノのうち、性別が男性であるもの。",
+        "translation": "オスケモ"
+    },
     "catgirl": {
-        "aliases": [
-            "ネコミミ",
-            "猫耳"
-        ],
+        "description": "猫の見た目の娘",
         "translation": "キャットガール"
+    },
+    "cbt": {
+        "description": "陰茎と睾丸に対する責め、あるいは拷問のこと",
+        "translation": "CBT"
+    },
+    "cervix penetration": {
+        "translation": "挿入"
+    },
+    "chastity belt": {
+        "translation": "貞操帯"
     },
     "cheating": {
         "aliases": [
-            "寝取られ",
-            "不倫"
+            "うわき"
         ],
         "translation": "浮気"
     },
+    "cheerleader": {
+        "translation": "チアリーダー"
+    },
+    "chikan": {
+        "translation": "痴漢"
+    },
+    "chloroform": {
+        "description": "薬物をハンカチなどに含ませた上で対象者の吸気口を覆う事で眠らせる",
+        "translation": "クロロシーン"
+    },
+    "clothed paizuri": {
+        "translation": ""
+    },
     "collar": {
         "aliases": [
-            "チョーカー"
+            "くびわ"
         ],
         "translation": "首輪"
     },
     "condom": {
         "translation": "コンドーム"
     },
+    "corruption": {
+        "aliases": [
+            "じょうたいへんか"
+        ],
+        "description": "人格変化や悪堕ち、異形化といったシチュエーション",
+        "translation": "状態変化"
+    },
+    "cosplaying": {
+        "translation": "コスプレ"
+    },
+    "cowgirl": {
+        "aliases": [
+            "うしむすめ",
+            "きじょうい"
+        ],
+        "description": "牛をモチーフにして描かれた女性、騎乗位も同様のタグが使われる。",
+        "translation": "牛娘,騎乗位"
+    },
     "crossdressing": {
+        "aliases": [
+            "じょそう"
+        ],
         "translation": "女装"
     },
+    "crotch tattoo": {
+        "aliases": [
+            "いんもん"
+        ],
+        "translation": "淫紋"
+    },
+    "crying": {
+        "translation": "涙"
+    },
+    "cumflation": {
+        "aliases": [
+            "せいえきぼて"
+        ],
+        "translation": "精液ボテ"
+    },
+    "cunnilingus": {
+        "description": "女性器を直接舌で舐める行為",
+        "translation": "クンニ"
+    },
+    "dark nipples": {
+        "translation": "黒乳首"
+    },
     "dark skin": {
+        "aliases": [
+            "くろいはだ"
+        ],
         "translation": "黒い肌"
     },
+    "daughter": {
+        "aliases": [
+            "むすめ"
+        ],
+        "translation": "娘"
+    },
+    "deepthroat": {
+        "description": "喉の奥まで男性器を挿入して行うフェラチオ",
+        "translation": "ディープスロート"
+    },
     "defloration": {
+        "aliases": [
+            "しょじょそうしつ"
+        ],
+        "translation": "処女喪失"
+    },
+    "demon girl": {
+        "aliases": [
+            "あくまっこ"
+        ],
+        "translation": "悪魔っ娘"
+    },
+    "detached sleeves": {
         "translation": ""
+    },
+    "diaper": {
+        "translation": ""
+    },
+    "dickgirl on dickgirl": {
+        "translation": "ディックガール同士"
+    },
+    "dickgirl on female": {
+        "aliases": [
+            "じょせいとでぃっくがーる"
+        ],
+        "description": "百合だけど百合じゃない",
+        "translation": "女性とディックガール"
+    },
+    "dickgirl on male": {
+        "aliases": [
+            "だんせいとでぃっくがーる"
+        ],
+        "description": "薔薇だけど薔薇じゃない",
+        "translation": "男性とディックガール"
     },
     "digital": {
-        "translation": ""
+        "aliases": [
+            "でじたるさくひん"
+        ],
+        "description": "紙での印刷がされていない作品",
+        "translation": "デジタル作品"
     },
     "dilf": {
-        "translation": "熟女モノ"
+        "aliases": [
+            "びちゅうねん"
+        ],
+        "description": "性的ないし人物的に魅力的な壮年～中年の男性",
+        "translation": "美中年"
+    },
+    "dog": {
+        "translation": "犬"
+    },
+    "dog girl": {
+        "translation": "犬娘"
     },
     "double penetration": {
+        "aliases": [
+            "ふたあなぜめ"
+        ],
+        "description": "大抵は膣と肛門に同時に挿入されている状態を指す",
         "translation": "二穴責め"
+    },
+    "drill hair": {
+        "description": "ドリルを思わせる螺旋形状をした髪型のこと",
+        "translation": "ドリルヘアー"
+    },
+    "drugs": {
+        "aliases": [
+            "やくぶつ",
+            "ドラッグ"
+        ],
+        "translation": "薬物"
+    },
+    "drunk": {
+        "translation": "酔っ払い"
     },
     "elf": {
         "translation": "エルフ"
     },
+    "emotionless sex": {
+        "translation": ""
+    },
+    "enema": {
+        "aliases": [
+            "かんちょう"
+        ],
+        "translation": "浣腸"
+    },
     "exhibitionism": {
+        "aliases": [
+            "ろしゅつ"
+        ],
         "translation": "露出"
     },
+    "exposed clothing": {
+        "description": "肌の露出が多い服装のこと",
+        "translation": "布面積少"
+    },
+    "eye-covering bang": {
+        "aliases": [
+            "めかくれ"
+        ],
+        "translation": "目隠れ"
+    },
+    "eyepatch": {
+        "translation": "眼帯"
+    },
+    "facesitting": {
+        "translation": "顔面騎乗"
+    },
+    "facial hair": {
+        "aliases": [
+            "ひげ"
+        ],
+        "translation": "髭"
+    },
+    "farting": {
+        "translation": "屁"
+    },
     "females only": {
+        "aliases": [
+            "じょせいのみ"
+        ],
         "translation": "女性のみ"
     },
     "femdom": {
+        "aliases": [
+            "じょせいゆうい"
+        ],
+        "description": "女性が男性に対して主導権を握っている状態のこと",
         "translation": "女性優位"
     },
+    "feminization": {
+        "translation": "メス堕ち"
+    },
     "ffm threesome": {
+        "aliases": [
+            "じょじょだんのさんぴー",
+            "おんなおんなおとこのさんぴー"
+        ],
         "translation": "女女男の3P"
     },
+    "filming": {
+        "aliases": [
+            "さつえい"
+        ],
+        "translation": "撮影"
+    },
     "fingering": {
+        "aliases": [
+            "てまん"
+        ],
         "translation": "手マン"
     },
     "first person perspective": {
+        "aliases": [
+            "しゅかん"
+        ],
+        "description": "一人称視点",
         "translation": "主観"
     },
+    "fisting": {
+        "description": "膣やアナルに拳などを挿入するハードなSMプレイ",
+        "translation": "フィストファック"
+    },
     "footjob": {
+        "aliases": [
+            "あしこき"
+        ],
         "translation": "足コキ"
     },
+    "fox girl": {
+        "aliases": [
+            "きつねむすめ"
+        ],
+        "translation": "狐娘"
+    },
     "full censorship": {
-        "translation": "性器完全検閲"
+        "aliases": [
+            "せいきかんぜんもざいく"
+        ],
+        "description": "性器がすべて検閲され見えなくなっています",
+        "translation": "性器完全モザイク"
     },
     "full color": {
         "translation": "フルカラー"
@@ -151,127 +517,534 @@
         "translation": "ケモノ"
     },
     "futanari": {
+        "description": "女性の身体に、男性の陰茎がついたもの",
         "translation": "ふたなり"
     },
     "gag": {
-        "translation": "猿轡"
+        "aliases": [
+            "くちかせ"
+        ],
+        "description": "対象の口を拘束する",
+        "translation": "口枷"
+    },
+    "gaping": {
+        "description": "女性器を指などで拡げ、膣内を見せる行為を指す擬態語、もしくは擬音語",
+        "translation": "くぱぁ"
+    },
+    "garter belt": {
+        "description": "腰のあたりからベルト状のものでストッキングをつり下げ、固定する衣類",
+        "translation": "ガーターベルト"
+    },
+    "gender change": {
+        "description": "肉体的異性化",
+        "translation": "TS"
     },
     "glasses": {
+        "aliases": [
+            "めがね"
+        ],
         "translation": "眼鏡"
     },
     "gloves": {
+        "aliases": [
+            "てぶくろ"
+        ],
         "translation": "手袋"
     },
+    "gokkun": {
+        "aliases": [
+            "せいいん",
+            "ごっくん"
+        ],
+        "description": "精液を飲む行為",
+        "translation": "精飲"
+    },
     "group": {
+        "aliases": [
+            "ふくうすうにん"
+        ],
+        "description": "3人以上で性行為を行う",
         "translation": "複数人"
     },
+    "guro": {
+        "translation": "グロ"
+    },
+    "gyaru": {
+        "translation": "ギャル"
+    },
+    "hair buns": {
+        "aliases": [
+            "おだんごあたま"
+        ],
+        "translation": "お団子頭"
+    },
     "hairy": {
+        "aliases": [
+            "けぶかい"
+        ],
         "translation": "毛深い"
     },
+    "hairy armpits": {
+        "aliases": [
+            "けぶかいわきげ"
+        ],
+        "translation": "毛深い腋毛"
+    },
+    "halo": {
+        "aliases": [
+            "てんしのわ"
+        ],
+        "translation": "天使の輪"
+    },
     "handjob": {
+        "aliases": [
+            "てこき"
+        ],
         "translation": "手コキ"
     },
     "harem": {
         "translation": "ハーレム"
     },
+    "hidden sex": {
+        "aliases": [
+            "いんかん"
+        ],
+        "description": "第三者の目を盗んで行うエロ行為のこと",
+        "translation": "隠姦"
+    },
     "horns": {
+        "aliases": [
+            "だんせいき",
+            "ちんこ",
+            "ちんちん",
+            "ペニス"
+        ],
         "translation": "男性器"
     },
+    "hotpants": {
+        "description": "すごく丈の短い女性用ズボンのこと",
+        "translation": "ホットパンツ"
+    },
     "huge breasts": {
+        "aliases": [
+            "ばくにゅう"
+        ],
         "translation": "爆乳"
     },
+    "huge penis": {
+        "aliases": [
+            "ちょうきょこん"
+        ],
+        "translation": "超巨根"
+    },
+    "humiliation": {
+        "aliases": [
+            "ちじょく"
+        ],
+        "description": "体面・名誉などを傷つけること。はずかしめ。",
+        "translation": "恥辱"
+    },
     "impregnation": {
-        "translation": "妊娠"
+        "aliases": [
+            "かいたい"
+        ],
+        "description": "妊娠すること。みごもること。",
+        "translation": "懐胎"
     },
     "incest": {
+        "aliases": [
+            "きんしんそうかん"
+        ],
         "translation": "近親相姦"
     },
     "inflation": {
+        "aliases": [
+            "ぼうちょう"
+        ],
+        "description": "人物の身体(特定の部位、もしくは全体)が極度に膨張した様を描いた作品",
         "translation": "膨張"
     },
+    "inseki": {
+        "aliases": [
+            "ぎかぞく"
+        ],
+        "description": "養子縁組した親戚（義理の姉妹や義理の兄弟など）",
+        "translation": "義家族"
+    },
+    "inverted nipples": {
+        "aliases": [
+            "かんぼつちくび"
+        ],
+        "translation": "陥没乳首"
+    },
     "kemonomimi": {
+        "description": "「獣の耳」の略。",
         "translation": "ケモミミ"
+    },
+    "kimono": {
+        "aliases": [
+            "きもの"
+        ],
+        "description": "礼服もしくは和服",
+        "translation": "着物"
     },
     "kissing": {
         "translation": "キス"
     },
+    "kodomo doushi": {
+        "translation": "子供同士"
+    },
+    "kunoichi": {
+        "translation": "女忍者"
+    },
     "lactation": {
-        "translation": "授乳"
+        "aliases": [
+            "ぼにゅうぶんぴつ"
+        ],
+        "description": "母乳が分泌されている状態",
+        "translation": "母乳分泌"
+    },
+    "large insertions": {
+        "description": "長大な男性器・触手等の挿入による性交描写",
+        "translation": "ボコォ"
+    },
+    "latex": {
+        "aliases": [
+            "ごむきじ"
+        ],
+        "description": "ラバースーツ、全身タイツと同系統のフェティシズム。",
+        "translation": "ゴム生地"
+    },
+    "leash": {
+        "translation": "リード"
+    },
+    "leg lock": {
+        "translation": "だいしゅきホールド"
+    },
+    "leotard": {
+        "description": "体操競技などで着用される、全身にフィットするような衣服のこと",
+        "translation": "レオタード"
     },
     "lingerie": {
+        "description": "女性用の下着の中でも装飾性があるもの",
         "translation": "ランジェリー"
     },
     "loli": {
         "translation": "ロリ"
     },
+    "magical girl": {
+        "aliases": [
+            "まほうしょうじょ"
+        ],
+        "translation": "魔法少女"
+    },
     "maid": {
         "translation": "メイド"
     },
+    "makeup": {
+        "translation": "メイク"
+    },
+    "male on dickgirl": {
+        "translation": "ディックガールと男性"
+    },
     "males only": {
+        "aliases": [
+            "だんせいのみ"
+        ],
         "translation": "男性のみ"
     },
+    "masked face": {
+        "description": "顔に装着するもの",
+        "translation": "面"
+    },
     "masturbation": {
+        "description": "その場にいる他の誰かを対象にする",
         "translation": "オナニー"
     },
+    "mesuiki": {
+        "translation": "メスイキ"
+    },
+    "miko": {
+        "aliases": [
+            "みこ"
+        ],
+        "translation": "巫女"
+    },
     "milf": {
+        "aliases": [
+            "じゅくじょ"
+        ],
         "translation": "熟女"
     },
+    "military": {
+        "aliases": [
+            "ぐんじん"
+        ],
+        "translation": "軍人"
+    },
+    "milking": {
+        "translation": "搾乳"
+    },
     "mind break": {
+        "aliases": [
+            "せいしんほうかい"
+        ],
+        "description": "人間らしさを失ったりする様",
         "translation": "精神崩壊"
     },
     "mind control": {
+        "aliases": [
+            "せんのう"
+        ],
         "translation": "洗脳"
     },
+    "missing cover": {
+        "translation": "裸"
+    },
     "mmf threesome": {
+        "aliases": [
+            "だんだんじょのさんぴー",
+            "おとこおとこおんなのさんぴー"
+        ],
         "translation": "男男女の3P"
     },
+    "monster": {
+        "aliases": [
+            "いぎょう",
+            "いけい"
+        ],
+        "description": "普通とは違う怪しい形・姿をしていること。",
+        "translation": "異形"
+    },
+    "monster girl": {
+        "aliases": [
+            "もんすたーむすめ"
+        ],
+        "description": "モンスターの要素を含んだ女性キャラクター",
+        "translation": "モンスター娘"
+    },
     "mosaic censorship": {
+        "aliases": [
+            "もざいくあり"
+        ],
         "translation": "モザイク有り"
+    },
+    "mother": {
+        "aliases": [
+            "ははおや",
+            "マザー"
+        ],
+        "translation": "母親"
     },
     "multi-work series": {
         "translation": "シリーズもの"
     },
     "muscle": {
+        "aliases": [
+            "きんにく",
+            "マッスル"
+        ],
         "translation": "筋肉"
     },
     "nakadashi": {
-        "translation": "中だし"
+        "aliases": [
+            "なかだし"
+        ],
+        "translation": "中出し"
     },
     "netorare": {
-        "translation": "寝取られ"
+        "aliases": [
+            "ねとられ"
+        ],
+        "translation": "NTR"
+    },
+    "nipple fuck": {
+        "description": "乳首に男性器などを挿入",
+        "translation": "ニプルファック"
+    },
+    "nipple piercing": {
+        "aliases": [
+            "ちくびぴあす"
+        ],
+        "translation": "乳首ピアス"
+    },
+    "nipple stimulation": {
+        "aliases": [
+            "ちくびぜめ"
+        ],
+        "translation": "乳首責め"
     },
     "no penetration": {
+        "aliases": [
+            "そうにゅうなし"
+        ],
         "translation": "挿入なし"
+    },
+    "nose hook": {
+        "translation": "鼻フック"
+    },
+    "novel": {
+        "aliases": [
+            "しょうせつ"
+        ],
+        "translation": "小説"
+    },
+    "nudity only": {
+        "aliases": [
+            "ぜんら"
+        ],
+        "translation": "全裸"
+    },
+    "nun": {
+        "aliases": [
+            "しゅうどうじょ"
+        ],
+        "translation": "修道女"
+    },
+    "nurse": {
+        "translation": "ナース"
+    },
+    "old man": {
+        "aliases": [
+            "ろうじん"
+        ],
+        "translation": "老人"
+    },
+    "oni": {
+        "translation": "鬼"
+    },
+    "oppai loli": {
+        "description": "ロリなのに巨乳なキャラクターのこと",
+        "translation": "ロリ巨乳"
+    },
+    "oyakodon": {
+        "translation": "親子丼"
+    },
+    "painted nails": {
+        "translation": "ネイル"
     },
     "paizuri": {
         "translation": "パイズリ"
     },
     "pantyhose": {
-        "translation": "パンティーストッキング"
+        "description": "パンティーストッキングの略称。",
+        "translation": "パンスト"
+    },
+    "pasties": {
+        "translation": "ニプレス"
+    },
+    "penis enlargement": {
+        "description": "陰茎の最大サイズが何らかの影響で大きくなる",
+        "translation": "陰茎拡大"
+    },
+    "petplay": {
+        "translation": "ペットプレイ"
+    },
+    "phimosis": {
+        "description": "厳密には「真性包茎」のみを指し、「仮性包茎」は含まない",
+        "translation": "包茎"
     },
     "piercing": {
         "translation": "ピアス"
+    },
+    "pixie cut": {
+        "description": "側頭部と後頭部を短く切り、上部は少し長く、前髪はベリーショート",
+        "translation": "ピクシーカット"
     },
     "ponytail": {
         "translation": "ポニーテール"
     },
     "pregnant": {
-        "translation": "処女喪失"
+        "aliases": [
+            "にんしん"
+        ],
+        "translation": "妊娠"
+    },
+    "prolapse": {
+        "aliases": [
+            "しきゅうだつ"
+        ],
+        "description": "子宮が膣口から飛び出した状態",
+        "translation": "子宮脱"
+    },
+    "prostate massage": {
+        "aliases": [
+            "ぜんりつせんまっさーじ"
+        ],
+        "description": "前立腺に刺激を与える",
+        "translation": "前立腺マッサージ"
+    },
+    "prostitution": {
+        "aliases": [
+            "ばいしゅう",
+            "ばいしゅん"
+        ],
+        "translation": "売春"
+    },
+    "public use": {
+        "translation": ""
     },
     "rape": {
         "translation": "レイプ"
     },
+    "rimjob": {
+        "aliases": [
+            "あなるなめ"
+        ],
+        "translation": "アナル舐め"
+    },
+    "robot": {
+        "translation": "ロボット"
+    },
+    "ryona": {
+        "translation": "リョナ"
+    },
+    "sample": {
+        "description": "同人誌の見本や試供品",
+        "translation": "サンプル"
+    },
+    "scar": {
+        "translation": "傷跡"
+    },
     "scat": {
-        "translation": "スカトロジー"
+        "description": "糞尿趣味",
+        "translation": "スカトロ"
+    },
+    "school gym uniform": {
+        "translation": "体操服"
+    },
+    "school swimsuit": {
+        "aliases": [
+            "すくーるみずぎ",
+            "すくみず",
+            "スク水"
+        ],
+        "translation": "スクール水着"
     },
     "schoolboy uniform": {
+        "aliases": [
+            "だんしせいとのせいふく"
+        ],
         "translation": "男子学生の制服"
     },
     "schoolgirl uniform": {
+        "aliases": [
+            "じょしせいとのせいふく"
+        ],
         "translation": "女子学生の制服"
     },
     "sex toys": {
         "translation": "おもちゃ"
+    },
+    "shemale": {
+        "description": "男性であるものの、現在は女性的な風貌の人",
+        "translation": "ニューハーフ"
+    },
+    "shibari": {
+        "aliases": [
+            "きんばく"
+        ],
+        "translation": "緊縛"
     },
     "shota": {
         "translation": "ショタ"
@@ -280,72 +1053,297 @@
         "translation": "ショタコン"
     },
     "sister": {
+        "aliases": [
+            "あねかいもうと"
+        ],
         "translation": "姉か妹"
     },
+    "slave": {
+        "aliases": [
+            "せいどれい"
+        ],
+        "translation": "性奴隷"
+    },
+    "sleeping": {
+        "aliases": [
+            "すいかん"
+        ],
+        "translation": "睡姦"
+    },
+    "slime": {
+        "translation": "スライム"
+    },
+    "small breasts": {
+        "aliases": [
+            "ひんにゅうう"
+        ],
+        "translation": "貧乳"
+    },
+    "smegma": {
+        "description": "分泌物や老廃物、はがれた粘膜やホコリなどが固まったもの。  チンカスやクリカス（マンカス）とも呼ばれる。",
+        "translation": "恥垢"
+    },
+    "smell": {
+        "aliases": [
+            "においふぇち"
+        ],
+        "translation": "匂いフェチ"
+    },
+    "snuff": {
+        "aliases": [
+            "です",
+            "し"
+        ],
+        "translation": "死"
+    },
+    "sole dickgirl": {
+        "description": "女性器がなく男性器がある女性",
+        "translation": "ディックガール"
+    },
     "sole female": {
+        "aliases": [
+            "じょせいたんどく"
+        ],
         "translation": "女性単独"
     },
     "sole male": {
+        "aliases": [
+            "だんせいたんどく"
+        ],
         "translation": "男性単独"
+    },
+    "solo action": {
+        "description": "その場に一人しかいない",
+        "translation": "オナニー"
+    },
+    "soushuuhen": {
+        "translation": "総集編"
+    },
+    "spanking": {
+        "description": "お尻を叩くこと、あるいは叩かれること",
+        "translation": "スパンキング"
+    },
+    "squirting": {
+        "aliases": [
+            "しおふき"
+        ],
+        "translation": "潮吹き"
     },
     "stockings": {
         "translation": "ストッキング"
     },
     "stomach deformation": {
+        "aliases": [
+            "はらぼこ"
+        ],
+        "description": "お腹に男性器の形が浮かび上がる現象",
         "translation": "腹ボコ"
     },
     "story arc": {
+        "description": "複数の回にまたがって１つのストーリーを形成するもの",
         "translation": "ストーリーアーク"
     },
+    "strap-on": {
+        "description": "腰に固定できるようにしたディルド",
+        "translation": "ペニバン"
+    },
+    "sumata": {
+        "translation": "素股"
+    },
     "sweating": {
+        "aliases": [
+            "はっかん"
+        ],
         "translation": "発汗"
     },
     "swimsuit": {
+        "aliases": [
+            "みずぎ"
+        ],
         "translation": "水着"
     },
     "tail": {
         "translation": "しっぽ"
     },
+    "tail plug": {
+        "description": "しっぽの形をしたアナルプラグ",
+        "translation": "テールプラグ"
+    },
+    "tall girl": {
+        "aliases": [
+            "ちょうしんじょせい"
+        ],
+        "translation": "長身女性"
+    },
     "tankoubon": {
+        "aliases": [
+            "たんこうぼん"
+        ],
         "translation": "単行本"
     },
+    "tanlines": {
+        "aliases": [
+            "ひやけあと"
+        ],
+        "translation": "日焼け跡"
+    },
     "teacher": {
+        "aliases": [
+            "きょうし"
+        ],
         "translation": "教師"
     },
     "tentacles": {
+        "aliases": [
+            "しょくしゅ"
+        ],
         "translation": "触手"
     },
+    "thigh high boots": {
+        "description": "膝よりも長い太股まで伸びる丈のブーツ",
+        "translation": "サイハイブーツ"
+    },
+    "tiara": {
+        "description": "冠の形をした髪飾り",
+        "translation": "ティアラ"
+    },
+    "tickling": {
+        "translation": "くすぐり"
+    },
+    "tomboy": {
+        "translation": "ボーイッシュ"
+    },
     "tomgirl": {
+        "aliases": [
+            "おとこのこ",
+            "おとこのむすめ"
+        ],
         "translation": "男の娘"
+    },
+    "torture": {
+        "aliases": [
+            "ごうもん"
+        ],
+        "translation": "拷問"
+    },
+    "tracksuit": {
+        "description": "黄色と黒のジャージ",
+        "translation": "トラックスーツ"
+    },
+    "transformation": {
+        "aliases": [
+            "きょうせいへんしん"
+        ],
+        "translation": "強制変身"
+    },
+    "tribadism": {
+        "translation": "貝合わせ"
+    },
+    "triple penetration": {
+        "description": "膣と肛門と口の3箇所に同時に挿入されている状態を指す",
+        "translation": "三穴責め"
     },
     "tsundere": {
         "translation": "ツンデレ"
+    },
+    "twins": {
+        "translation": "双子"
     },
     "twintails": {
         "translation": "ツインテール"
     },
     "uncensored": {
+        "aliases": [
+            "むしゅうせい"
+        ],
         "translation": "無修正"
     },
     "unusual pupils": {
+        "aliases": [
+            "めずらしいひとみ"
+        ],
         "translation": "珍しい瞳"
     },
+    "urethra insertion": {
+        "aliases": [
+            "にょうどうふぁっく"
+        ],
+        "description": "尿道にペニスを挿入する事",
+        "translation": "尿道ファック"
+    },
     "urination": {
+        "aliases": [
+            "はいにょう"
+        ],
         "translation": "排尿"
     },
+    "vaginal birth": {
+        "aliases": [
+            "しゅっさん"
+        ],
+        "translation": "出産"
+    },
     "variant set": {
+        "aliases": [
+            "さぶん"
+        ],
+        "description": "画像の一部分だけを差し替えたもの",
         "translation": "差分"
     },
     "very long hair": {
+        "aliases": [
+            "ながいかみ"
+        ],
         "translation": "長い髪"
     },
+    "virginity": {
+        "aliases": [
+            "しょじょ"
+        ],
+        "translation": "処女"
+    },
+    "vore": {
+        "description": "捕食の中でも生物が他の生物を咀嚼せずに丸ごと呑み込んでいるもの",
+        "translation": "丸呑み"
+    },
+    "voyeurism": {
+        "translation": "盗撮"
+    },
+    "vtuber": {
+        "aliases": [
+            "ぶいちゅーばー"
+        ],
+        "translation": "VTuber"
+    },
+    "wings": {
+        "aliases": [
+            "はね",
+            "つばさ"
+        ],
+        "translation": "翼"
+    },
+    "wolf girl": {
+        "description": "狼耳と尻尾のついた女の子のこと",
+        "translation": "狼娘"
+    },
     "x-ray": {
+        "aliases": [
+            "だんめんず"
+        ],
         "translation": "断面図"
     },
     "yaoi": {
+        "aliases": [
+            "ばら"
+        ],
+        "description": "BLともいう",
         "translation": "薔薇"
     },
     "yuri": {
+        "aliases": [
+            "ゆり"
+        ],
+        "description": "GLともいう",
         "translation": "百合"
     }
 }
