@@ -1397,6 +1397,9 @@
                     imageSizeControls.classList.add('hidden');
                     sizeToggle.classList.remove('active');
                 }
+
+                // 初期状態でサイズ表示とボタンの状態を更新
+                updateImageSize();
             }
 
             if (currentGalleryId) {
@@ -2205,6 +2208,9 @@
             img.addEventListener('error', () => {
                 img.src = ERROR_IMAGE_SRC;
             });
+
+            // 現在の画像サイズ設定を適用
+            applyImageSizeClass(img);
 
             pageDiv.appendChild(img);
             return pageDiv;

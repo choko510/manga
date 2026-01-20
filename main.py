@@ -2499,41 +2499,6 @@ async def proxy_request(hash_or_path: str):
                             await asyncio.sleep(retry_delay * (2 ** attempt))
                             continue
                         raise HTTPException(status_code=resp.status, detail=f"Upstream 5xx: {resp.status}")
-                    if resp.status == 404:
-                        # 404エラーの場合はImageUriResolverを強制同期して再試行
-                        # DoS防止のための簡易的なレートリミット: 最終同期から一定時間経過していない場合はスキップ
-                        global _IMAGE_RESOLVER_FAILURE_AT
-                        now_ts = time.monotonic()
-                        if now_ts - _IMAGE_RESOLVER_FAILURE_AT > _IMAGE_RESOLVER_FAILURE_COOLDOWN:
-                            print("404エラーを検出、ImageUriResolverを再同期します")
-                            try:
-                                await ImageUriResolver.async_synchronize(force=True)
-                                _IMAGE_RESOLVER_FAILURE_AT = now_ts
-                                print("ImageUriResolverの再同期が完了しました。再試行します")
-                                # 再同期後にURLを再解決
-                                if not (hash_or_path.startswith(("http://", "https://")) or "gold-usergeneratedcontent.net" in hash_or_path):
-                                    image = SimpleNamespace(
-                                        hash=hash_or_path.lower(),
-                                        has_avif=True,
-                                        has_webp=True,
-                                        has_jxl=False,
-                                    )
-                                    resolved = ImageUriResolver.get_image_uri(image, "avif")
-                                    url = f"https://{resolved}" if not resolved.startswith("http") else resolved
-                            except Exception as e:
-                                print(f"ImageUriResolver再同期エラー: {e}")
-                        else:
-                            print("404エラーを検出しましたが、再同期のクールダウン中です")
-                            # クールダウン中は再試行しても無意味なので即座にエラーとする
-                            raise HTTPException(status_code=resp.status, detail=f"Upstream 4xx: {resp.status}")
-
-                        if attempt < max_retries:
-                            await asyncio.sleep(retry_delay * (2 ** attempt))
-                            continue
-                        raise HTTPException(status_code=resp.status, detail=f"Upstream 4xx: {resp.status}")
-                    if resp.status >= 400:
-                        raise HTTPException(status_code=resp.status, detail=f"Upstream 4xx: {resp.status}")
-
                     if resp.content_type and resp.content_type.startswith("image/"):
                         data = await resp.read()
                         return Response(
@@ -3899,46 +3864,9 @@ async def api_recommendations_personal(
     
     # パーソナライズ設定チェック
     if not global_state.personalization_enabled:
-        try:
-            async with get_db_session() as db:
-                # 最新の作品を取得
-                stmt = select(Gallery).where(
-                    Gallery.manga_type.in_(["doujinshi", "manga"])
-                ).order_by(Gallery.created_at_unix.desc()).limit(limit)
-                
-                result = await db.execute(stmt)
-                candidates = list(result.scalars())
-                
-                results = []
-                for gallery in candidates:
-                    # タグのロード
-                    try:
-                        tags = json.loads(gallery.tags) if gallery.tags else []
-                    except:
-                        tags = []
-                    
-                    results.append({
-                        "gallery_id": gallery.gallery_id,
-                        "japanese_title": gallery.japanese_title,
-                        "tags": tags,
-                        "page_count": gallery.page_count,
-                        "created_at": gallery.created_at,
-                        "manga_type": gallery.manga_type,
-                        "score": 0,
-                        "files": gallery.files
-                    })
-                
-                # 画像URL処理
-                await _process_results_with_image_urls(results)
-                
-                return {
-                    "count": len(results),
-                    "results": results,
-                    "has_personalization": False
-                }
-        except Exception as e:
-            print(f"Personalization disabled fallback error: {e}")
-            return {"count": 0, "results": [], "has_personalization": False}
+        # パーソナライズ機能が無効の場合は空のレスポンスを返す
+        # フロントエンドはこれを受けておすすめセクションを非表示にする
+        return {"count": 0, "results": [], "has_personalization": False, "disabled": True}
 
     try:
         async with get_db_session() as db, get_tracking_db_session() as tracking_db:

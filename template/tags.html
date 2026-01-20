@@ -59,7 +59,6 @@
         }
 
         .site-header {
-            position: sticky;
             top: 0;
             z-index: 100;
             padding: 20px 32px;
@@ -171,6 +170,53 @@
             flex-wrap: wrap;
             gap: 8px;
             align-items: center;
+        }
+
+        /* 選択済みタグの固定表示コンテナ */
+        .sticky-selection-bar {
+            position: sticky;
+            top: 0;
+            z-index: 150;
+            background: var(--bg-header);
+            backdrop-filter: blur(16px);
+            padding: 12px 24px;
+            display: none;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+        }
+
+        .sticky-selection-bar.visible {
+            display: flex;
+        }
+
+        .sticky-selection-bar .selected-tags-wrapper {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
+        .sticky-selection-bar .selected-tags-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        .sticky-selection-bar .sticky-selected-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .sticky-selection-bar .sticky-search-button {
+            flex-shrink: 0;
         }
 
         .tag-chip {
@@ -373,6 +419,36 @@
             .tags-grid {
                 grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
             }
+
+            /* スマホ用: 固定選択バーを見やすく調整 */
+            .sticky-selection-bar {
+                padding: 10px 16px;
+                max-height: 120px;
+                overflow-y: auto;
+                flex-wrap: nowrap;
+                flex-direction: column;
+                gap: 8px;
+                align-items: stretch;
+            }
+
+            .sticky-selection-bar .selected-tags-wrapper {
+                flex-wrap: nowrap;
+                overflow-x: auto;
+                padding-bottom: 4px;
+                scrollbar-width: thin;
+            }
+
+            .sticky-selection-bar .sticky-selected-tags {
+                flex-wrap: nowrap;
+            }
+
+            .sticky-selection-bar .tag-chip {
+                flex-shrink: 0;
+            }
+
+            .sticky-selection-bar .sticky-search-button {
+                width: 100%;
+            }
         }
     </style>
 </head>
@@ -383,22 +459,31 @@
             <nav class="main-nav">
                 <a href="/" class="nav-button">ホーム</a>
                 <a href="/tags" class="nav-button active">タグ</a>
-                <a href="/recommendations" class="nav-button">おすすめ</a>
                 <a href="/history" class="nav-button">履歴</a>
             </nav>
             <div class="search-container">
                 <input type="search" id="tagSearchInput" placeholder="タグを検索 (複数語対応)" aria-label="タグ検索">
-                <button id="searchButton" class="primary-button" style="flex:0 0 auto;"><i class="fas fa-search"></i> 検索</button>
+                <button id="searchButton" class="primary-button" style="flex:0 0 auto;"><i class="fas fa-search"></i>
+                    検索</button>
                 <button id="themeToggle" class="icon-button" aria-label="ダークモード切替"><i class="fas fa-moon"></i></button>
             </div>
         </div>
         <div class="filter-summary">
             <div>合計 <span id="tagsTotal">0</span> タグ</div>
             <div id="hiddenTagsSummary">除外タグなし</div>
-            <div class="selected-tags" id="selectedTags"></div>
-            <button id="searchSelectedButton" class="primary-button" style="display:none;">選択したタグで検索</button>
         </div>
     </header>
+
+    <!-- 選択済みタグの固定表示バー -->
+    <div class="sticky-selection-bar" id="stickySelectionBar">
+        <div class="selected-tags-wrapper">
+            <span class="selected-tags-label"><i class="fas fa-tags"></i> 選択中:</span>
+            <div class="sticky-selected-tags" id="stickySelectedTags"></div>
+        </div>
+        <button id="stickySearchButton" class="primary-button sticky-search-button">
+            <i class="fas fa-search"></i> 選択したタグで検索
+        </button>
+    </div>
 
     <main class="content-area">
         <section>
@@ -434,7 +519,7 @@
             MangaApp.applyThemeToDocument(document);
             (async () => {
                 await Promise.all([
-                    MangaApp.ensureTranslations().catch(() => {}),
+                    MangaApp.ensureTranslations().catch(() => { }),
                     loadCategoryDefinitions(),
                 ]);
                 setupEventHandlers();
@@ -879,24 +964,34 @@
         }
 
         function renderSelectedTags() {
-            const container = document.getElementById('selectedTags');
-            container.innerHTML = '';
-            const searchButton = document.getElementById('searchSelectedButton');
-            
+            // 固定バー関連
+            const stickyBar = document.getElementById('stickySelectionBar');
+            const stickyContainer = document.getElementById('stickySelectedTags');
+            const stickySearchButton = document.getElementById('stickySearchButton');
+
+            if (stickyContainer) {
+                stickyContainer.innerHTML = '';
+            }
+
             if (!state.selectedTags.size) {
-                searchButton.style.display = 'none';
+                if (stickyBar) {
+                    stickyBar.classList.remove('visible');
+                }
                 return;
             }
-            
-            searchButton.style.display = 'inline-block';
-            
-            state.selectedTags.forEach((tag) => {
+
+            if (stickyBar) {
+                stickyBar.classList.add('visible');
+            }
+
+            // タグチップ作成関数
+            const createChip = (tag, targetContainer) => {
                 const chip = document.createElement('span');
                 chip.className = 'tag-chip';
                 chip.textContent = MangaApp.translateTag(tag);
                 chip.title = tag;
                 const removeButton = document.createElement('button');
-                removeButton.setAttribute('aria-label', `${MangaApp.translateTag(tag)} を除外する`);
+                removeButton.setAttribute('aria-label', `${MangaApp.translateTag(tag)} を削除する`);
                 removeButton.innerHTML = '<i class="fas fa-xmark" aria-hidden="true"></i>';
                 removeButton.addEventListener('click', (event) => {
                     event.stopPropagation();
@@ -904,8 +999,25 @@
                     renderSelectedTags();
                 });
                 chip.appendChild(removeButton);
-                container.appendChild(chip);
+                targetContainer.appendChild(chip);
+            };
+
+            state.selectedTags.forEach((tag) => {
+                if (stickyContainer) {
+                    createChip(tag, stickyContainer);
+                }
             });
+
+            // 固定バーの検索ボタンにイベント（まだなければ）
+            if (stickySearchButton && !stickySearchButton.dataset.bound) {
+                stickySearchButton.dataset.bound = 'true';
+                stickySearchButton.addEventListener('click', () => {
+                    if (state.selectedTags.size > 0) {
+                        const tags = Array.from(state.selectedTags).join(',');
+                        window.location.href = `/?tag=${encodeURIComponent(tags)}`;
+                    }
+                });
+            }
         }
 
         function toggleLoading(show) {

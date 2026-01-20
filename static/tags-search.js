@@ -290,6 +290,10 @@
             input.parentNode.insertBefore(wrapper, input);
             wrapper.appendChild(input);
             wrapper.appendChild(listEl);
+            // DOM操作でinputのフォーカスが外れるため、requestAnimationFrameで再フォーカス
+            requestAnimationFrame(() => {
+                input.focus();
+            });
             return listEl;
         }
 
@@ -466,6 +470,8 @@
         function handleBlur() {
             // 少し遅延させて mousedown(on候補) を拾えるように
             setTimeout(() => {
+                // フォーカスが戻っている場合はサジェストを消さない
+                if (document.activeElement === input) return;
                 clearList();
             }, 150);
         }

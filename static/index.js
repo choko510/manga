@@ -640,31 +640,6 @@
             return;
         }
 
-        // おすすめセクション用のHTML要素を作成
-        const recommendSection = document.createElement('section');
-        recommendSection.id = 'recommendSection';
-        recommendSection.className = 'recommend-section';
-        recommendSection.innerHTML = `
-            <div class="section-header">
-                <h2><i class="fas fa-magic"></i> あなたへのおすすめ</h2>
-            </div>
-            <div id="recommendGrid" class="recommend-grid"></div>
-        `;
-
-        // 履歴セクションの後、または検索フォームの後に挿入
-        const historySection = elements.historySection || document.getElementById('historySection');
-        if (historySection) {
-            historySection.parentNode.insertBefore(recommendSection, historySection.nextSibling);
-        } else {
-            const cardGrid = elements.cardGrid || document.getElementById('cardGrid');
-            if (cardGrid) {
-                cardGrid.parentNode.insertBefore(recommendSection, cardGrid);
-            }
-        }
-
-        const recommendGrid = document.getElementById('recommendGrid');
-        if (!recommendGrid) return;
-
         try {
             const hiddenTags = MangaApp.getHiddenTags();
             const excludeTag = hiddenTags.length ? hiddenTags.join(',') : '';
@@ -683,16 +658,41 @@
 
             const data = await response.json();
 
-            if (!data.results || data.results.length === 0) {
-                // おすすめがない場合はセクションを非表示
-                recommendSection.style.display = 'none';
+            // おすすめがない場合または機能が無効の場合は何もしない
+            if (!data.results || data.results.length === 0 || data.disabled) {
+                console.log('No recommendations available or feature disabled');
                 return;
             }
 
-            if (!data.has_personalization) {
-                // パーソナライズデータがない場合はタイトルを変更
-                recommendSection.querySelector('h2').innerHTML = '<i class="fas fa-star"></i> 人気作品';
+            // データがある場合のみセクションを作成してDOMに追加
+            const recommendSection = document.createElement('section');
+            recommendSection.id = 'recommendSection';
+            recommendSection.className = 'recommend-section';
+
+            const sectionTitle = data.has_personalization
+                ? '<i class="fas fa-magic"></i> あなたへのおすすめ'
+                : '<i class="fas fa-star"></i> 人気作品';
+
+            recommendSection.innerHTML = `
+                <div class="section-header">
+                    <h2>${sectionTitle}</h2>
+                </div>
+                <div id="recommendGrid" class="recommend-grid"></div>
+            `;
+
+            // 履歴セクションの後、または検索フォームの後に挿入
+            const historySection = elements.historySection || document.getElementById('historySection');
+            if (historySection) {
+                historySection.parentNode.insertBefore(recommendSection, historySection.nextSibling);
+            } else {
+                const cardGrid = elements.cardGrid || document.getElementById('cardGrid');
+                if (cardGrid) {
+                    cardGrid.parentNode.insertBefore(recommendSection, cardGrid);
+                }
             }
+
+            const recommendGrid = document.getElementById('recommendGrid');
+            if (!recommendGrid) return;
 
             // おすすめカードを表示
             const fragment = document.createDocumentFragment();
