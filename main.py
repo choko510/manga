@@ -9,8 +9,9 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, Index, Integer, String, Text, select
+from sqlalchemy import Column, Index, Integer, String, Text, select, func
 from sqlalchemy import text
+import random
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -36,6 +37,7 @@ class GlobalState:
         self.global_session: Optional[aiohttp.ClientSession] = None
         self.scheduler_task: Optional[asyncio.Task] = None
         self.ranking_scheduler_task: Optional[asyncio.Task] = None
+        self.personalization_enabled: bool = True
     
     async def cleanup(self):
         """クリーンアップ処理"""
@@ -125,68 +127,77 @@ class Gallery(Base):
     def __repr__(self):
         return f"<Gallery(id={self.gallery_id}, title='{self.japanese_title}')>"
 
-# ---- 新トラッキング: シンプルなuser/session/manga/searchログ ----
+# ---- 新トラッキング: おすすめ精度向上のためのログシステム ----
 
-class TrackingUser(TrackingBase):
+class UserLog(TrackingBase):
     """
-    1ブラウザ＝1 user_id を表す。
-    - user_id: FingerprintJS起点 or フォールバックID（tracking.jsで生成）
+    漫画閲覧ログ。
+    ユーザーごと・作品ごとに1レコード。複数回訪問時は累積更新。
     """
-    __tablename__ = "tracking_users"
-    user_id = Column(String, primary_key=True)
-    first_seen = Column(String, nullable=False)
-    last_seen = Column(String, nullable=False)
-    last_user_agent = Column(Text)
-    last_ip = Column(String)
-
-class TrackingSession(TrackingBase):
-    """
-    短期間の閲覧セッション。
-    - tracking.js側で(session_ttl以内で)再利用。
-    """
-    __tablename__ = "tracking_sessions"
-    session_id = Column(String, primary_key=True)
-    user_id = Column(String, nullable=False, index=True)
-    started_at = Column(String, nullable=False)
-    last_activity = Column(String, nullable=False)
-    user_agent = Column(Text)
-    referrer = Column(String)
-    ip_hash = Column(String)
-
-class TrackingMangaView(TrackingBase):
-    """
-    作品単位の閲覧ログ。
-    viewer.html + tracking.jsから:
-      - start: /api/tracking/manga-view/start
-      - update: /api/tracking/manga-view/update
-      - end: /api/tracking/manga-view/end
-    """
-    __tablename__ = "tracking_manga_views"
+    __tablename__ = "user_logs"
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(String, nullable=False, index=True)
-    session_id = Column(String, nullable=False, index=True)
     manga_id = Column(Integer, nullable=False, index=True)
-    page_count = Column(Integer)
-    started_at = Column(String, nullable=False)
-    ended_at = Column(String)
-    total_duration_sec = Column(Integer, default=0)
-    max_page = Column(Integer, default=0)
-    last_page = Column(Integer, default=0)
-    last_page_changed_at = Column(String)
+    avg_time = Column(Integer, default=0)  # 1ページあたり平均閲覧時間（秒）
+    read_pages = Column(Integer, default=0)  # 読んだページ数（累積）
+    visit_count = Column(Integer, default=0)  # 訪問回数
+    total_duration = Column(Integer, default=0)  # 合計閲覧時間（秒）
+    last_viewed_at = Column(String)  # 最終閲覧日時
 
-class TrackingSearchQuery(TrackingBase):
+    __table_args__ = (
+        Index('ix_user_logs_user_manga', 'user_id', 'manga_id', unique=True),
+    )
+
+class Impression(TrackingBase):
     """
-    よく使う検索タグ/クエリを集計するための元データ。
-    tracking.jsの Tracking.search.logQuery から記録。
+    インプレッション・クリックログ（CTR計算用）。
+    ユーザーごと・作品ごとに1レコード。
     """
-    __tablename__ = "tracking_search_queries"
+    __tablename__ = "impressions"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(String, index=True)
-    session_id = Column(String, index=True)
-    query = Column(Text)
-    normalized_query = Column(Text, index=True)
-    tags_json = Column(Text)
-    used_at = Column(String, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    manga_id = Column(Integer, nullable=False, index=True)
+    shown_count = Column(Integer, default=0)  # 表示回数
+    click_count = Column(Integer, default=0)  # クリック回数
+    last_shown_at = Column(String)  # 最終表示日時
+    last_clicked_at = Column(String)  # 最終クリック日時
+
+    __table_args__ = (
+        Index('ix_impressions_user_manga', 'user_id', 'manga_id', unique=True),
+    )
+
+class TagPreference(TrackingBase):
+    """
+    タグ別CTR傾向。
+    ユーザーごと・タグごとに1レコード。
+    """
+    __tablename__ = "tag_preferences"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, nullable=False, index=True)
+    tag = Column(String, nullable=False, index=True)
+    shown_count = Column(Integer, default=0)  # そのタグ作品の表示回数
+    click_count = Column(Integer, default=0)  # そのタグ作品のクリック回数
+    total_view_time = Column(Integer, default=0)  # そのタグ作品の合計閲覧時間
+
+    __table_args__ = (
+        Index('ix_tag_preferences_user_tag', 'user_id', 'tag', unique=True),
+    )
+
+class SearchHistory(TrackingBase):
+    """
+    検索タグ履歴。
+    ユーザーごと・タグごとに1レコード。
+    """
+    __tablename__ = "search_history"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, nullable=False, index=True)
+    tag = Column(String, nullable=False, index=True)
+    search_count = Column(Integer, default=0)  # 検索回数
+    last_searched_at = Column(String)  # 最終検索日時
+
+    __table_args__ = (
+        Index('ix_search_history_user_tag', 'user_id', 'tag', unique=True),
+    )
 
 class UserSnapshot(TrackingBase):
     __tablename__ = 'user_snapshots'
@@ -887,75 +898,101 @@ async def _backfill_database_data():
     BATCH_SIZE = 5000  # バッチサイズを増加
     
     try:
+        # 高速チェック: 補完対象が存在するかEXISTSで確認（COUNT(*)よりはるかに高速）
+        async with engine.begin() as conn:
+            # page_count補完対象の存在チェック
+            page_count_needs_backfill = await conn.execute(text(
+                "SELECT EXISTS(SELECT 1 FROM galleries WHERE page_count IS NULL AND files IS NOT NULL LIMIT 1)"
+            ))
+            has_page_count_work = page_count_needs_backfill.scalar()
+            
+            # created_at_unix列の存在確認とbackfill対象チェック
+            pragma_res = await conn.execute(text("PRAGMA table_info(galleries)"))
+            gallery_columns = [row[1] for row in pragma_res.fetchall()]
+            has_created_at_unix_column = "created_at_unix" in gallery_columns
+            
+            has_created_at_work = False
+            if has_created_at_unix_column:
+                created_at_needs_backfill = await conn.execute(text(
+                    "SELECT EXISTS(SELECT 1 FROM galleries WHERE (created_at_unix IS NULL OR created_at_unix = 0) AND created_at IS NOT NULL LIMIT 1)"
+                ))
+                has_created_at_work = created_at_needs_backfill.scalar()
+        
+        # 補完対象がなければ即座に終了
+        if not has_page_count_work and not has_created_at_work:
+            elapsed = time.time() - start_time
+            print(f"[backfill] page_count: 補完対象なし（全件処理済み）")
+            print(f"[backfill] created_at_unix: 補完対象なし（全件処理済み）")
+            print(f"[backfill] === バックグラウンドデータ補完処理完了 ({elapsed:.1f}秒) ===")
+            return
+        
         # 3-1. page_count が NULL の行を補完（バッチごとにコミット）
         total_page_count_updated = 0
         total_page_count_errors = 0
         batch_num = 0
-        print("[backfill] page_count 補完処理開始...")
         
-        while True:
-            batch_num += 1
+        if has_page_count_work:
+            print("[backfill] page_count 補完処理開始...")
             
-            try:
-                async with engine.begin() as conn:
-                    result = await conn.execute(
-                        text(
-                            "SELECT gallery_id, files "
-                            "FROM galleries "
-                            "WHERE page_count IS NULL "
-                            "AND files IS NOT NULL "
-                            f"LIMIT {BATCH_SIZE}"
-                        )
-                    )
-                    rows = result.fetchall()
-                    
-                    if not rows:
-                        if batch_num == 1:
-                            print("[backfill] page_count: 補完対象なし（全件処理済み）")
-                        break
-                    
-                    # スレッドプールでJSONパースを実行（CPUバウンドな処理をオフロード）
-                    updates, batch_errors = await asyncio.to_thread(
-                        _process_page_count_batch, rows
-                    )
-                    
-                    # 一括UPDATEで効率化
-                    if updates:
-                        await conn.execute(
-                            text("UPDATE galleries SET page_count = :cnt WHERE gallery_id = :gid"),
-                            updates,
-                        )
-                    
-                    total_page_count_updated += len(updates)
-                    total_page_count_errors += batch_errors
-                    
-                    # バッチ完了ログ（エラーがあればサマリー表示）
-                    if batch_errors > 0:
-                        print(f"[backfill] バッチ {batch_num}: {len(updates)}件更新, {batch_errors}件エラー")
-                    elif batch_num % 10 == 0:  # 10バッチごとに進捗表示
-                        print(f"[backfill] バッチ {batch_num}: 累計 {total_page_count_updated}件更新")
-                        
-            except Exception as batch_err:
-                print(f"[backfill] バッチ {batch_num} 致命的エラー: {type(batch_err).__name__}: {batch_err}")
-                import traceback
-                traceback.print_exc()
-                break
+            while True:
+                batch_num += 1
                 
-            # バッチ処理後に短い遅延を入れて他の処理に譲る
-            await asyncio.sleep(0.001)
-        
-        if total_page_count_updated > 0 or total_page_count_errors > 0:
-            print(f"[backfill] page_count 補完完了: 成功 {total_page_count_updated}件, エラー {total_page_count_errors}件")
+                try:
+                    async with engine.begin() as conn:
+                        result = await conn.execute(
+                            text(
+                                "SELECT gallery_id, files "
+                                "FROM galleries "
+                                "WHERE page_count IS NULL "
+                                "AND files IS NOT NULL "
+                                f"LIMIT {BATCH_SIZE}"
+                            )
+                        )
+                        rows = result.fetchall()
+                        
+                        if not rows:
+                            break
+                        
+                        # スレッドプールでJSONパースを実行（CPUバウンドな処理をオフロード）
+                        updates, batch_errors = await asyncio.to_thread(
+                            _process_page_count_batch, rows
+                        )
+                        
+                        # 一括UPDATEで効率化
+                        if updates:
+                            await conn.execute(
+                                text("UPDATE galleries SET page_count = :cnt WHERE gallery_id = :gid"),
+                                updates,
+                            )
+                        
+                        total_page_count_updated += len(updates)
+                        total_page_count_errors += batch_errors
+                        
+                        # バッチ完了ログ（エラーがあればサマリー表示）
+                        if batch_errors > 0:
+                            print(f"[backfill] バッチ {batch_num}: {len(updates)}件更新, {batch_errors}件エラー")
+                        elif batch_num % 10 == 0:  # 10バッチごとに進捗表示
+                            print(f"[backfill] バッチ {batch_num}: 累計 {total_page_count_updated}件更新")
+                            
+                except Exception as batch_err:
+                    print(f"[backfill] バッチ {batch_num} 致命的エラー: {type(batch_err).__name__}: {batch_err}")
+                    import traceback
+                    traceback.print_exc()
+                    break
+                    
+                # バッチ処理後に短い遅延を入れて他の処理に譲る
+                await asyncio.sleep(0.001)
+            
+            if total_page_count_updated > 0 or total_page_count_errors > 0:
+                print(f"[backfill] page_count 補完完了: 成功 {total_page_count_updated}件, エラー {total_page_count_errors}件")
+        else:
+            print("[backfill] page_count: 補完対象なし（全件処理済み）")
 
         # 3-2. created_at_unix 列が存在する場合のみ補完処理を行う
         total_created_at_unix_updated = 0
         total_created_at_unix_errors = 0
         
-        async with engine.begin() as conn:
-            pragma_res = await conn.execute(text("PRAGMA table_info(galleries)"))
-            gallery_columns = [row[1] for row in pragma_res.fetchall()]
-        
-        if "created_at_unix" in gallery_columns:
+        if has_created_at_work:
             print("[backfill] created_at_unix 補完処理開始...")
             batch_num = 0
             
@@ -1002,6 +1039,8 @@ async def _backfill_database_data():
             
             if total_created_at_unix_updated > 0 or total_created_at_unix_errors > 0:
                 print(f"[backfill] created_at_unix 補完完了: 成功 {total_created_at_unix_updated}件, エラー {total_created_at_unix_errors}件")
+        else:
+            print("[backfill] created_at_unix: 補完対象なし（全件処理済み）")
         
         elapsed = time.time() - start_time
         print(f"[backfill] === バックグラウンドデータ補完処理完了 ({elapsed:.1f}秒) ===")
@@ -1129,44 +1168,42 @@ async def init_database():
         # manga_type + page_count 複合インデックス（min_pages/max_pagesフィルター高速化用）
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_galleries_type_page_count ON galleries(manga_type, page_count)"))
 
-        # --- FTS5 再構築（トリガーとテーブルをまとめて削除→作成） ---
-        fts_cleanup = [
-            "DROP TRIGGER IF EXISTS galleries_ai",
-            "DROP TRIGGER IF EXISTS galleries_ad",
-            "DROP TRIGGER IF EXISTS galleries_au",
-            "DROP TABLE IF EXISTS galleries_fts",
-            "DROP TRIGGER IF EXISTS galleries_created_at_unix_ai",
-            "DROP TRIGGER IF EXISTS galleries_created_at_unix_au",
-        ]
-        for stmt in fts_cleanup:
-            await conn.execute(text(stmt))
+        # --- FTS5 テーブル（存在しない場合のみ作成）---
+        # 不要なトリガだけクリーンアップ（古いスキーマ互換用）
+        await conn.execute(text("DROP TRIGGER IF EXISTS galleries_created_at_unix_ai"))
+        await conn.execute(text("DROP TRIGGER IF EXISTS galleries_created_at_unix_au"))
         
-        await conn.execute(text("""
-            CREATE VIRTUAL TABLE galleries_fts USING fts5(
-                japanese_title,
-                tags,
-                characters,
-                content='galleries',
-                content_rowid='gallery_id',
-                tokenize = 'unicode61 remove_diacritics 2 tokenchars ''-_+&/#:."()[]{}'''
-            )
-        """))
+        # FTS5テーブルが存在するかチェック
+        fts_exists = await conn.execute(text(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='galleries_fts'"
+        ))
+        if not fts_exists.scalar():
+            await conn.execute(text("""
+                CREATE VIRTUAL TABLE galleries_fts USING fts5(
+                    japanese_title,
+                    tags,
+                    characters,
+                    content='galleries',
+                    content_rowid='gallery_id',
+                    tokenize = 'unicode61 remove_diacritics 2 tokenchars ''-_+&/#:."()[]{}'''
+                )
+            """))
 
-        # --- FTS 同期トリガ ---
+        # --- FTS 同期トリガ（存在しない場合のみ作成）---
         await conn.execute(text("""
-            CREATE TRIGGER galleries_ai AFTER INSERT ON galleries BEGIN
+            CREATE TRIGGER IF NOT EXISTS galleries_ai AFTER INSERT ON galleries BEGIN
                 INSERT INTO galleries_fts(rowid, japanese_title, tags, characters)
                 VALUES (new.gallery_id, new.japanese_title, new.tags, new.characters);
             END
         """))
         await conn.execute(text("""
-            CREATE TRIGGER galleries_ad AFTER DELETE ON galleries BEGIN
+            CREATE TRIGGER IF NOT EXISTS galleries_ad AFTER DELETE ON galleries BEGIN
                 INSERT INTO galleries_fts(galleries_fts, rowid, japanese_title, tags, characters)
                 VALUES ('delete', old.gallery_id, old.japanese_title, old.tags, old.characters);
             END
         """))
         await conn.execute(text("""
-            CREATE TRIGGER galleries_au AFTER UPDATE OF japanese_title, tags, characters ON galleries BEGIN
+            CREATE TRIGGER IF NOT EXISTS galleries_au AFTER UPDATE OF japanese_title, tags, characters ON galleries BEGIN
                 INSERT INTO galleries_fts(galleries_fts, rowid, japanese_title, tags, characters)
                 VALUES ('delete', old.gallery_id, old.japanese_title, old.tags, old.characters);
                 INSERT INTO galleries_fts(rowid, japanese_title, tags, characters)
@@ -1301,11 +1338,11 @@ async def init_tracking_database():
         await conn.execute(text("PRAGMA temp_store=MEMORY"))
         await conn.execute(text("PRAGMA foreign_keys=ON"))
 
-        # インデックス
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracking_users_last_seen ON tracking_users(last_seen)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracking_sessions_user ON tracking_sessions(user_id, last_activity)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracking_manga_views_user_manga ON tracking_manga_views(user_id, manga_id)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracking_search_queries_user ON tracking_search_queries(user_id, used_at)"))
+        # 新テーブル用インデックス（モデル定義のunique indexに加えて）
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_logs_last_viewed ON user_logs(last_viewed_at)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_impressions_last_shown ON impressions(last_shown_at)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tag_preferences_user ON tag_preferences(user_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_search_history_last ON search_history(last_searched_at)"))
 
 # =========================
 # FTS ユーティリティ
@@ -2031,33 +2068,18 @@ async def _ensure_image_resolver_ready() -> bool:
 
 
 async def geturl(gi: Dict[str, Any]) -> List[str]:
+    """filesからhashのリストを返す（ImageUriResolverは/proxy/で適用）"""
     files = gi.get("files", []) or []
     if not files:
         return []
 
-    resolver_ready = await _ensure_image_resolver_ready()
-    if not resolver_ready:
-        return []
-
-    # CPUバウンドなURL生成処理をスレッドプールで実行
-    def _generate_urls() -> List[str]:
-        urls: List[str] = []
-        for f in files:
-            image = SimpleNamespace(
-                hash=(f.get("hash") or "").lower(),
-                has_avif=bool(f.get("hasavif")),
-                has_webp=True,
-                has_jxl=False,
-            )
-            ext = "avif" if image.has_avif else "webp"
-            try:
-                url_img = ImageUriResolver.get_image_uri(image, ext)
-                urls.append(url_img)
-            except Exception:
-                continue
-        return urls
-    
-    return await asyncio.to_thread(_generate_urls)
+    # hashだけを返す（拡張子はavif決め打ち）
+    hashes: List[str] = []
+    for f in files:
+        h = (f.get("hash") or "").lower()
+        if h:
+            hashes.append(h)
+    return hashes
 
 # =========================
 # リクエスト/レスポンスモデル
@@ -2122,45 +2144,32 @@ class SearchRequest(BaseModel):
     min_pages: Optional[int] = None
     max_pages: Optional[int] = None
 
-# ---- 新トラッキング API用モデル ----
+# ---- 新ログ API用モデル ----
 
-class IdentifyRequest(BaseModel):
+class ViewLogRequest(BaseModel):
+    """閲覧ログ記録リクエスト"""
     user_id: str
-    fingerprint: Optional[str] = None
-    user_agent: Optional[str] = None
-
-class TrackingSessionRequest(BaseModel):
-    user_id: str
-    session_id: str
-    user_agent: Optional[str] = None
-    referrer: Optional[str] = None
-
-class MangaViewStartRequest(BaseModel):
-    user_id: str
-    session_id: str
     manga_id: int
-    page_count: Optional[int] = None
-    started_at: Optional[str] = None
+    duration: int = 0  # 今回の閲覧時間（秒）
+    max_page: int = 0  # 今回の最大閲覧ページ
+    page_count: Optional[int] = None  # 作品の総ページ数
 
-class MangaViewUpdateRequest(BaseModel):
-    manga_view_id: int
-    current_page: Optional[int] = None
-    max_page: Optional[int] = None
-    now: Optional[str] = None
-    increment_duration_sec: Optional[int] = None
+class ImpressionRequest(BaseModel):
+    """インプレッション記録リクエスト"""
+    user_id: str
+    manga_ids: List[int] = Field(default_factory=list)  # 表示された漫画IDリスト
+    tags: List[str] = Field(default_factory=list)  # 表示された漫画のタグリスト
 
-class MangaViewEndRequest(BaseModel):
-    manga_view_id: int
-    ended_at: Optional[str] = None
-    final_page: Optional[int] = None
-    total_duration_sec: Optional[int] = None
+class ClickRequest(BaseModel):
+    """クリック記録リクエスト"""
+    user_id: str
+    manga_id: int
+    tags: List[str] = Field(default_factory=list)  # クリックされた漫画のタグ
 
 class SearchLogRequest(BaseModel):
+    """検索タグ記録リクエスト"""
     user_id: str
-    session_id: Optional[str] = None
-    query: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
-    used_at: Optional[str] = None
 
 # =========================
 # ルータ
@@ -2441,11 +2450,38 @@ async def search_galleries_get(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
 
-@app.get("/proxy/{path:path}")
-async def proxy_request(path: str):
-    # パスにプロトコルがない場合は https:// を付与
-    url = path if path.startswith(("http://", "https://")) else f"https://{path}"
-    print(f"プロキシリクエスト: {url}")
+@app.get("/proxy/{hash_or_path:path}")
+async def proxy_request(hash_or_path: str):
+    """
+    画像プロキシエンドポイント
+    - hashが渡された場合: ImageUriResolverでURLを解決してからプロキシ
+    - URLが渡された場合: 従来通りそのままプロキシ（後方互換性）
+    """
+    # URLかhashかを判定
+    if hash_or_path.startswith(("http://", "https://")) or "gold-usergeneratedcontent.net" in hash_or_path:
+        # 従来のURL形式（後方互換性のため維持）
+        url = hash_or_path if hash_or_path.startswith(("http://", "https://")) else f"https://{hash_or_path}"
+    else:
+        # hash形式: ImageUriResolverでURLを解決
+        resolver_ready = await _ensure_image_resolver_ready()
+        if not resolver_ready:
+            raise HTTPException(status_code=503, detail="ImageUriResolver is not ready")
+        
+        try:
+            image = SimpleNamespace(
+                hash=hash_or_path.lower(),
+                has_avif=True,
+                has_webp=True,
+                has_jxl=False,
+            )
+            resolved = ImageUriResolver.get_image_uri(image, "avif")
+            url = f"https://{resolved}" if not resolved.startswith("http") else resolved
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"URL resolution failed: {str(e)}")
+    
+    if not "gold-usergeneratedcontent.net" in url:
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    
     headers = _build_headers()
 
     # セッションが未初期化でも動くようフォールバック
@@ -2458,7 +2494,6 @@ async def proxy_request(path: str):
         for attempt in range(max_retries + 1):
             try:
                 async with session.get(url, headers=headers) as resp:
-                    print(f"レスポンス: Status={resp.status}, Content-Type={resp.content_type}")
                     if resp.status >= 500:
                         if attempt < max_retries:
                             await asyncio.sleep(retry_delay * (2 ** attempt))
@@ -2475,10 +2510,22 @@ async def proxy_request(path: str):
                                 await ImageUriResolver.async_synchronize(force=True)
                                 _IMAGE_RESOLVER_FAILURE_AT = now_ts
                                 print("ImageUriResolverの再同期が完了しました。再試行します")
+                                # 再同期後にURLを再解決
+                                if not (hash_or_path.startswith(("http://", "https://")) or "gold-usergeneratedcontent.net" in hash_or_path):
+                                    image = SimpleNamespace(
+                                        hash=hash_or_path.lower(),
+                                        has_avif=True,
+                                        has_webp=True,
+                                        has_jxl=False,
+                                    )
+                                    resolved = ImageUriResolver.get_image_uri(image, "avif")
+                                    url = f"https://{resolved}" if not resolved.startswith("http") else resolved
                             except Exception as e:
                                 print(f"ImageUriResolver再同期エラー: {e}")
                         else:
                             print("404エラーを検出しましたが、再同期のクールダウン中です")
+                            # クールダウン中は再試行しても無意味なので即座にエラーとする
+                            raise HTTPException(status_code=resp.status, detail=f"Upstream 4xx: {resp.status}")
 
                         if attempt < max_retries:
                             await asyncio.sleep(retry_delay * (2 ** attempt))
@@ -3249,179 +3296,803 @@ async def load_history_snapshot(code: str) -> SnapshotDataResponse:
         raise HTTPException(status_code=500, detail=f"スナップショットの読み込みに失敗しました: {exc}") from exc
 
 # =========================
-# 新トラッキングAPI
+# 新ログAPI
 # =========================
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat()
 
-@app.post("/api/tracking/identify")
-async def api_tracking_identify(request: IdentifyRequest):
+@app.post("/api/logs/view")
+async def api_log_view(request: ViewLogRequest):
     """
-    TrackingUserをuser_idでupsert。
-    IPはここでは扱わず、必要であればreverse proxy側で加工して渡す前提。
-    """
-    try:
-        async with get_tracking_db_session() as db:
-            now = _now_iso()
-            stmt = select(TrackingUser).where(TrackingUser.user_id == request.user_id)
-            result = await db.execute(stmt)
-            user = result.scalars().first()
-            if user:
-                user.last_seen = now
-                if request.user_agent:
-                    user.last_user_agent = request.user_agent
-            else:
-                user = TrackingUser(
-                    user_id=request.user_id,
-                    first_seen=now,
-                    last_seen=now,
-                    last_user_agent=request.user_agent,
-                )
-                db.add(user)
-            await db.commit()
-            return {"status": "ok", "user_id": request.user_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"identifyエラー: {e}")
-
-@app.post("/api/tracking/session")
-async def api_tracking_session(request: TrackingSessionRequest):
-    """
-    tracking.js が起動時に叩く。
-    - user_id + session_id を基に TrackingSession を upsert。
+    閲覧ログ記録。
+    同一user_id + manga_idの組み合わせでupsert（累積更新）。
     """
     try:
         async with get_tracking_db_session() as db:
             now = _now_iso()
-            stmt = select(TrackingSession).where(TrackingSession.session_id == request.session_id)
+            stmt = select(UserLog).where(
+                UserLog.user_id == request.user_id,
+                UserLog.manga_id == request.manga_id
+            )
             result = await db.execute(stmt)
-            sess = result.scalars().first()
-            if sess:
-                sess.last_activity = now
-                if request.user_agent:
-                    sess.user_agent = request.user_agent
-                if request.referrer:
-                    sess.referrer = request.referrer
+            log = result.scalars().first()
+            
+            if log:
+                # 累積更新
+                log.visit_count = (log.visit_count or 0) + 1
+                log.total_duration = (log.total_duration or 0) + request.duration
+                log.read_pages = max(log.read_pages or 0, request.max_page)
+                # 平均時間を再計算（加重平均）
+                if log.read_pages and log.read_pages > 0:
+                    log.avg_time = log.total_duration // log.read_pages
+                log.last_viewed_at = now
             else:
-                sess = TrackingSession(
-                    session_id=request.session_id,
+                # 新規作成
+                avg = request.duration // request.max_page if request.max_page > 0 else 0
+                log = UserLog(
                     user_id=request.user_id,
-                    started_at=now,
-                    last_activity=now,
-                    user_agent=request.user_agent,
-                    referrer=request.referrer,
+                    manga_id=request.manga_id,
+                    avg_time=avg,
+                    read_pages=request.max_page,
+                    visit_count=1,
+                    total_duration=request.duration,
+                    last_viewed_at=now
                 )
-                db.add(sess)
-            await db.commit()
-            return {"status": "ok", "session_id": request.session_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"sessionエラー: {e}")
-
-@app.post("/api/tracking/manga-view/start")
-async def api_tracking_manga_view_start(request: MangaViewStartRequest):
-    try:
-        async with get_tracking_db_session() as db:
-            started_at = request.started_at or _now_iso()
-            mv = TrackingMangaView(
-                user_id=request.user_id,
-                session_id=request.session_id,
-                manga_id=request.manga_id,
-                page_count=request.page_count,
-                started_at=started_at,
-                total_duration_sec=0,
-                max_page=0,
-                last_page=0,
-            )
-            db.add(mv)
-            await db.commit()
-            await db.refresh(mv)
-            return {"status": "ok", "manga_view_id": mv.id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"manga-view startエラー: {e}")
-
-@app.post("/api/tracking/manga-view/update")
-async def api_tracking_manga_view_update(request: MangaViewUpdateRequest):
-    try:
-        async with get_tracking_db_session() as db:
-            stmt = select(TrackingMangaView).where(TrackingMangaView.id == request.manga_view_id)
-            result = await db.execute(stmt)
-            mv = result.scalars().first()
-            if not mv:
-                raise HTTPException(status_code=404, detail="manga_viewが見つかりません")
-
-            # 時間加算
-            if request.increment_duration_sec and request.increment_duration_sec > 0:
-                mv.total_duration_sec = (mv.total_duration_sec or 0) + int(request.increment_duration_sec)
-
-            # ページ更新
-            if request.current_page is not None:
-                mv.last_page = max(mv.last_page or 0, request.current_page)
-                mv.last_page_changed_at = request.now or _now_iso()
-
-            if request.max_page is not None:
-                mv.max_page = max(mv.max_page or 0, request.max_page)
-
-            await db.commit()
-            return {"status": "ok"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"manga-view updateエラー: {e}")
-
-@app.post("/api/tracking/manga-view/end")
-async def api_tracking_manga_view_end(request: MangaViewEndRequest):
-    try:
-        async with get_tracking_db_session() as db:
-            stmt = select(TrackingMangaView).where(TrackingMangaView.id == request.manga_view_id)
-            result = await db.execute(stmt)
-            mv = result.scalars().first()
-            if not mv:
-                # 既に削除/未登録の場合は成功扱い
-                return {"status": "ok", "skipped": True}
-
-            if request.total_duration_sec is not None and request.total_duration_sec > 0:
-                mv.total_duration_sec = max(
-                    mv.total_duration_sec or 0,
-                    int(request.total_duration_sec)
-                )
-
-            if request.final_page is not None:
-                mv.last_page = max(mv.last_page or 0, request.final_page)
-
-            mv.ended_at = request.ended_at or _now_iso()
+                db.add(log)
+            
             await db.commit()
             return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"manga-view endエラー: {e}")
+        raise HTTPException(status_code=500, detail=f"閲覧ログエラー: {e}")
 
-@app.post("/api/tracking/search")
-async def api_tracking_search(request: SearchLogRequest):
+@app.post("/api/logs/impression")
+async def api_log_impression(request: ImpressionRequest):
     """
-    検索クエリ/タグのログ。
-    tagsはクライアントでパース済みを想定し、そのままJSON文字列で保存。
+    インプレッション記録。
+    表示された漫画IDとタグを記録。
     """
     try:
         async with get_tracking_db_session() as db:
-            used_at = request.used_at or _now_iso()
-            q = (request.query or "").strip()
-            normalized = q.lower() if q else ""
-
-            tags = [str(t).strip() for t in request.tags if str(t).strip()]
-            tags_json = json.dumps(tags, ensure_ascii=False) if tags else None
-
-            entry = TrackingSearchQuery(
-                user_id=request.user_id,
-                session_id=request.session_id,
-                query=q or None,
-                normalized_query=normalized or None,
-                tags_json=tags_json,
-                used_at=used_at,
-            )
-            db.add(entry)
+            now = _now_iso()
+            
+            # 漫画ごとのインプレッション更新
+            for manga_id in request.manga_ids:
+                stmt = select(Impression).where(
+                    Impression.user_id == request.user_id,
+                    Impression.manga_id == manga_id
+                )
+                result = await db.execute(stmt)
+                imp = result.scalars().first()
+                
+                if imp:
+                    imp.shown_count = (imp.shown_count or 0) + 1
+                    imp.last_shown_at = now
+                else:
+                    imp = Impression(
+                        user_id=request.user_id,
+                        manga_id=manga_id,
+                        shown_count=1,
+                        click_count=0,
+                        last_shown_at=now
+                    )
+                    db.add(imp)
+            
+            # タグ別表示カウント更新
+            for tag in request.tags:
+                tag_lower = tag.lower().strip()
+                if not tag_lower:
+                    continue
+                stmt = select(TagPreference).where(
+                    TagPreference.user_id == request.user_id,
+                    TagPreference.tag == tag_lower
+                )
+                result = await db.execute(stmt)
+                pref = result.scalars().first()
+                
+                if pref:
+                    pref.shown_count = (pref.shown_count or 0) + 1
+                else:
+                    pref = TagPreference(
+                        user_id=request.user_id,
+                        tag=tag_lower,
+                        shown_count=1,
+                        click_count=0,
+                        total_view_time=0
+                    )
+                    db.add(pref)
+            
             await db.commit()
             return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"searchログエラー: {e}")
+        raise HTTPException(status_code=500, detail=f"インプレッションエラー: {e}")
+
+@app.post("/api/logs/click")
+async def api_log_click(request: ClickRequest):
+    """
+    クリック記録。
+    クリックされた漫画IDとタグを記録。
+    """
+    try:
+        async with get_tracking_db_session() as db:
+            now = _now_iso()
+            
+            # 漫画のクリックカウント更新
+            stmt = select(Impression).where(
+                Impression.user_id == request.user_id,
+                Impression.manga_id == request.manga_id
+            )
+            result = await db.execute(stmt)
+            imp = result.scalars().first()
+            
+            if imp:
+                imp.click_count = (imp.click_count or 0) + 1
+                imp.last_clicked_at = now
+            else:
+                imp = Impression(
+                    user_id=request.user_id,
+                    manga_id=request.manga_id,
+                    shown_count=1,
+                    click_count=1,
+                    last_shown_at=now,
+                    last_clicked_at=now
+                )
+                db.add(imp)
+            
+            # タグ別クリックカウント更新
+            for tag in request.tags:
+                tag_lower = tag.lower().strip()
+                if not tag_lower:
+                    continue
+                stmt = select(TagPreference).where(
+                    TagPreference.user_id == request.user_id,
+                    TagPreference.tag == tag_lower
+                )
+                result = await db.execute(stmt)
+                pref = result.scalars().first()
+                
+                if pref:
+                    pref.click_count = (pref.click_count or 0) + 1
+                else:
+                    pref = TagPreference(
+                        user_id=request.user_id,
+                        tag=tag_lower,
+                        shown_count=1,
+                        click_count=1,
+                        total_view_time=0
+                    )
+                    db.add(pref)
+            
+            await db.commit()
+            return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"クリックログエラー: {e}")
+
+@app.post("/api/logs/search")
+async def api_log_search(request: SearchLogRequest):
+    """
+    検索タグ記録。
+    検索に使用したタグを記録。
+    """
+    try:
+        async with get_tracking_db_session() as db:
+            now = _now_iso()
+            
+            for tag in request.tags:
+                tag_lower = tag.lower().strip()
+                if not tag_lower:
+                    continue
+                
+                stmt = select(SearchHistory).where(
+                    SearchHistory.user_id == request.user_id,
+                    SearchHistory.tag == tag_lower
+                )
+                result = await db.execute(stmt)
+                hist = result.scalars().first()
+                
+                if hist:
+                    hist.search_count = (hist.search_count or 0) + 1
+                    hist.last_searched_at = now
+                else:
+                    hist = SearchHistory(
+                        user_id=request.user_id,
+                        tag=tag_lower,
+                        search_count=1,
+                        last_searched_at=now
+                    )
+                    db.add(hist)
+            
+            await db.commit()
+            return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"検索ログエラー: {e}")
+
+# =========================
+# パーソナライズおすすめシステム
+# =========================
+
+# 定数
+RECOMMENDATION_AVG_TIME_HIGH = 30  # 高満足度の閾値（秒）
+RECOMMENDATION_AVG_TIME_MED = 10   # 普通の閾値（秒）
+RECOMMENDATION_AVG_TIME_LOW = 5    # 飛ばし読みの閾値（秒）
+RECOMMENDATION_LONG_MANGA_PAGES = 50  # 長編の閾値
+RECOMMENDATION_CTR_LOW_THRESHOLD = 0.1  # 低CTR閾値
+RECOMMENDATION_CTR_SAFE_THRESHOLD = 0.15  # 安全CTR閾値
+RECOMMENDATION_SHOWN_DECAY_START = 3  # 繰り返し抑制開始回数
+RECOMMENDATION_SHOWN_DECAY_RATE = 0.7  # 繰り返し抑制係数
+RECOMMENDATION_EXPLORATION_RATIO = 0.2  # 多様性枠の割合
+
+
+async def _get_user_tag_scores(db: AsyncSession, user_id: str) -> Dict[str, float]:
+    """ユーザーのタグスコアを計算（検索履歴 + タグ別CTR + 閲覧時間）"""
+    scores: Dict[str, float] = {}
+    
+    # 検索履歴からのスコア
+    stmt = select(SearchHistory).where(SearchHistory.user_id == user_id)
+    result = await db.execute(stmt)
+    for hist in result.scalars():
+        tag = hist.tag.lower()
+        scores[tag] = scores.get(tag, 0) + (hist.search_count or 0) * 10  # 検索は意思が強い
+    
+    # タグ別CTRと閲覧時間からのスコア
+    stmt = select(TagPreference).where(TagPreference.user_id == user_id)
+    result = await db.execute(stmt)
+    for pref in result.scalars():
+        tag = pref.tag.lower()
+        shown = pref.shown_count or 1
+        clicked = pref.click_count or 0
+        view_time = pref.total_view_time or 0
+        
+        ctr = clicked / max(shown, 1)
+        time_score = view_time / max(shown, 1)
+        
+        scores[tag] = scores.get(tag, 0) + (ctr * 100) + (time_score * 2)
+    
+    return scores
+
+
+async def _get_user_favorite_authors(db: AsyncSession, tracking_db: AsyncSession, user_id: str) -> Dict[str, int]:
+    """ユーザーのお気に入り作者を抽出（完読 or 再訪問 or 高avg_time）"""
+    authors: Dict[str, int] = {}
+    
+    # ユーザーの閲覧ログを取得
+    stmt = select(UserLog).where(UserLog.user_id == user_id)
+    result = await tracking_db.execute(stmt)
+    user_logs = {log.manga_id: log for log in result.scalars()}
+    
+    if not user_logs:
+        return authors
+    
+    # 該当する漫画の情報を取得
+    manga_ids = list(user_logs.keys())
+    stmt = select(Gallery).where(Gallery.gallery_id.in_(manga_ids))
+    result = await db.execute(stmt)
+    
+    for gallery in result.scalars():
+        log = user_logs.get(gallery.gallery_id)
+        if not log:
+            continue
+        
+        # タグから作者を抽出
+        try:
+            tags = json.loads(gallery.tags) if gallery.tags else []
+        except:
+            tags = []
+        
+        author = None
+        for tag in tags:
+            if isinstance(tag, str) and tag.startswith("artist:"):
+                author = tag[7:].lower()
+                break
+        
+        if not author:
+            continue
+        
+        page_count = gallery.page_count or 0
+        read_pages = log.read_pages or 0
+        visit_count = log.visit_count or 0
+        avg_time = log.avg_time or 0
+        
+        score = 0
+        # 完読（read_pages >= page_count * 0.8 とみなす）
+        if page_count > 0 and read_pages >= page_count * 0.8:
+            score = max(score, 50)
+        # 再訪問
+        if visit_count >= 2:
+            score = max(score, 30)
+        # 高avg_time
+        if avg_time >= RECOMMENDATION_AVG_TIME_HIGH:
+            score = max(score, 20)
+        
+        if score > 0:
+            authors[author] = max(authors.get(author, 0), score)
+    
+    return authors
+
+
+async def _get_low_ctr_authors(db: AsyncSession, tracking_db: AsyncSession, user_id: str) -> Set[str]:
+    """低CTRの作者を取得"""
+    low_ctr_authors: Set[str] = set()
+    
+    # インプレッションデータを取得
+    stmt = select(Impression).where(Impression.user_id == user_id)
+    result = await tracking_db.execute(stmt)
+    impressions = {imp.manga_id: imp for imp in result.scalars()}
+    
+    if not impressions:
+        return low_ctr_authors
+    
+    # 該当する漫画の情報を取得
+    manga_ids = list(impressions.keys())
+    stmt = select(Gallery).where(Gallery.gallery_id.in_(manga_ids))
+    result = await db.execute(stmt)
+    
+    # 作者ごとのCTR集計
+    author_stats: Dict[str, Tuple[int, int]] = {}  # author -> (shown, clicked)
+    
+    for gallery in result.scalars():
+        imp = impressions.get(gallery.gallery_id)
+        if not imp:
+            continue
+        
+        try:
+            tags = json.loads(gallery.tags) if gallery.tags else []
+        except:
+            tags = []
+        
+        author = None
+        for tag in tags:
+            if isinstance(tag, str) and tag.startswith("artist:"):
+                author = tag[7:].lower()
+                break
+        
+        if not author:
+            continue
+        
+        shown, clicked = author_stats.get(author, (0, 0))
+        author_stats[author] = (shown + (imp.shown_count or 0), clicked + (imp.click_count or 0))
+    
+    for author, (shown, clicked) in author_stats.items():
+        if shown >= 5:  # 十分なデータがある場合のみ
+            ctr = clicked / shown
+            if ctr < RECOMMENDATION_CTR_LOW_THRESHOLD:
+                low_ctr_authors.add(author)
+    
+    return low_ctr_authors
+
+
+async def _get_ranking_bonuses(db: AsyncSession, manga_ids: List[int]) -> Dict[int, int]:
+    """ランキングボーナスを一括取得（N+1問題回避）"""
+    bonuses: Dict[int, int] = {}
+    
+    if not manga_ids:
+        return bonuses
+    
+    stmt = select(GalleryRanking).where(GalleryRanking.gallery_id.in_(manga_ids))
+    result = await db.execute(stmt)
+    
+    for ranking in result.scalars():
+        manga_id = ranking.gallery_id
+        rtype = ranking.ranking_type
+        score = ranking.score or 0
+        
+        if manga_id not in bonuses:
+            bonuses[manga_id] = 0
+        
+        # TOP100内かどうかを判定（scoreが高い = 順位が高い）
+        if rtype == "weekly" and score > 0:
+            bonuses[manga_id] += 30
+        elif rtype == "monthly" and score > 0:
+            bonuses[manga_id] += 20
+        elif rtype == "yearly" and score > 0:
+            bonuses[manga_id] += 10
+    
+    return bonuses
+
+
+async def _get_global_manga_stats(tracking_db: AsyncSession, manga_ids: List[int]) -> Dict[int, Tuple[float, float]]:
+    """グローバル統計（全ユーザーのCTRと平均閲覧時間）を一括取得"""
+    stats: Dict[int, Tuple[float, float]] = {}  # manga_id -> (global_ctr, global_avg_time)
+    
+    if not manga_ids:
+        return stats
+    
+    # インプレッションからグローバルCTRを計算
+    # 漫画ごとの集計CTR
+    stmt = select(
+        Impression.manga_id,
+        func.sum(Impression.shown_count).label('total_shown'),
+        func.sum(Impression.click_count).label('total_clicked')
+    ).where(
+        Impression.manga_id.in_(manga_ids)
+    ).group_by(Impression.manga_id)
+    
+    result = await tracking_db.execute(stmt)
+    imp_stats = {row[0]: (row[1] or 0, row[2] or 0) for row in result.fetchall()}
+    
+    # 閲覧ログからグローバル平均閲覧時間を計算
+    stmt = select(
+        UserLog.manga_id,
+        func.avg(UserLog.avg_time).label('avg_time')
+    ).where(
+        UserLog.manga_id.in_(manga_ids)
+    ).group_by(UserLog.manga_id)
+    
+    result = await tracking_db.execute(stmt)
+    time_stats = {row[0]: row[1] or 0 for row in result.fetchall()}
+    
+    # 統合
+    for manga_id in manga_ids:
+        shown, clicked = imp_stats.get(manga_id, (0, 0))
+        global_ctr = clicked / max(shown, 1) if shown > 0 else 0.15  # デフォルト
+        global_avg_time = time_stats.get(manga_id, 15)  # デフォルト15秒
+        stats[manga_id] = (global_ctr, global_avg_time)
+    
+    return stats
+
+
+async def _get_user_read_manga_ids(tracking_db: AsyncSession, user_id: str) -> Set[int]:
+    """ユーザーが閲覧済みの漫画IDセットを取得"""
+    stmt = select(UserLog.manga_id).where(UserLog.user_id == user_id)
+    result = await tracking_db.execute(stmt)
+    return {row[0] for row in result.fetchall()}
+
+
+async def _get_skipped_manga_ids(tracking_db: AsyncSession, user_id: str) -> Set[int]:
+    """スルーされた漫画IDセットを取得（shown > 5 and click = 0）"""
+    stmt = select(Impression.manga_id).where(
+        Impression.user_id == user_id,
+        Impression.shown_count > 5,
+        Impression.click_count == 0
+    )
+    result = await tracking_db.execute(stmt)
+    return {row[0] for row in result.fetchall()}
+
+
+async def _get_shown_counts(tracking_db: AsyncSession, user_id: str) -> Dict[int, int]:
+    """漫画ごとの表示回数を取得"""
+    stmt = select(Impression).where(Impression.user_id == user_id)
+    result = await tracking_db.execute(stmt)
+    return {imp.manga_id: imp.shown_count or 0 for imp in result.scalars()}
+
+
+async def _get_continue_reading_candidates(
+    db: AsyncSession, 
+    tracking_db: AsyncSession, 
+    user_id: str
+) -> List[Tuple[int, int]]:
+    """「続きを読む」候補を取得（manga_id, bonus）"""
+    candidates: List[Tuple[int, int]] = []
+    
+    # avg_time高 + 未完読のログを取得
+    stmt = select(UserLog).where(
+        UserLog.user_id == user_id,
+        UserLog.avg_time >= 20
+    )
+    result = await tracking_db.execute(stmt)
+    logs = {log.manga_id: log for log in result.scalars()}
+    
+    if not logs:
+        return candidates
+    
+    # 該当漫画の情報を取得
+    manga_ids = list(logs.keys())
+    stmt = select(Gallery).where(Gallery.gallery_id.in_(manga_ids))
+    result = await db.execute(stmt)
+    
+    for gallery in result.scalars():
+        log = logs.get(gallery.gallery_id)
+        if not log:
+            continue
+        
+        page_count = gallery.page_count or 0
+        read_pages = log.read_pages or 0
+        
+        # 長編 + 未完読
+        if page_count > RECOMMENDATION_LONG_MANGA_PAGES and read_pages < page_count:
+            candidates.append((gallery.gallery_id, 100))
+    
+    return candidates
+
+
+async def _get_user_known_tags(tracking_db: AsyncSession, user_id: str) -> Set[str]:
+    """ユーザーが見たことあるタグを取得"""
+    known_tags: Set[str] = set()
+    
+    stmt = select(TagPreference.tag).where(TagPreference.user_id == user_id)
+    result = await tracking_db.execute(stmt)
+    for row in result.fetchall():
+        known_tags.add(row[0].lower())
+    
+    stmt = select(SearchHistory.tag).where(SearchHistory.user_id == user_id)
+    result = await tracking_db.execute(stmt)
+    for row in result.fetchall():
+        known_tags.add(row[0].lower())
+    
+    return known_tags
+
+
+def _calculate_quality_factor(avg_time: float, ctr: float) -> float:
+    """品質係数を計算（サムネ詐欺 / 隠れた名作判定）"""
+    # CTR高 + avg_time低 = サムネ詐欺
+    if ctr > 0.3 and avg_time < RECOMMENDATION_AVG_TIME_LOW:
+        return 0.5
+    # CTR低 + avg_time高 = 隠れた名作
+    if ctr < 0.15 and avg_time > RECOMMENDATION_AVG_TIME_HIGH:
+        return 2.0
+    return 1.0
+
+
+def _calculate_freshness_factor(created_at_unix: Optional[int]) -> float:
+    """新鮮度係数を計算"""
+    if not created_at_unix:
+        return 1.0
+    
+    now = int(time.time())
+    age_days = (now - created_at_unix) / 86400
+    
+    if age_days <= 7:
+        return 1.5
+    elif age_days <= 30:
+        return 1.2
+    return 1.0
+
+
+def _calculate_shown_decay(shown_count: int) -> float:
+    """繰り返し表示抑制係数を計算"""
+    if shown_count <= RECOMMENDATION_SHOWN_DECAY_START:
+        return 1.0
+    excess = shown_count - RECOMMENDATION_SHOWN_DECAY_START
+    return RECOMMENDATION_SHOWN_DECAY_RATE ** excess
+
+
+async def _process_results_with_image_urls(results: List[Dict[str, Any]]):
+    """結果リストに画像URLを付与（非同期並列処理）"""
+    if not results:
+        return
+
+    tasks = []
+    for item in results:
+        gallery_id = item.get("gallery_id")
+        files_str = item.get("files")
+        
+        try:
+            files_list = json.loads(files_str) if files_str else []
+            if not isinstance(files_list, list):
+                files_list = []
+        except:
+            files_list = []
+            
+        gallery_info = {"gallery_id": gallery_id, "files": files_list}
+        tasks.append(geturl(gallery_info))
+    
+    image_urls_list = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    for item, image_urls in zip(results, image_urls_list):
+        if isinstance(image_urls, Exception):
+            item["image_urls"] = []
+        else:
+            item["image_urls"] = image_urls
+        
+        # filesはレスポンスに不要なので削除
+        item.pop("files", None)
+
+
+@app.get("/api/recommendations/personal")
+async def api_recommendations_personal(
+    user_id: str,
+    limit: int = 20,
+    exclude_tag: Optional[str] = None
+):
+    """
+    パーソナライズおすすめAPI
+    8つのスコアリング要素を考慮:
+    1. タグスコア（検索履歴 + CTR + 閲覧時間）
+    2. 作者スコア（お気に入り作者ボーナス / 低CTR作者ペナルティ）
+    3. ランキングスコア（週間/月間/年間TOP100）
+    4. 品質係数（サムネ詐欺 / 隠れた名作）
+    5. 新鮮度係数
+    6. 繰り返し表示抑制
+    7. 多様性確保（Exploration枠）
+    8. 続きを読むボーナス
+    """
+    
+    # パーソナライズ設定チェック
+    if not global_state.personalization_enabled:
+        try:
+            async with get_db_session() as db:
+                # 最新の作品を取得
+                stmt = select(Gallery).where(
+                    Gallery.manga_type.in_(["doujinshi", "manga"])
+                ).order_by(Gallery.created_at_unix.desc()).limit(limit)
+                
+                result = await db.execute(stmt)
+                candidates = list(result.scalars())
+                
+                results = []
+                for gallery in candidates:
+                    # タグのロード
+                    try:
+                        tags = json.loads(gallery.tags) if gallery.tags else []
+                    except:
+                        tags = []
+                    
+                    results.append({
+                        "gallery_id": gallery.gallery_id,
+                        "japanese_title": gallery.japanese_title,
+                        "tags": tags,
+                        "page_count": gallery.page_count,
+                        "created_at": gallery.created_at,
+                        "manga_type": gallery.manga_type,
+                        "score": 0,
+                        "files": gallery.files
+                    })
+                
+                # 画像URL処理
+                await _process_results_with_image_urls(results)
+                
+                return {
+                    "count": len(results),
+                    "results": results,
+                    "has_personalization": False
+                }
+        except Exception as e:
+            print(f"Personalization disabled fallback error: {e}")
+            return {"count": 0, "results": [], "has_personalization": False}
+
+    try:
+        async with get_db_session() as db, get_tracking_db_session() as tracking_db:
+            # ユーザーデータ取得（順次実行 - SQLAlchemy非同期セッションは並列不可）
+            tag_scores = await _get_user_tag_scores(tracking_db, user_id)
+            read_manga_ids = await _get_user_read_manga_ids(tracking_db, user_id)
+            skipped_manga_ids = await _get_skipped_manga_ids(tracking_db, user_id)
+            shown_counts = await _get_shown_counts(tracking_db, user_id)
+            known_tags = await _get_user_known_tags(tracking_db, user_id)
+            favorite_authors = await _get_user_favorite_authors(db, tracking_db, user_id)
+            low_ctr_authors = await _get_low_ctr_authors(db, tracking_db, user_id)
+            continue_reading = await _get_continue_reading_candidates(db, tracking_db, user_id)
+            
+            continue_reading_map = {m[0]: m[1] for m in continue_reading}
+            
+            # 除外タグ処理
+            exclude_tag_terms = set()
+            if exclude_tag:
+                for t in exclude_tag.replace(",", " ").split():
+                    t = t.strip().lower()
+                    if t:
+                        exclude_tag_terms.add(t)
+            
+            # 候補漫画を取得（最近の作品 + ランキング上位から）
+            candidate_limit = limit * 10
+            stmt = select(Gallery).where(
+                Gallery.manga_type.in_(["doujinshi", "manga"])
+            ).order_by(Gallery.created_at_unix.desc()).limit(candidate_limit)
+            result = await db.execute(stmt)
+            candidates = list(result.scalars())
+            
+            # バッチ取得: N+1問題回避
+            candidate_ids = [g.gallery_id for g in candidates]
+            ranking_bonuses = await _get_ranking_bonuses(db, candidate_ids)
+            global_stats = await _get_global_manga_stats(tracking_db, candidate_ids)
+            
+            # スコア計算
+            scored_results: List[Tuple[float, Dict[str, Any]]] = []
+            exploration_pool: List[Dict[str, Any]] = []
+            
+            for gallery in candidates:
+                manga_id = gallery.gallery_id
+                
+                # 除外チェック
+                if manga_id in skipped_manga_ids:
+                    continue
+                if manga_id in read_manga_ids and manga_id not in continue_reading_map:
+                    continue
+                
+                # タグ解析
+                try:
+                    tags = json.loads(gallery.tags) if gallery.tags else []
+                except:
+                    tags = []
+                
+                tag_list = [t.lower() for t in tags if isinstance(t, str)]
+                
+                # 除外タグチェック
+                if exclude_tag_terms and any(t in exclude_tag_terms for t in tag_list):
+                    continue
+                
+                # 作者抽出
+                author = None
+                for t in tag_list:
+                    if t.startswith("artist:"):
+                        author = t[7:]
+                        break
+                
+                # スコア計算
+                # 1. タグスコア
+                tag_score = sum(tag_scores.get(t, 0) for t in tag_list)
+                
+                # 2. 作者スコア
+                author_score = 0
+                if author:
+                    author_score = favorite_authors.get(author, 0)
+                    if author in low_ctr_authors:
+                        author_score -= 30
+                
+                # 3. ランキングボーナス（バッチ取得済み）
+                ranking_score = ranking_bonuses.get(manga_id, 0)
+                
+                # 4. 続きを読むボーナス
+                continue_bonus = continue_reading_map.get(manga_id, 0)
+                
+                # 5. 品質係数（グローバル統計から計算）
+                global_ctr, global_avg_time = global_stats.get(manga_id, (0.15, 15))
+                quality = _calculate_quality_factor(global_avg_time, global_ctr)
+                
+                # 6. 新鮮度
+                freshness = _calculate_freshness_factor(gallery.created_at_unix)
+                
+                # 7. 繰り返し抑制
+                shown = shown_counts.get(manga_id, 0)
+                decay = _calculate_shown_decay(shown)
+                
+                # 最終スコア
+                base_score = tag_score + author_score + ranking_score + continue_bonus
+                final_score = base_score * quality * freshness * decay
+                
+                # 結果オブジェクト作成
+                result_obj = {
+                    "gallery_id": gallery.gallery_id,
+                    "japanese_title": gallery.japanese_title,
+                    "tags": tags,
+                    "page_count": gallery.page_count,
+                    "created_at": gallery.created_at,
+                    "manga_type": gallery.manga_type,
+                    "score": final_score,
+                    "files": gallery.files
+                }
+                
+                # 多様性枠候補チェック（未知のタグを含む）
+                has_new_tag = any(t not in known_tags for t in tag_list if not t.startswith("artist:"))
+                
+                if has_new_tag and ranking_score > 0:
+                    exploration_pool.append(result_obj)
+                
+                if final_score > 0:
+                    scored_results.append((final_score, result_obj))
+            
+            # スコア順ソート
+            scored_results.sort(key=lambda x: x[0], reverse=True)
+            
+            # 多様性枠の計算
+            exploration_count = int(limit * RECOMMENDATION_EXPLORATION_RATIO)
+            main_count = limit - exploration_count
+            
+            # メイン枠
+            main_results = [r[1] for r in scored_results[:main_count]]
+            
+            # Exploration枠（メインに含まれていないものから）
+            main_ids = {r["gallery_id"] for r in main_results}
+            exploration_candidates = [r for r in exploration_pool if r["gallery_id"] not in main_ids]
+            
+            random.shuffle(exploration_candidates)
+            exploration_results = exploration_candidates[:exploration_count]
+            
+            # 結果結合
+            final_results = main_results + exploration_results
+            
+            # image_urls追加
+            await _process_results_with_image_urls(final_results)
+            
+            return {
+                "count": len(final_results),
+                "results": final_results,
+                "has_personalization": len(tag_scores) > 0 or len(favorite_authors) > 0
+            }
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"おすすめ取得エラー: {e}")
 
 # =========================
 # ランキング系API
@@ -3585,12 +4256,13 @@ async def daily_ranking_update_task():
                 process = await asyncio.create_subprocess_exec(
                     sys.executable, "scraper/hitomi.py",
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    text=True
+                    stderr=asyncio.subprocess.PIPE
                 )
                 
                 try:
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)  # 5分タイムアウト
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=300)  # 5分タイムアウト
+                    stdout = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ""
+                    stderr = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ""
                     
                     if process.returncode == 0:
                         print("ランキングファイル更新完了")
@@ -3733,6 +4405,12 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8000, help="Server port (default: 8000)")
     parser.add_argument("--log", type=str, choices=["critical", "error", "warning", "info", "debug", "trace"],
                         default="info", help="Logging level (default: info)")
+    parser.add_argument("--disable-personalization", action="store_true", help="Disable personalized recommendations")
     args = parser.parse_args()
+
+    # パーソナライズ設定を反映
+    if args.disable_personalization:
+        global_state.personalization_enabled = False
+        print("Personalized recommendations disabled.")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log)

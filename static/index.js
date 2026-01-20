@@ -86,6 +86,10 @@
         attachEventHandlers(elements);
         updateHiddenTagsUI(elements);
         renderHistory(elements);
+
+        // パーソナライズおすすめセクションを初期化
+        loadRecommendations(elements);
+
         // 初回は reset=false でURLのページを維持
         performSearch(elements, currentPage === 1);
 
@@ -349,6 +353,13 @@
                 const startItem = (currentPage - 1) * LIMIT + 1;
                 const endItem = Math.min(currentPage * LIMIT, totalCount);
                 elements.resultMeta.textContent = `${startItem}-${endItem} 件を表示中 / 合計 ${totalCount} 件${hiddenTags.length ? '（除外タグ反映）' : ''}`;
+
+                // 次のページのサムネイルを先読み
+                if (currentPage < totalPages) {
+                    waitForAllImagesLoaded(elements.cardGrid).then(() => {
+                        prefetchNextPageThumbnails(currentPage + 1, sortBy);
+                    });
+                }
             }
         } catch (error) {
             console.error('検索エラー', error);
@@ -607,6 +618,203 @@
         elements.historyGrid.appendChild(fragment);
     }
 
+    // =========================
+    // パーソナライズおすすめセクション
+    // =========================
+
+    async function loadRecommendations(elements) {
+        // user_idを取得（TrackingからまたはlocalStorageから）
+        let userId = null;
+        if (window.Tracking && typeof window.Tracking.getUserId === 'function') {
+            userId = window.Tracking.getUserId();
+        } else {
+            try {
+                userId = localStorage.getItem('tracking_user_id');
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        if (!userId) {
+            console.log('No user_id, skipping personalized recommendations');
+            return;
+        }
+
+        // おすすめセクション用のHTML要素を作成
+        const recommendSection = document.createElement('section');
+        recommendSection.id = 'recommendSection';
+        recommendSection.className = 'recommend-section';
+        recommendSection.innerHTML = `
+            <div class="section-header">
+                <h2><i class="fas fa-magic"></i> あなたへのおすすめ</h2>
+            </div>
+            <div id="recommendGrid" class="recommend-grid"></div>
+        `;
+
+        // 履歴セクションの後、または検索フォームの後に挿入
+        const historySection = elements.historySection || document.getElementById('historySection');
+        if (historySection) {
+            historySection.parentNode.insertBefore(recommendSection, historySection.nextSibling);
+        } else {
+            const cardGrid = elements.cardGrid || document.getElementById('cardGrid');
+            if (cardGrid) {
+                cardGrid.parentNode.insertBefore(recommendSection, cardGrid);
+            }
+        }
+
+        const recommendGrid = document.getElementById('recommendGrid');
+        if (!recommendGrid) return;
+
+        try {
+            const hiddenTags = MangaApp.getHiddenTags();
+            const excludeTag = hiddenTags.length ? hiddenTags.join(',') : '';
+
+            const params = new URLSearchParams();
+            params.append('user_id', userId);
+            params.append('limit', '20');
+            if (excludeTag) {
+                params.append('exclude_tag', excludeTag);
+            }
+
+            const response = await fetch(`/api/recommendations/personal?${params.toString()}`);
+            if (!response.ok) {
+                throw new Error(`HTTP error ${response.status}`);
+            }
+
+            const data = await response.json();
+
+            if (!data.results || data.results.length === 0) {
+                // おすすめがない場合はセクションを非表示
+                recommendSection.style.display = 'none';
+                return;
+            }
+
+            if (!data.has_personalization) {
+                // パーソナライズデータがない場合はタイトルを変更
+                recommendSection.querySelector('h2').innerHTML = '<i class="fas fa-star"></i> 人気作品';
+            }
+
+            // おすすめカードを表示
+            const fragment = document.createDocumentFragment();
+            data.results.forEach((gallery) => {
+                const card = createRecommendCard(gallery);
+                if (cardObserver) {
+                    cardObserver.observe(card);
+                }
+                fragment.appendChild(card);
+            });
+            recommendGrid.appendChild(fragment);
+
+            // インプレッション記録（おすすめ一覧に表示された）
+            const mangaIds = data.results.map(r => r.gallery_id);
+            const allTags = [];
+            data.results.forEach(r => {
+                const tags = safeParseArray(r.tags);
+                tags.forEach(t => {
+                    if (!allTags.includes(t)) allTags.push(t);
+                });
+            });
+
+            if (window.Tracking && window.Tracking.logImpression) {
+                window.Tracking.logImpression({
+                    mangaIds: mangaIds,
+                    tags: allTags.slice(0, 50) // 最大50タグ
+                });
+            }
+
+        } catch (error) {
+            console.error('おすすめ取得エラー:', error);
+            recommendSection.style.display = 'none';
+        }
+    }
+
+    function createRecommendCard(gallery) {
+        const card = document.createElement('a');
+        card.href = `/viewer?id=${gallery.gallery_id}`;
+        card.className = 'card recommend-card';
+        card.dataset.galleryId = gallery.gallery_id;
+
+        // サムネイル
+        const thumbnail = document.createElement('div');
+        thumbnail.className = 'card-thumbnail';
+        const placeholder = document.createElement('div');
+        placeholder.className = 'image-placeholder';
+        thumbnail.appendChild(placeholder);
+
+        const img = document.createElement('img');
+        let firstImage = '';
+        if (Array.isArray(gallery.image_urls) && gallery.image_urls.length > 0) {
+            firstImage = gallery.image_urls[0];
+        } else if (typeof gallery.image_urls === 'string' && gallery.image_urls) {
+            firstImage = gallery.image_urls;
+        }
+
+        if (firstImage) {
+            const resolved = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
+            img.dataset.src = resolved;
+            if (!cardObserver) {
+                img.src = resolved;
+                img.onload = () => {
+                    const ph = thumbnail.querySelector('.image-placeholder');
+                    if (ph) ph.remove();
+                };
+            }
+        }
+        thumbnail.appendChild(img);
+
+        // いいねボタン
+        const likeButton = document.createElement('button');
+        likeButton.className = 'like-button';
+        likeButton.type = 'button';
+        likeButton.setAttribute('aria-label', 'いいね');
+        const liked = MangaApp.isLiked(gallery.gallery_id);
+        likeButton.classList.toggle('active', liked);
+        likeButton.innerHTML = liked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
+        likeButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const isLiked = MangaApp.toggleLike(gallery.gallery_id);
+            likeButton.classList.toggle('active', isLiked);
+            likeButton.innerHTML = isLiked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
+        });
+
+        // 情報
+        const info = document.createElement('div');
+        info.className = 'card-info';
+
+        const title = document.createElement('h3');
+        title.className = 'card-title';
+        title.textContent = gallery.japanese_title || '無題';
+
+        const meta = document.createElement('div');
+        meta.className = 'card-meta';
+        if (gallery.page_count) {
+            const pageInfo = document.createElement('span');
+            pageInfo.textContent = `${gallery.page_count}ページ`;
+            meta.appendChild(pageInfo);
+        }
+
+        info.appendChild(title);
+        info.appendChild(meta);
+
+        card.appendChild(thumbnail);
+        card.appendChild(likeButton);
+        card.appendChild(info);
+
+        // クリック時の処理
+        card.addEventListener('click', () => {
+            MangaApp.addHistoryEntry(gallery);
+
+            // クリック記録
+            if (window.Tracking && window.Tracking.logImpression) {
+                const tags = safeParseArray(gallery.tags);
+                // Trackingにはクリック用のlogImpression的なメソッドがないが、後でviewer側で記録される
+            }
+        });
+
+        return card;
+    }
+
     function showLoading(elements, visible) {
         isLoading = visible;
         elements.loadingIndicator.style.display = visible ? 'block' : 'none';
@@ -778,6 +986,115 @@
             timer = setTimeout(() => fn.apply(this, args), delay);
         };
     }
+
+    // 指定したコンテナ内のすべての画像の読み込み完了を待つ
+    function waitForAllImagesLoaded(container) {
+        return new Promise((resolve) => {
+            const images = container.querySelectorAll('img');
+            if (images.length === 0) {
+                resolve();
+                return;
+            }
+
+            let loadedCount = 0;
+            const totalImages = images.length;
+
+            const checkComplete = () => {
+                loadedCount++;
+                if (loadedCount >= totalImages) {
+                    resolve();
+                }
+            };
+
+            images.forEach((img) => {
+                if (img.complete && img.naturalWidth > 0) {
+                    checkComplete();
+                } else if (img.src || img.dataset.src) {
+                    img.addEventListener('load', checkComplete, { once: true });
+                    img.addEventListener('error', checkComplete, { once: true });
+                    // まだsrcがセットされていない場合は少し待って再確認
+                    if (!img.src && img.dataset.src) {
+                        setTimeout(() => {
+                            if (!img.src) {
+                                checkComplete();
+                            }
+                        }, 5000);
+                    }
+                } else {
+                    checkComplete();
+                }
+            });
+
+            // 安全のため、10秒後にタイムアウト
+            setTimeout(() => {
+                resolve();
+            }, 10000);
+        });
+    }
+
+    // 次のページのサムネイルを先読みする
+    let prefetchedPages = new Set();
+
+    async function prefetchNextPageThumbnails(nextPage, sortBy) {
+        // 既に先読み済みの場合はスキップ
+        const cacheKey = `${currentResolvedQuery}|${nextPage}|${sortBy}`;
+        if (prefetchedPages.has(cacheKey)) {
+            return;
+        }
+        prefetchedPages.add(cacheKey);
+
+        // 先読みページ数が多くなりすぎないよう制限
+        if (prefetchedPages.size > 10) {
+            const firstKey = prefetchedPages.values().next().value;
+            prefetchedPages.delete(firstKey);
+        }
+
+        try {
+            // 次のページのデータを取得
+            const data = await fetchSearchResults(
+                currentResolvedQuery,
+                currentQuery,
+                nextPage,
+                currentMinPages,
+                currentMaxPages,
+                sortBy
+            );
+
+            if (!data.results || data.results.length === 0) {
+                return;
+            }
+
+            // サムネイルURLを抽出して先読み
+            const thumbnailUrls = [];
+            data.results.forEach((gallery) => {
+                let imageUrl = '';
+                if (Array.isArray(gallery.image_urls) && gallery.image_urls.length > 0) {
+                    imageUrl = gallery.image_urls[0];
+                } else if (typeof gallery.image_urls === 'string' && gallery.image_urls) {
+                    imageUrl = gallery.image_urls;
+                } else if (gallery.thumbnail_url) {
+                    imageUrl = gallery.thumbnail_url;
+                }
+
+                if (imageUrl) {
+                    const resolved = imageUrl.startsWith('/proxy/') ? imageUrl : `/proxy/${imageUrl}`;
+                    thumbnailUrls.push(resolved);
+                }
+            });
+
+            // 画像を先読み（link prefetchまたはImageオブジェクトを使用）
+            thumbnailUrls.forEach((url) => {
+                // Imageオブジェクトで先読み
+                const img = new Image();
+                img.src = url;
+            });
+
+            console.log(`Prefetched ${thumbnailUrls.length} thumbnails for page ${nextPage}`);
+        } catch (error) {
+            console.error('Prefetch error:', error);
+        }
+    }
+
 
     // URLにページ番号を反映する関数
     function updateUrlWithPage(page, query) {
