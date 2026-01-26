@@ -445,6 +445,7 @@
             color: #e2e8f0;
             display: -webkit-box;
             -webkit-line-clamp: 2;
+            line-clamp: 2;
             -webkit-box-orient: vertical;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -452,6 +453,131 @@
 
         body:not(.dark-mode) .recommendation-card .card-body {
             color: var(--text-primary);
+        }
+
+        /* 作者情報セクション */
+        .artist-section {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto 24px auto;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.1) 100%);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: var(--radius-card);
+            padding: 20px clamp(16px, 3vw, 32px);
+            box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+        }
+
+        body.dark-mode .artist-section {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.2) 0%, rgba(139, 92, 246, 0.15) 100%);
+            border-color: rgba(99, 102, 241, 0.4);
+        }
+
+        .artist-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .artist-label {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+
+        .artist-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            color: #fff;
+            padding: 8px 16px;
+            border-radius: var(--radius-pill);
+            font-size: 0.95rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            cursor: pointer;
+        }
+
+        .artist-badge:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(99, 102, 241, 0.35);
+        }
+
+        .artist-badge i {
+            font-size: 1rem;
+        }
+
+        .artist-works-section {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto 24px auto;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: var(--radius-card);
+            padding: 28px clamp(20px, 3vw, 40px);
+            box-shadow: 0 18px 40px rgba(15, 23, 42, 0.25);
+        }
+
+        body.dark-mode .artist-works-section {
+            background: rgba(8, 11, 19, 0.92);
+            border-color: rgba(71, 85, 105, 0.45);
+        }
+
+        .artist-works-section h3 {
+            margin: 0;
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #e2e8f0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .artist-works-section h3 .artist-name-title {
+            color: #a78bfa;
+        }
+
+        body:not(.dark-mode) .artist-works-section h3 {
+            color: var(--text-primary);
+        }
+
+        body:not(.dark-mode) .artist-works-section h3 .artist-name-title {
+            color: #6366f1;
+        }
+
+        .artist-works-grid {
+            margin-top: 20px;
+            display: grid;
+            gap: 18px;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        }
+
+        @media (max-width: 600px) {
+            .artist-works-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                grid-auto-flow: row;
+                overflow-x: visible;
+            }
+        }
+
+        @media (max-width: 1023px) {
+            .artist-works-grid {
+                grid-template-columns: none;
+                grid-auto-flow: column;
+                grid-auto-columns: minmax(160px, 72vw);
+                overflow-x: auto;
+                padding-bottom: 12px;
+                scroll-snap-type: x mandatory;
+            }
+        }
+
+        .artist-works-loading {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
         }
 
         .manga-page {
@@ -1138,6 +1264,17 @@
             <div class="viewer-container" id="mangaPagesContainer">
                 <!-- 画像がここに動的に追加されます -->
             </div>
+
+            <!-- 作者の他の作品セクション -->
+            <section class="artist-works-section" id="artistWorksSection" style="display:none;">
+                <h3>
+                    <i class="fas fa-palette"></i>
+                    <span class="artist-name-title" id="artistNameTitle"></span>
+                    <span>の他の作品</span>
+                </h3>
+                <div class="artist-works-grid" id="artistWorksGrid"></div>
+            </section>
+
             <section class="recommendation-section" id="recommendationSection" style="display:none;">
                 <h3>おすすめの作品</h3>
                 <div class="recommendation-grid" id="recommendationGrid"></div>
@@ -1202,7 +1339,7 @@
     <script src="/static/tracking.js" defer></script>
     <script src="/static/app.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/swiper@10/swiper-bundle.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@4.0.0/dist/jspdf.umd.js"></script>
 
     <script>
         // グローバル変数
@@ -1241,6 +1378,14 @@
         const recommendationGrid = document.getElementById('recommendationGrid');
         const readingModeSelect = document.getElementById('readingModeSelect');
         const downloadPdfButton = document.getElementById('downloadPdfButton');
+
+        // 作者の他の作品用DOM要素
+        const artistWorksSection = document.getElementById('artistWorksSection');
+        const artistWorksGrid = document.getElementById('artistWorksGrid');
+        const artistNameTitle = document.getElementById('artistNameTitle');
+
+        // 現在の作者情報
+        let currentArtists = [];
 
         // 画像サイズ調整用DOM要素
         const imageSizeControls = document.getElementById('imageSizeControls');
@@ -1929,6 +2074,9 @@
                 updateLikeButton(MangaApp.isLiked(numericGalleryId));
                 loadRecommendations(numericGalleryId);
 
+                // 作者の他の作品を読み込み
+                loadArtistWorks(numericGalleryId);
+
                 // ページインジケーター初期更新
                 updatePageIndicator();
             } catch (error) {
@@ -2136,6 +2284,55 @@
                     characterGroup.appendChild(characterItem);
 
                     mangaTagsInfo.appendChild(characterGroup);
+                }
+            }
+
+            // 作者情報を抽出（タグから artist: プレフィックスを持つものを探す）
+            currentArtists = [];
+            if (galleryData.tags) {
+                try {
+                    const tagArray = JSON.parse(galleryData.tags);
+                    if (Array.isArray(tagArray)) {
+                        tagArray.forEach(tag => {
+                            if (typeof tag === 'string' && tag.startsWith('artist:')) {
+                                const artistName = tag.substring(7); // 'artist:' を除去
+                                if (artistName) {
+                                    currentArtists.push(artistName);
+                                }
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error('タグパースエラー:', e);
+                }
+            }
+
+            // 作者情報を表示
+            if (currentArtists.length > 0) {
+                const artistGroup = document.createElement('div');
+                artistGroup.className = 'tag-group';
+
+                const artistLabel = document.createElement('span');
+                artistLabel.className = 'tag-label';
+                artistLabel.textContent = '作者:';
+                artistGroup.appendChild(artistLabel);
+
+                currentArtists.forEach(artist => {
+                    const artistItem = document.createElement('span');
+                    artistItem.className = 'tag-item';
+                    const artistLink = document.createElement('a');
+                    artistLink.href = `/?tag=${encodeURIComponent('artist:' + artist)}`;
+                    artistLink.textContent = artist;
+                    artistLink.title = `artist:${artist}`;
+                    artistItem.appendChild(artistLink);
+                    artistGroup.appendChild(artistItem);
+                });
+
+                // タグ情報の先頭に作者情報を挿入
+                if (mangaTagsInfo.firstChild) {
+                    mangaTagsInfo.insertBefore(artistGroup, mangaTagsInfo.firstChild);
+                } else {
+                    mangaTagsInfo.appendChild(artistGroup);
                 }
             }
         }
@@ -2414,6 +2611,12 @@
             }
         }
 
+        // PDF用画像キャッシュ（ビューアーで読み込んだ画像を再利用）
+        const pdfImageCache = new Map();
+
+        // 並列ダウンロード制御用（同時実行数を制限）
+        const PDF_CONCURRENT_DOWNLOADS = 6;
+
         async function handlePdfDownload() {
             if (isDownloadingPdf || !downloadPdfButton) {
                 return;
@@ -2430,19 +2633,76 @@
             }
 
             isDownloadingPdf = true;
-            const originalLabel = downloadPdfButton.textContent;
+            const originalLabel = downloadPdfButton.innerHTML;
             downloadPdfButton.disabled = true;
-            downloadPdfButton.innerHTML = '<i class="fas fa-file-pdf"></i> PDF生成中...';
+
+            const updateProgress = (current, total, phase) => {
+                const percent = Math.round((current / total) * 100);
+                downloadPdfButton.innerHTML = `<i class="fas fa-file-pdf"></i> ${phase} ${percent}%`;
+            };
 
             try {
+                const totalImages = imageUrls.length;
+                updateProgress(0, totalImages, '画像取得中');
+
+                // 並列で画像をプリフェッチ（同時実行数を制限）
+                const imageDataArray = new Array(totalImages);
+                let completed = 0;
+
+                // ビューアーで既に読み込まれた画像をキャッシュから利用
+                cacheLoadedImages();
+
+                // 並列ダウンロードのためのワーカー関数
+                const downloadWorker = async (queue) => {
+                    while (queue.length > 0) {
+                        const index = queue.shift();
+                        if (index === undefined) break;
+
+                        const imageSrc = getImageSrc(imageUrls[index]);
+                        try {
+                            // キャッシュに存在すればそれを使用
+                            if (pdfImageCache.has(imageSrc)) {
+                                imageDataArray[index] = pdfImageCache.get(imageSrc);
+                            } else {
+                                imageDataArray[index] = await fetchImageForPdf(imageSrc);
+                                pdfImageCache.set(imageSrc, imageDataArray[index]);
+                            }
+                        } catch (err) {
+                            console.warn(`画像 ${index + 1} の取得に失敗:`, err);
+                            // エラーの場合はプレースホルダーデータを設定
+                            imageDataArray[index] = null;
+                        }
+                        completed++;
+                        updateProgress(completed, totalImages, '画像取得中');
+                    }
+                };
+
+                // インデックスのキューを作成
+                const indexQueue = Array.from({ length: totalImages }, (_, i) => i);
+
+                // ワーカーを並列実行
+                const workers = [];
+                for (let i = 0; i < PDF_CONCURRENT_DOWNLOADS; i++) {
+                    workers.push(downloadWorker(indexQueue));
+                }
+                await Promise.all(workers);
+
+                updateProgress(0, totalImages, 'PDF生成中');
+
                 const { jsPDF } = window.jspdf;
                 const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: 'a4' });
                 const pageWidth = pdf.internal.pageSize.getWidth();
                 const pageHeight = pdf.internal.pageSize.getHeight();
 
-                for (let i = 0; i < imageUrls.length; i++) {
-                    const imageSrc = getImageSrc(imageUrls[i]);
-                    const { dataUrl, width, height } = await fetchImageForPdf(imageSrc);
+                let pagesAdded = 0;
+                for (let i = 0; i < totalImages; i++) {
+                    const imageData = imageDataArray[i];
+                    if (!imageData) {
+                        // 取得失敗した画像はスキップ
+                        continue;
+                    }
+
+                    const { dataUrl, width, height } = imageData;
 
                     let renderWidth = pageWidth;
                     let renderHeight = (height * renderWidth) / width;
@@ -2455,11 +2715,12 @@
                     const offsetX = (pageWidth - renderWidth) / 2;
                     const offsetY = (pageHeight - renderHeight) / 2;
 
-                    pdf.addImage(dataUrl, 'JPEG', offsetX, offsetY, renderWidth, renderHeight, undefined, 'FAST');
-
-                    if (i < imageUrls.length - 1) {
+                    if (pagesAdded > 0) {
                         pdf.addPage();
                     }
+                    pdf.addImage(dataUrl, 'JPEG', offsetX, offsetY, renderWidth, renderHeight, undefined, 'FAST');
+                    pagesAdded++;
+                    updateProgress(i + 1, totalImages, 'PDF生成中');
                 }
 
                 const baseTitle = galleryData && galleryData.japanese_title ? galleryData.japanese_title : 'manga';
@@ -2471,8 +2732,37 @@
             } finally {
                 isDownloadingPdf = false;
                 downloadPdfButton.disabled = false;
-                downloadPdfButton.textContent = originalLabel;
+                downloadPdfButton.innerHTML = originalLabel;
             }
+        }
+
+        // ビューアーで既に読み込まれた画像をキャッシュに追加
+        function cacheLoadedImages() {
+            const pages = mangaPagesContainer?.querySelectorAll('.manga-page img');
+            if (!pages) return;
+
+            pages.forEach((img, index) => {
+                if (img.complete && img.naturalWidth > 0 && index < imageUrls.length) {
+                    const imageSrc = getImageSrc(imageUrls[index]);
+                    if (!pdfImageCache.has(imageSrc)) {
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = img.naturalWidth;
+                            canvas.height = img.naturalHeight;
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(img, 0, 0);
+                            const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+                            pdfImageCache.set(imageSrc, {
+                                dataUrl,
+                                width: img.naturalWidth,
+                                height: img.naturalHeight
+                            });
+                        } catch (err) {
+                            // CORS等でcanvasへの描画が失敗する場合は無視
+                        }
+                    }
+                }
+            });
         }
 
         async function fetchImageForPdf(imageSrc) {
@@ -2501,6 +2791,80 @@
                 };
                 img.src = blobUrl;
             });
+        }
+
+        // 作者の他の作品を読み込み
+        async function loadArtistWorks(galleryId) {
+            if (!artistWorksSection || !artistWorksGrid || !artistNameTitle) {
+                return;
+            }
+
+            // 作者がいない場合は非表示
+            if (!currentArtists || currentArtists.length === 0) {
+                artistWorksSection.style.display = 'none';
+                return;
+            }
+
+            // 最初の作者の作品を表示（複数作者の場合は最初のみ）
+            const artistName = currentArtists[0];
+            artistNameTitle.textContent = artistName;
+
+            try {
+                const params = new URLSearchParams();
+                params.append('limit', '10');
+                if (galleryId) {
+                    params.append('exclude_gallery_id', String(galleryId));
+                }
+
+                const response = await fetch(`/api/artist/${encodeURIComponent(artistName)}/works?${params.toString()}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+                renderArtistWorks(data.results || []);
+            } catch (error) {
+                console.error('作者の作品読み込みエラー:', error);
+                artistWorksSection.style.display = 'none';
+            }
+        }
+
+        // 作者の作品を描画
+        function renderArtistWorks(items) {
+            if (!artistWorksSection || !artistWorksGrid) return;
+
+            if (!items.length) {
+                artistWorksSection.style.display = 'none';
+                return;
+            }
+
+            artistWorksSection.style.display = 'block';
+            artistWorksGrid.innerHTML = '';
+
+            const fragment = document.createDocumentFragment();
+            items.slice(0, 6).forEach((item) => {
+                const card = document.createElement('a');
+                card.href = `/viewer?id=${item.gallery_id}`;
+                card.className = 'recommendation-card';
+
+                const img = document.createElement('img');
+                const firstImage = Array.isArray(item.image_urls) && item.image_urls.length > 0 ? item.image_urls[0] : '';
+                if (firstImage) {
+                    img.src = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
+                }
+                img.alt = item.japanese_title || '無題';
+                img.loading = 'lazy';
+
+                const body = document.createElement('div');
+                body.className = 'card-body';
+                body.textContent = item.japanese_title || '無題';
+
+                card.appendChild(img);
+                card.appendChild(body);
+                fragment.appendChild(card);
+            });
+
+            artistWorksGrid.appendChild(fragment);
         }
 
         async function loadRecommendations(galleryId) {

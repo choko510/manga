@@ -4,7 +4,8 @@
         liked: 'manga_liked_galleries',
         history: 'manga_view_history',
         theme: 'manga_theme',
-        tagUsage: 'manga_tag_usage'
+        tagUsage: 'manga_tag_usage',
+        searchSettings: 'manga_search_settings'
     };
 
     let translationPromise = null;
@@ -705,6 +706,40 @@
         return changed;
     }
 
+    function getSearchSettings() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.searchSettings);
+            if (!raw) {
+                return { sortBy: 'weekly', minPages: 10, maxPages: null };
+            }
+            const parsed = JSON.parse(raw);
+            return {
+                sortBy: typeof parsed.sortBy === 'string' ? parsed.sortBy : 'weekly',
+                minPages: Number.isFinite(parsed.minPages) ? parsed.minPages : 10,
+                maxPages: Number.isFinite(parsed.maxPages) ? parsed.maxPages : null
+            };
+        } catch (e) {
+            return { sortBy: 'weekly', minPages: 10, maxPages: null };
+        }
+    }
+
+    function saveSearchSettings(settings) {
+        if (!settings || typeof settings !== 'object') {
+            return;
+        }
+        try {
+            const current = getSearchSettings();
+            const updated = {
+                sortBy: typeof settings.sortBy === 'string' ? settings.sortBy : current.sortBy,
+                minPages: Number.isFinite(settings.minPages) ? settings.minPages : current.minPages,
+                maxPages: settings.maxPages === null || Number.isFinite(settings.maxPages) ? settings.maxPages : current.maxPages
+            };
+            localStorage.setItem(STORAGE_KEYS.searchSettings, JSON.stringify(updated));
+        } catch (e) {
+            /* noop */
+        }
+    }
+
     window.MangaApp = {
         ensureTranslations: loadTranslations,
         translateTag,
@@ -735,5 +770,7 @@
         getTagUsageCounts,
         exportUserData,
         importUserData,
+        getSearchSettings,
+        saveSearchSettings,
     };
 })();

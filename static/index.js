@@ -129,10 +129,28 @@
     }
 
     function attachEventHandlers(elements) {
-        // デフォルトの最小ページ数を 10 に設定
+        // 保存された設定を復元
+        const savedSettings = typeof MangaApp.getSearchSettings === 'function'
+            ? MangaApp.getSearchSettings()
+            : { sortBy: 'weekly', minPages: 10, maxPages: null };
+
+        // 並び順を復元
+        if (elements.sortBySelect && savedSettings.sortBy) {
+            elements.sortBySelect.value = savedSettings.sortBy;
+        }
+
+        // 最小ページ数を復元
         if (elements.minPagesSelect) {
-            elements.minPagesSelect.value = '10';
-            currentMinPages = 10;
+            const minPages = savedSettings.minPages ?? 10;
+            elements.minPagesSelect.value = String(minPages);
+            currentMinPages = minPages;
+        }
+
+        // 最大ページ数を復元
+        if (elements.maxPagesSelect) {
+            const maxPages = savedSettings.maxPages;
+            elements.maxPagesSelect.value = maxPages !== null ? String(maxPages) : '';
+            currentMaxPages = maxPages;
         }
 
         elements.searchButton.addEventListener('click', () => performSearch(elements, true));
@@ -163,6 +181,10 @@
         elements.minPagesSelect.addEventListener('change', () => {
             currentMinPages = parseInt(elements.minPagesSelect.value, 10) || 0;
             ensureValidPageRange(elements);
+            // 設定を保存
+            if (typeof MangaApp.saveSearchSettings === 'function') {
+                MangaApp.saveSearchSettings({ minPages: currentMinPages });
+            }
             performSearch(elements, true);
         });
         elements.maxPagesSelect.addEventListener('change', () => {
@@ -171,11 +193,19 @@
                 currentMaxPages = null;
             }
             ensureValidPageRange(elements);
+            // 設定を保存
+            if (typeof MangaApp.saveSearchSettings === 'function') {
+                MangaApp.saveSearchSettings({ maxPages: currentMaxPages });
+            }
             performSearch(elements, true);
         });
 
         // 並び順の変更イベントリスナーを追加
         elements.sortBySelect.addEventListener('change', () => {
+            // 設定を保存
+            if (typeof MangaApp.saveSearchSettings === 'function') {
+                MangaApp.saveSearchSettings({ sortBy: elements.sortBySelect.value });
+            }
             performSearch(elements, true);
         });
         elements.themeToggle.addEventListener('click', () => {

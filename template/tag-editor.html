@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -568,6 +569,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="app-shell">
         <header>
@@ -576,9 +578,7 @@
                 <nav>
                     <a href="/" class="nav-button">ホーム</a>
                     <a href="/tags" class="nav-button">タグ</a>
-                    <a href="/recommendations" class="nav-button">おすすめ</a>
                     <a href="/history" class="nav-button">履歴</a>
-                    <a href="/tag-editor" class="nav-button active">タグ管理</a>
                 </nav>
             </div>
         </header>
@@ -588,13 +588,15 @@
                     <div class="section-header">
                         <div class="section-title">タグ翻訳</div>
                         <div class="section-actions">
+                            <button class="button secondary" id="openVersionHistoryButton">履歴を表示</button>
                             <button class="button secondary" id="addTranslationButton">行を追加</button>
                             <button class="button secondary" id="autoAddButton">データベースから追加</button>
                             <button class="button primary" id="saveTranslationsButton">翻訳を保存</button>
                         </div>
                     </div>
                     <div class="translations-toolbar">
-                        <input type="search" class="search-input" id="translationSearch" placeholder="タグ名または翻訳で検索" aria-label="翻訳の検索" />
+                        <input type="search" class="search-input" id="translationSearch" placeholder="タグ名または翻訳で検索"
+                            aria-label="翻訳の検索" />
                         <span id="translationCount"></span>
                         <div class="auto-save-indicator">
                             <span id="currentVersionBadge" class="status-chip" aria-live="polite">バージョン: -</span>
@@ -624,7 +626,8 @@
                     <div class="modal">
                         <div class="modal-header">
                             <h2 class="modal-title">バージョン履歴</h2>
-                            <button class="modal-close" type="button" id="closeVersionHistoryModal" aria-label="閉じる">×</button>
+                            <button class="modal-close" type="button" id="closeVersionHistoryModal"
+                                aria-label="閉じる">×</button>
                         </div>
                         <p class="helper-text">
                             変更は自動保存され、最新100件まで履歴が保持されます。ロールバックすると新しいバージョンとして保存されます。
@@ -635,23 +638,7 @@
                         </div>
                     </div>
                 </div>
-                <section class="section" id="categoriesSection">
-                    <div class="section-header">
-                        <div class="section-title">タグカテゴリ</div>
-                        <div class="section-actions">
-                            <button class="button secondary" id="openVersionHistoryButton">履歴を表示</button>
-                            <button class="button secondary" id="addCategoryButton">カテゴリを追加</button>
-                            <button class="button primary" id="saveCategoriesButton">カテゴリを保存</button>
-                        </div>
-                    </div>
-                    <p class="helper-text">
-                        各カテゴリのタグは改行で区切って入力してください。翻訳は自動的に適用されます。
-                    </p>
-                    <div class="category-grid" id="categoriesContainer"></div>
-                    <div class="empty-state" id="categoriesEmptyState" hidden>
-                        カテゴリが登録されていません。「カテゴリを追加」から新しいカテゴリを作成してください。
-                    </div>
-                </section>
+
             </div>
         </main>
     </div>
@@ -659,4 +646,5 @@
     <script src="/static/tracking.js" defer></script>
     <script src="/static/tag-editor.js" defer></script>
 </body>
+
 </html>

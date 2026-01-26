@@ -508,20 +508,13 @@
             search: '',
             selectedTags: new Set(),
             allTags: [],
-            categoryDefinitions: [],
-            tagToCategory: new Map(),
-            fallbackCategoryId: null,
-            collapsedCategories: new Set(),
             tagUsageCache: null,
         };
 
         document.addEventListener('DOMContentLoaded', () => {
             MangaApp.applyThemeToDocument(document);
             (async () => {
-                await Promise.all([
-                    MangaApp.ensureTranslations().catch(() => { }),
-                    loadCategoryDefinitions(),
-                ]);
+                await MangaApp.ensureTranslations().catch(() => { });
                 setupEventHandlers();
                 updateHiddenTagsSummary();
                 loadTags(true);
@@ -639,41 +632,7 @@
             });
         }
 
-        async function loadCategoryDefinitions() {
-            try {
-                const response = await fetch('/static/tag-categories.json');
-                if (!response.ok) {
-                    throw new Error(`HTTP error ${response.status}`);
-                }
-                const data = await response.json();
-                if (!Array.isArray(data)) {
-                    throw new Error('カテゴリーデータが不正です');
-                }
-                state.categoryDefinitions = data.map((category) => ({
-                    id: category.id,
-                    label: category.label,
-                    tags: Array.isArray(category.tags) ? category.tags : [],
-                    isFallback: Boolean(category.isFallback),
-                }));
-                state.tagToCategory = new Map();
-                state.fallbackCategoryId = null;
-                state.categoryDefinitions.forEach((category) => {
-                    if (category.isFallback && !state.fallbackCategoryId) {
-                        state.fallbackCategoryId = category.id;
-                    }
-                    category.tags.forEach((tag) => {
-                        if (typeof tag === 'string' && tag.trim()) {
-                            state.tagToCategory.set(tag.trim().toLowerCase(), category.id);
-                        }
-                    });
-                });
-            } catch (error) {
-                console.error('タグカテゴリの読み込みに失敗しました', error);
-                state.categoryDefinitions = [];
-                state.tagToCategory = new Map();
-                state.fallbackCategoryId = null;
-            }
-        }
+
 
         function updateThemeToggleIcon(button, theme) {
             button.innerHTML = theme === 'dark'
@@ -694,11 +653,7 @@
             if (reset) {
                 state.offset = 0;
                 state.allTags = [];
-                clearCategoryContainer();
-                // reset時に必ずしも選択済みタグを消したくないケースがあるため、
-                // 検索条件変更時など、呼び出し側で必要な場合のみ明示的にクリアする運用に変更
-                // ここでは selectedTags は維持し、カテゴリーの開閉状態のみリセットする
-                state.collapsedCategories.clear();
+                clearTagsContainer();
                 renderSelectedTags();
             }
 
@@ -730,7 +685,7 @@
             }
         }
 
-        function clearCategoryContainer() {
+        function clearTagsContainer() {
             const container = document.getElementById('categoryContainer');
             if (container) {
                 container.innerHTML = '';
@@ -752,141 +707,19 @@
                 return;
             }
 
-            const groups = buildCategoryGroups(allTags);
-            const fragment = document.createDocumentFragment();
+            const sortedTags = sortTagsForGroup(allTags);
+            const grid = document.createElement('div');
+            grid.className = 'tags-grid';
 
-            groups.forEach((group) => {
-                const section = document.createElement('section');
-                section.className = 'category-section';
-                section.dataset.categoryId = group.id;
-
-                const header = document.createElement('header');
-                header.className = 'category-header';
-                header.setAttribute('role', 'button');
-                header.setAttribute('tabindex', '0');
-                header.setAttribute('aria-expanded', 'true');
-
-                const info = document.createElement('div');
-                info.className = 'category-header-info';
-
-                const title = document.createElement('h2');
-                title.className = 'category-title';
-                title.textContent = group.label;
-
-                const count = document.createElement('span');
-                count.className = 'category-count';
-                count.textContent = `${group.items.length} 件`;
-
-                info.appendChild(title);
-                info.appendChild(count);
-
-                const toggleIcon = document.createElement('span');
-                toggleIcon.className = 'category-toggle-icon';
-                toggleIcon.textContent = '▼';
-                toggleIcon.setAttribute('aria-hidden', 'true');
-
-                header.appendChild(info);
-                header.appendChild(toggleIcon);
-
-                const grid = document.createElement('div');
-                grid.className = 'tags-grid';
-
-                group.items.forEach((tagInfo) => {
-                    grid.appendChild(createTagCard(tagInfo));
-                });
-
-                const toggleSection = () => {
-                    if (state.collapsedCategories.has(group.id)) {
-                        state.collapsedCategories.delete(group.id);
-                    } else {
-                        state.collapsedCategories.add(group.id);
-                    }
-                    applyCategoryCollapseState(section, group.id);
-                };
-
-                header.addEventListener('click', () => {
-                    toggleSection();
-                });
-
-                header.addEventListener('keydown', (event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        toggleSection();
-                    }
-                });
-
-                section.appendChild(header);
-                section.appendChild(grid);
-                applyCategoryCollapseState(section, group.id);
-                fragment.appendChild(section);
+            sortedTags.forEach((tagInfo) => {
+                grid.appendChild(createTagCard(tagInfo));
             });
 
-            container.appendChild(fragment);
+            container.appendChild(grid);
             document.getElementById('errorMessage').style.display = 'none';
         }
 
-        function applyCategoryCollapseState(section, categoryId) {
-            const isCollapsed = state.collapsedCategories.has(categoryId);
-            section.classList.toggle('collapsed', isCollapsed);
-            const header = section.querySelector('.category-header');
-            if (header) {
-                header.setAttribute('aria-expanded', String(!isCollapsed));
-            }
-        }
 
-        function buildCategoryGroups(allTags) {
-            if (state.search) {
-                return [{
-                    id: 'search',
-                    label: '検索結果',
-                    items: sortTagsForGroup(allTags),
-                }];
-            }
-
-            if (!state.categoryDefinitions.length) {
-                return [{
-                    id: 'all',
-                    label: 'すべてのタグ',
-                    items: sortTagsForGroup(allTags),
-                }];
-            }
-
-            const fallbackId = state.fallbackCategoryId || 'uncategorized';
-            const groupMap = new Map();
-
-            state.categoryDefinitions.forEach((category) => {
-                groupMap.set(category.id, {
-                    id: category.id,
-                    label: category.label,
-                    items: [],
-                });
-            });
-
-            if (!groupMap.has(fallbackId)) {
-                groupMap.set(fallbackId, {
-                    id: fallbackId,
-                    label: 'その他',
-                    items: [],
-                });
-            }
-
-            const fallbackGroup = groupMap.get(fallbackId);
-
-            allTags.forEach((tagInfo) => {
-                const tagName = (tagInfo.tag || '').toLowerCase();
-                const categoryId = state.tagToCategory.get(tagName);
-                const targetGroup = (categoryId && groupMap.get(categoryId)) || fallbackGroup;
-                targetGroup.items.push(tagInfo);
-            });
-
-            return Array.from(groupMap.values())
-                .map((group) => ({
-                    id: group.id,
-                    label: group.label,
-                    items: sortTagsForGroup(group.items),
-                }))
-                .filter((group) => group.items.length);
-        }
 
         function createTagCard(tagInfo) {
             const card = document.createElement('article');

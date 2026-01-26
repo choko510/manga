@@ -53,9 +53,23 @@ def _normalise_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
     return merged
 
 
-def fetch(uri: str, headers: Optional[Dict[str, str]] = None) -> bytes:
-    """Fetch a resource over HTTPS and return the raw body."""
-
+def fetch(
+    uri: str,
+    headers: Optional[Dict[str, str]] = None,
+    *,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
+) -> bytes:
+    """Fetch a resource over HTTPS and return the raw body.
+    
+    Args:
+        uri: URL to fetch
+        headers: Optional HTTP headers
+        max_retries: Maximum number of retry attempts (default: 3)
+        retry_delay: Initial delay between retries in seconds (default: 1.0)
+    """
+    import time as time_module
+    
     parsed = urlsplit(f"https://{uri}" if "//" not in uri else uri)
     if not parsed.hostname:
         raise HitomiError(ErrorCode.INVALID_VALUE, "uri", "contain a hostname")
@@ -64,17 +78,34 @@ def fetch(uri: str, headers: Optional[Dict[str, str]] = None) -> bytes:
     if parsed.query:
         path = f"{path}?{parsed.query}"
 
-    connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=30)
-    try:
-        connection.request("GET", path, headers=_normalise_headers(headers))
-        response = connection.getresponse()
-        status = response.status
-        if status not in (200, 206):
-            raise HitomiError(ErrorCode.REQUEST_REJECTED, f"https://{uri}")
-        data = response.read()
-        return data
-    finally:
-        connection.close()
+    last_error: Optional[Exception] = None
+    
+    for attempt in range(max_retries):
+        connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=10)
+        try:
+            connection.request("GET", path, headers=_normalise_headers(headers))
+            response = connection.getresponse()
+            status = response.status
+            if status not in (200, 206):
+                # HTTPエラーもリトライ対象とする
+                last_error = HitomiError(ErrorCode.REQUEST_REJECTED, f"https://{uri} (status={status})")
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)
+                    time_module.sleep(wait_time)
+                continue
+            data = response.read()
+            return data
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                # 指数バックオフ: 1秒, 2秒, 4秒...
+                wait_time = retry_delay * (2 ** attempt)
+                time_module.sleep(wait_time)
+        finally:
+            connection.close()
+    
+    # All retries failed
+    raise last_error or HitomiError(ErrorCode.REQUEST_REJECTED, f"https://{uri}")
 
 
 async def async_fetch(

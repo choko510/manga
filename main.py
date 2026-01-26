@@ -505,6 +505,66 @@ _PAGE_RANGE_GALLERY_IDS_CACHE: Dict[Tuple[int, int], Set[int]] = {}
 # キー: (title, tag, exclude_tag, character, min_pages, max_pages) のハッシュ
 _SEARCH_COUNT_CACHE: Dict[str, int] = {}
 
+# 検索結果キャッシュ（TTL付き - 600秒保持）
+# キー: 検索条件のハッシュ -> (timestamp, results, total_count)
+_SEARCH_RESULTS_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]], int]] = {}
+_SEARCH_RESULTS_CACHE_TTL = 600.0  # 秒
+_SEARCH_RESULTS_CACHE_MAX_SIZE = 100  # キャッシュの最大エントリ数
+
+
+def _make_search_results_cache_key(
+    title: Optional[str],
+    tag: Optional[str],
+    exclude_tag: Optional[str],
+    character: Optional[str],
+    limit: int,
+    offset: int,
+    after_created_at: Optional[str],
+    after_gallery_id: Optional[int],
+    min_pages: Optional[int],
+    max_pages: Optional[int],
+    sort_by: Optional[str],
+) -> str:
+    """検索条件からキャッシュキーを生成"""
+    import hashlib
+    key_parts = [
+        title or "",
+        tag or "",
+        exclude_tag or "",
+        character or "",
+        str(limit),
+        str(offset),
+        after_created_at or "",
+        str(after_gallery_id) if after_gallery_id is not None else "",
+        str(min_pages) if min_pages is not None else "",
+        str(max_pages) if max_pages is not None else "",
+        sort_by or "",
+    ]
+    return hashlib.md5("|".join(key_parts).encode()).hexdigest()
+
+
+def _get_cached_search_results(cache_key: str) -> Optional[Tuple[List[Dict[str, Any]], int]]:
+    """キャッシュから検索結果を取得（TTLチェック付き）"""
+    cached = _SEARCH_RESULTS_CACHE.get(cache_key)
+    if cached is None:
+        return None
+    timestamp, results, total_count = cached
+    if time.time() - timestamp > _SEARCH_RESULTS_CACHE_TTL:
+        # TTL切れ: キャッシュから削除
+        _SEARCH_RESULTS_CACHE.pop(cache_key, None)
+        return None
+    return results, total_count
+
+
+def _set_cached_search_results(cache_key: str, results: List[Dict[str, Any]], total_count: int) -> None:
+    """検索結果をキャッシュに保存（サイズ制限付き）"""
+    # キャッシュサイズが上限を超えた場合、古いエントリを削除
+    if len(_SEARCH_RESULTS_CACHE) >= _SEARCH_RESULTS_CACHE_MAX_SIZE:
+        # 最も古いエントリを削除
+        oldest_key = min(_SEARCH_RESULTS_CACHE.keys(), key=lambda k: _SEARCH_RESULTS_CACHE[k][0])
+        _SEARCH_RESULTS_CACHE.pop(oldest_key, None)
+    _SEARCH_RESULTS_CACHE[cache_key] = (time.time(), results, total_count)
+
 async def _get_page_range_gallery_ids(min_pages: int, max_pages: int) -> Set[int]:
     """
     指定されたページ数範囲に該当するギャラリーIDのセットを取得（永続キャッシュ）。
@@ -2022,10 +2082,10 @@ def _derive_filename(url: str) -> str:
 
 _IMAGE_RESOLVER_FAILURE_AT: float = 0.0
 _IMAGE_RESOLVER_FAILURE_COOLDOWN = 120.0
-_IMAGE_RESOLVER_TIMEOUT = 3.0
+_IMAGE_RESOLVER_TIMEOUT = 15.0  # lib側のフェッチタイムアウト(10秒)より長く設定
 _IMAGE_RESOLVER_READY = False
 _IMAGE_RESOLVER_READY_UNTIL: float = 0.0
-_IMAGE_RESOLVER_READY_TTL = 30.0  # 30秒間キャッシュ
+_IMAGE_RESOLVER_READY_TTL = 3600.0  # 1時間キャッシュ（lib側のrefresh_intervalと同期）
 _IMAGE_RESOLVER_LOCK = asyncio.Lock()
 
 
@@ -2289,6 +2349,66 @@ async def search_galleries_get(
         if page > 1:
             offset = (page - 1) * limit
 
+        # キャッシュキーを生成
+        cache_key = _make_search_results_cache_key(
+            title=title,
+            tag=tag,
+            exclude_tag=exclude_tag,
+            character=character,
+            limit=limit,
+            offset=offset,
+            after_created_at=after_created_at,
+            after_gallery_id=after_gallery_id,
+            min_pages=min_pages,
+            max_pages=max_pages,
+            sort_by=sort_by,
+        )
+
+        # キャッシュをチェック
+        cached = _get_cached_search_results(cache_key)
+        if cached is not None:
+            cached_results, cached_total_count = cached
+            
+            # キャッシュからレスポンスを構築
+            if sort_by and sort_by in ['daily', 'weekly', 'monthly', 'yearly', 'all_time']:
+                total_pages = (cached_total_count + limit - 1) // limit if cached_total_count > 0 else 1
+                return {
+                    "results": cached_results,
+                    "count": len(cached_results),
+                    "total": cached_total_count,
+                    "total_count": cached_total_count,
+                    "total_pages": total_pages,
+                    "has_more": (offset + limit) < cached_total_count,
+                    "ranking_type": sort_by,
+                    "cached": True,
+                }
+            else:
+                next_after_created_at = None
+                next_after_gallery_id = None
+                if cached_results and len(cached_results) == limit:
+                    last_item = cached_results[-1]
+                    next_after_created_at = last_item.get("created_at")
+                    next_after_gallery_id = last_item.get("gallery_id")
+                
+                total_pages = (cached_total_count + limit - 1) // limit if cached_total_count > 0 else 1
+                is_cursor_pagination = after_created_at is not None or after_gallery_id is not None
+                if is_cursor_pagination:
+                    has_more = len(cached_results) == limit
+                else:
+                    has_more = (offset + limit) < cached_total_count
+
+                return {
+                    "results": cached_results,
+                    "count": len(cached_results),
+                    "total": cached_total_count,
+                    "total_count": cached_total_count,
+                    "total_pages": total_pages,
+                    "has_more": has_more,
+                    "next_after_created_at": next_after_created_at,
+                    "next_after_gallery_id": next_after_gallery_id,
+                    "cached": True,
+                }
+
         async with get_db_session() as db:
                 # known_tagsを一度だけ取得してキャッシュ（複数回のawaitを避ける）
                 known_tags = await _get_known_tag_set(db)
@@ -2409,6 +2529,10 @@ async def search_galleries_get(
                     # filtered_ranking_idsには既にタグフィルターとページ数フィルターが適用済み
                     total_count = len(filtered_ranking_ids)
                     total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+                    
+                    # キャッシュに保存
+                    _set_cached_search_results(cache_key, results, total_count)
+                    
                     return {
                         "results": results,
                         "count": len(results),
@@ -2436,6 +2560,9 @@ async def search_galleries_get(
                         has_more = len(results) == limit
                     else:
                         has_more = (offset + limit) < total_count
+
+                    # キャッシュに保存
+                    _set_cached_search_results(cache_key, results, total_count)
 
                     return {
                         "results": results,
@@ -2725,6 +2852,73 @@ async def get_gallery(gallery_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ギャラリー情報の取得エラー: {str(e)}")
+
+
+@app.get("/api/artist/{artist_name}/works")
+async def get_artist_works(
+    artist_name: str,
+    limit: int = 10,
+    exclude_gallery_id: Optional[int] = None,
+):
+    """
+    指定されたアーティストの他の作品を取得する。
+    artist_nameには「artist:」プレフィックスなしのアーティスト名を渡す。
+    """
+    try:
+        async with get_db_session() as db:
+            # artist:プレフィックス付きのタグで検索
+            artist_tag = f"artist:{artist_name}"
+            
+            # gallery_tagsテーブルを使ってアーティストの作品を検索
+            query = """
+                SELECT g.gallery_id, g.japanese_title, g.tags, g.characters, 
+                       g.manga_type, g.created_at, g.page_count, g.files
+                FROM galleries g
+                INNER JOIN gallery_tags gt ON g.gallery_id = gt.gallery_id
+                WHERE gt.tag = :artist_tag
+                AND g.manga_type IN ('doujinshi', 'manga')
+            """
+            params: Dict[str, Any] = {"artist_tag": artist_tag}
+            
+            if exclude_gallery_id is not None:
+                query += " AND g.gallery_id != :exclude_id"
+                params["exclude_id"] = exclude_gallery_id
+            
+            query += " ORDER BY g.created_at_unix DESC, g.gallery_id DESC LIMIT :limit"
+            params["limit"] = limit
+            
+            result = await db.execute(text(query), params)
+            rows = result.fetchall()
+            
+            if not rows:
+                return {"artist": artist_name, "results": [], "total": 0}
+            
+            # 結果を辞書形式に変換
+            results = []
+            for row in rows:
+                gallery_dict = {
+                    "gallery_id": row.gallery_id,
+                    "japanese_title": row.japanese_title,
+                    "tags": row.tags,
+                    "characters": row.characters,
+                    "manga_type": row.manga_type,
+                    "created_at": row.created_at,
+                    "page_count": row.page_count,
+                    "files": row.files,
+                }
+                results.append(gallery_dict)
+            
+            # 画像URLを追加
+            await _process_results_with_image_urls(results)
+            
+            return {
+                "artist": artist_name,
+                "results": results,
+                "total": len(results),
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"アーティスト作品の取得エラー: {str(e)}")
+
 
 # -------------------------
 # タグ API（tag_stats 使用で高速化）

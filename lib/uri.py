@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
+from pathlib import Path
 from threading import Lock
 from typing import Optional
 from urllib.parse import quote
@@ -82,13 +84,75 @@ def get_gallery_uri(gallery: Gallery) -> str:
 
 
 class ImageUriResolver:
-    """Resolves image URIs with optional synchronous/asynchronous priming."""
+    """Resolves image URIs with optional synchronous/asynchronous priming.
+    
+    Uses Stale-While-Revalidate pattern: if data exists but is stale,
+    return immediately and refresh in background.
+    
+    Also maintains a local file cache for disaster recovery.
+    """
 
     _lock: Lock = Lock()
     _async_lock: asyncio.Lock | None = None
     _signature: tuple[str, bool, tuple[int, ...]] | None = None
     _last_synced_at: float | None = None
-    _refresh_interval: float = 900.0  # seconds
+    _refresh_interval: float = 3600.0  # 1時間（gg.jsの更新頻度に合わせる）
+    _background_refresh_in_progress: bool = False
+    _cache_file: Path = Path(__file__).parent.parent / "cache" / "gg_cache.json"
+
+    @classmethod
+    def _save_to_cache(cls, path_code: str, starts_with_a: bool, subdomain_codes: set[int]) -> None:
+        """Save resolver data to local cache file for disaster recovery."""
+        try:
+            cls._cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_data = {
+                "path_code": path_code,
+                "starts_with_a": starts_with_a,
+                "subdomain_codes": sorted(subdomain_codes),
+                "saved_at": time.time(),
+            }
+            cls._cache_file.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"ImageUriResolver キャッシュ保存失敗: {e}")
+
+    @classmethod
+    def _load_from_cache(cls) -> bool:
+        """Load resolver data from local cache file.
+        
+        Returns:
+            True if cache was loaded successfully, False otherwise.
+        """
+        try:
+            if not cls._cache_file.exists():
+                return False
+            
+            cache_data = json.loads(cls._cache_file.read_text(encoding="utf-8"))
+            path_code = cache_data.get("path_code", "")
+            starts_with_a = cache_data.get("starts_with_a", False)
+            subdomain_codes = set(cache_data.get("subdomain_codes", []))
+            
+            if not path_code or not subdomain_codes:
+                return False
+            
+            # Apply cached data without updating _last_synced_at
+            # This ensures a refresh will be attempted on next call
+            IMAGE_URI_PARTS[0] = path_code
+            IMAGE_URI_PARTS[1] = starts_with_a
+            subdomain_set = IMAGE_URI_PARTS[2]
+            assert isinstance(subdomain_set, set)
+            subdomain_set.clear()
+            subdomain_set.update(subdomain_codes)
+            cls._signature = (path_code, starts_with_a, tuple(sorted(subdomain_codes)))
+            # Set _last_synced_at to 0 so it will try to refresh, but data is available
+            cls._last_synced_at = 0.0
+            
+            saved_at = cache_data.get("saved_at", 0)
+            age_hours = (time.time() - saved_at) / 3600.0 if saved_at else 0
+            print(f"ImageUriResolver ローカルキャッシュから復元 (保存から{age_hours:.1f}時間経過)")
+            return True
+        except Exception as e:
+            print(f"ImageUriResolver キャッシュ読み込み失敗: {e}")
+            return False
 
     @classmethod
     def _should_refresh(cls, force: bool) -> bool:
@@ -100,6 +164,15 @@ class ImageUriResolver:
             return True
         if cls._last_synced_at is None:
             return True
+        return (time.monotonic() - cls._last_synced_at) >= cls._refresh_interval
+
+    @classmethod
+    def _is_stale(cls) -> bool:
+        """Return whether current data is stale but still usable."""
+        if not cls._is_initialised():
+            return False  # No data to be stale
+        if cls._last_synced_at is None:
+            return False
         return (time.monotonic() - cls._last_synced_at) >= cls._refresh_interval
 
     @classmethod
@@ -140,6 +213,8 @@ class ImageUriResolver:
         subdomain_set.update(subdomain_codes)
         cls._signature = (path_code, starts_with_a, tuple(sorted(subdomain_codes)))
         cls._last_synced_at = time.monotonic()
+        # Save to local cache for disaster recovery
+        cls._save_to_cache(path_code, starts_with_a, subdomain_codes)
 
     @classmethod
     def _is_initialised(cls) -> bool:
@@ -157,13 +232,34 @@ class ImageUriResolver:
         with cls._lock:
             if not cls._should_refresh(force):
                 return
-            response_text = fetch(f"{RESOURCE_DOMAIN}/gg.js").decode("utf-8")
-            parts = cls._parse_response(response_text)
-            cls._apply_parts(*parts)
+            try:
+                response_text = fetch(f"{RESOURCE_DOMAIN}/gg.js").decode("utf-8")
+                parts = cls._parse_response(response_text)
+                cls._apply_parts(*parts)
+            except Exception as e:
+                # Try to load from cache if fetch fails
+                if not cls._is_initialised():
+                    if cls._load_from_cache():
+                        return  # Successfully loaded from cache
+                raise
 
     @classmethod
     async def async_synchronize(cls, *, force: bool = False) -> None:
+        """Synchronize resolver data asynchronously.
+        
+        If data exists and is stale, uses Stale-While-Revalidate pattern:
+        schedules background refresh and returns immediately.
+        
+        On failure, attempts to load from local cache.
+        """
         if not cls._should_refresh(force):
+            return
+
+        # Stale-While-Revalidate: 既存データがある場合はバックグラウンドで更新
+        if cls._is_initialised() and cls._is_stale() and not force:
+            if not cls._background_refresh_in_progress:
+                cls._background_refresh_in_progress = True
+                asyncio.create_task(cls._background_refresh())
             return
 
         with cls._lock:
@@ -175,11 +271,42 @@ class ImageUriResolver:
         async with lock:
             if not cls._should_refresh(force):
                 return
-            response_text = (await async_fetch(f"{RESOURCE_DOMAIN}/gg.js")).decode(
-                "utf-8"
-            )
-            parts = cls._parse_response(response_text)
-            cls._apply_parts(*parts)
+            try:
+                response_text = (await async_fetch(f"{RESOURCE_DOMAIN}/gg.js")).decode(
+                    "utf-8"
+                )
+                parts = cls._parse_response(response_text)
+                cls._apply_parts(*parts)
+            except Exception as e:
+                # Try to load from cache if fetch fails
+                if not cls._is_initialised():
+                    if cls._load_from_cache():
+                        print(f"ImageUriResolver フェッチ失敗、キャッシュから復元: {e}")
+                        return  # Successfully loaded from cache
+                raise
+
+    @classmethod
+    async def _background_refresh(cls) -> None:
+        """Perform background refresh without blocking callers."""
+        try:
+            with cls._lock:
+                if cls._async_lock is None:
+                    cls._async_lock = asyncio.Lock()
+                lock = cls._async_lock
+
+            assert lock is not None
+            async with lock:
+                # Don't check _should_refresh here - we want to force refresh
+                response_text = (await async_fetch(f"{RESOURCE_DOMAIN}/gg.js")).decode(
+                    "utf-8"
+                )
+                parts = cls._parse_response(response_text)
+                cls._apply_parts(*parts)
+        except Exception as e:
+            # Background refresh failed - log but don't raise
+            print(f"ImageUriResolver バックグラウンド更新失敗: {e}")
+        finally:
+            cls._background_refresh_in_progress = False
 
     @classmethod
     def clear_cache(cls) -> None:
@@ -227,11 +354,14 @@ class ImageUriResolver:
         if not is_thumbnail:
             path = f"{IMAGE_URI_PARTS[0]}/{image_hash_code}/{image.hash}"
         else:
+            # サムネイルパス生成
+            hash_path = f"{image.hash[-1]}/{image.hash[-3:-1]}/{image.hash}"
             if is_small:
-                if extension != "avif":
-                    raise HitomiError(ErrorCode.INVALID_VALUE, "options['isSmall']", "be used with avif")
-                path = "small"
-            path += f"bigtn/{image.hash[-1]}/{image.hash[-3:-1]}/{image.hash}"
+                path = f"smallbigtn/{hash_path}"
+            else:
+                # avifとjxlはsmallbigtn、それ以外はbigtn
+                prefix = "smallbigtn" if extension in ("avif", "jxl") else "bigtn"
+                path = f"{prefix}/{hash_path}"
             subdomain = "tn"
 
         starts_with_a = bool(IMAGE_URI_PARTS[1])
