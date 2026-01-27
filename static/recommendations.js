@@ -16,7 +16,7 @@
         const refreshButton = document.getElementById('refreshButton');
 
         MangaApp.applyThemeToDocument(document);
-        MangaApp.ensureTranslations().catch(() => {});
+        MangaApp.ensureTranslations().catch(() => { });
         updateThemeToggleIcon(MangaApp.getPreferredTheme());
         themeToggle.addEventListener('click', () => {
             const theme = MangaApp.toggleTheme();
@@ -117,7 +117,19 @@
         const img = document.createElement('img');
         const firstImage = Array.isArray(gallery.image_urls) && gallery.image_urls.length > 0 ? gallery.image_urls[0] : '';
         if (firstImage) {
-            img.src = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
+            const baseUrl = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
+            const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+
+            if (MangaApp.isMobile()) {
+                img.src = thumbUrl;
+            } else {
+                img.src = thumbUrl;
+                const originalImg = new Image();
+                originalImg.src = baseUrl;
+                originalImg.onload = () => {
+                    img.src = originalImg.src;
+                };
+            }
         }
         thumbnail.appendChild(img);
 

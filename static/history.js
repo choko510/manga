@@ -38,7 +38,20 @@
             : '';
 
         if (url) {
-            element.style.backgroundImage = `url(${url})`;
+            if (MangaApp.isMobile()) {
+                element.style.backgroundImage = `url(${url})`;
+            } else {
+                // PCの場合、urlがオリジナルの可能性があるので、サムネイルを生成してプログレッシブに読み込む
+                const baseUrl = url.split('?')[0]; // パラメータを除去
+                const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+
+                element.style.backgroundImage = `url(${thumbUrl})`;
+                const originalImg = new Image();
+                originalImg.src = baseUrl;
+                originalImg.onload = () => {
+                    element.style.backgroundImage = `url(${originalImg.src})`;
+                };
+            }
             return;
         }
 
@@ -57,8 +70,19 @@
                 if (element.dataset.galleryId !== String(galleryId)) {
                     return;
                 }
-                const resolved = fetchedUrl.startsWith('/proxy/') ? fetchedUrl : `/proxy/${fetchedUrl}`;
-                element.style.backgroundImage = `url(${resolved})`;
+                const baseUrl = fetchedUrl.startsWith('/proxy/') ? fetchedUrl : `/proxy/${fetchedUrl}`;
+                const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+
+                if (MangaApp.isMobile()) {
+                    element.style.backgroundImage = `url(${thumbUrl})`;
+                } else {
+                    element.style.backgroundImage = `url(${thumbUrl})`;
+                    const originalImg = new Image();
+                    originalImg.src = baseUrl;
+                    originalImg.onload = () => {
+                        element.style.backgroundImage = `url(${originalImg.src})`;
+                    };
+                }
             })
             .catch(() => {
                 element.style.backgroundImage = '';

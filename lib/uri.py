@@ -353,18 +353,14 @@ class ImageUriResolver:
 
         if not is_thumbnail:
             path = f"{IMAGE_URI_PARTS[0]}/{image_hash_code}/{image.hash}"
+            starts_with_a = bool(IMAGE_URI_PARTS[1])
+            in_set = image_hash_code in subdomain_codes
+            suffix = "1" if in_set == starts_with_a else "2"
+            return f"{subdomain}{suffix}.{BASE_DOMAIN}/{path}.{extension}"
         else:
-            # サムネイルパス生成
+            # サムネイルパス生成 - 本家の形式: {extension}{small|big}tn/{hash[-1]}/{hash[-3:-1]}/{hash}
             hash_path = f"{image.hash[-1]}/{image.hash[-3:-1]}/{image.hash}"
-            if is_small:
-                path = f"smallbigtn/{hash_path}"
-            else:
-                # avifとjxlはsmallbigtn、それ以外はbigtn
-                prefix = "smallbigtn" if extension in ("avif", "jxl") else "bigtn"
-                path = f"{prefix}/{hash_path}"
-            subdomain = "tn"
-
-        starts_with_a = bool(IMAGE_URI_PARTS[1])
-        in_set = image_hash_code in subdomain_codes
-        suffix = "1" if in_set == starts_with_a else "2"
-        return f"{subdomain}{suffix}.{BASE_DOMAIN}/{path}.{extension}"
+            size_suffix = "small" if is_small else "big"
+            path = f"{extension}{size_suffix}tn/{hash_path}"
+            # サムネイルはtnサブドメイン固定（数字サフィックスなし）
+            return f"tn.{BASE_DOMAIN}/{path}.{extension}"

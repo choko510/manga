@@ -62,6 +62,89 @@ class GlobalState:
 # グローバル状態のインスタンス
 global_state = GlobalState()
 
+# =========================
+# サムネイルメモリキャッシュ
+# =========================
+from collections import OrderedDict
+from threading import Lock as ThreadLock
+
+class ThumbnailCache:
+    """
+    サムネイル画像のLRUメモリキャッシュ
+    - 最大サイズ: 300MB
+    - 最大エントリ数: 3000
+    - 古いものから自動削除
+    """
+    MAX_SIZE_BYTES = 300 * 1024 * 1024  # 300MB
+    MAX_ENTRIES = 3000
+    
+    def __init__(self):
+        self._cache: OrderedDict[str, tuple[bytes, str]] = OrderedDict()  # key -> (data, content_type)
+        self._current_size = 0
+        self._lock = ThreadLock()
+        self._hits = 0
+        self._misses = 0
+    
+    def get(self, key: str) -> Optional[tuple[bytes, str]]:
+        """キャッシュから取得（LRU更新）"""
+        with self._lock:
+            if key in self._cache:
+                # LRU: アクセスされたら末尾に移動
+                self._cache.move_to_end(key)
+                self._hits += 1
+                return self._cache[key]
+            self._misses += 1
+            return None
+    
+    def put(self, key: str, data: bytes, content_type: str) -> None:
+        """キャッシュに保存（容量制限あり）"""
+        size = len(data)
+        
+        # 大きすぎるデータはキャッシュしない（例: 10MB以上の単一画像）
+        if size > 10 * 1024 * 1024:
+            return
+        
+        with self._lock:
+            # 既存のキーがあれば削除（サイズ更新のため）
+            if key in self._cache:
+                old_data, _ = self._cache.pop(key)
+                self._current_size -= len(old_data)
+            
+            # 容量制限を超える場合、古いエントリを削除
+            while (self._current_size + size > self.MAX_SIZE_BYTES or 
+                   len(self._cache) >= self.MAX_ENTRIES) and self._cache:
+                oldest_key, (oldest_data, _) = self._cache.popitem(last=False)
+                self._current_size -= len(oldest_data)
+            
+            # 新しいエントリを追加
+            self._cache[key] = (data, content_type)
+            self._current_size += size
+    
+    def stats(self) -> dict:
+        """キャッシュ統計情報"""
+        with self._lock:
+            total = self._hits + self._misses
+            hit_rate = (self._hits / total * 100) if total > 0 else 0
+            return {
+                "entries": len(self._cache),
+                "size_mb": round(self._current_size / (1024 * 1024), 2),
+                "max_size_mb": round(self.MAX_SIZE_BYTES / (1024 * 1024), 2),
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate_percent": round(hit_rate, 2),
+            }
+    
+    def clear(self) -> None:
+        """キャッシュをクリア"""
+        with self._lock:
+            self._cache.clear()
+            self._current_size = 0
+            self._hits = 0
+            self._misses = 0
+
+# サムネイルキャッシュのインスタンス
+thumbnail_cache = ThumbnailCache()
+
 # グローバル変数（後方互換性）
 global_session: Optional[aiohttp.ClientSession] = None
 
@@ -2578,11 +2661,19 @@ async def search_galleries_get(
         raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
 
 @app.get("/proxy/{hash_or_path:path}")
-async def proxy_request(hash_or_path: str):
+async def proxy_request(
+    hash_or_path: str,
+    thumbnail: bool = False,
+    small: bool = False,
+):
     """
     画像プロキシエンドポイント
     - hashが渡された場合: ImageUriResolverでURLを解決してからプロキシ
     - URLが渡された場合: 従来通りそのままプロキシ（後方互換性）
+    
+    クエリパラメータ:
+    - thumbnail: サムネイル画像を取得する場合はtrue
+    - small: 小さいサムネイルを取得する場合はtrue（thumbnailがtrueの時のみ有効）
     """
     # URLかhashかを判定
     if hash_or_path.startswith(("http://", "https://")) or "gold-usergeneratedcontent.net" in hash_or_path:
@@ -2601,13 +2692,32 @@ async def proxy_request(hash_or_path: str):
                 has_webp=True,
                 has_jxl=False,
             )
-            resolved = ImageUriResolver.get_image_uri(image, "avif")
+            resolved = ImageUriResolver.get_image_uri(
+                image,
+                "avif",
+                is_thumbnail=thumbnail,
+                is_small=small,
+            )
             url = f"https://{resolved}" if not resolved.startswith("http") else resolved
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"URL resolution failed: {str(e)}")
     
     if not "gold-usergeneratedcontent.net" in url:
         raise HTTPException(status_code=400, detail="Invalid URL")
+
+    # キャッシュキーの生成（URLをベースにする）
+    cache_key = f"{url}"
+    # サムネイルまたはスモール画像の場合はキャッシュをチェック
+    use_cache = thumbnail or small
+    if use_cache:
+        cached = thumbnail_cache.get(cache_key)
+        if cached:
+            data, content_type = cached
+            return Response(
+                content=data,
+                media_type=content_type,
+                headers={'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'HIT'},
+            )
     
     headers = _build_headers()
 
@@ -2626,12 +2736,21 @@ async def proxy_request(hash_or_path: str):
                             await asyncio.sleep(retry_delay * (2 ** attempt))
                             continue
                         raise HTTPException(status_code=resp.status, detail=f"Upstream 5xx: {resp.status}")
+                    
+                    if resp.status != 200:
+                        raise HTTPException(status_code=resp.status, detail=f"Upstream error: {resp.status}")
+
                     if resp.content_type and resp.content_type.startswith("image/"):
                         data = await resp.read()
+                        
+                        # サムネイルまたはスモール画像の場合はキャッシュに保存
+                        if use_cache:
+                            thumbnail_cache.put(cache_key, data, resp.content_type)
+                            
                         return Response(
                             content=data,
                             media_type=resp.content_type,
-                            headers={'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*'},
+                            headers={'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'MISS'},
                         )
                     else:
                         content = await resp.text()

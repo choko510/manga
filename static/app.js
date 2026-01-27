@@ -8,6 +8,16 @@
         searchSettings: 'manga_search_settings'
     };
 
+    // モバイルデバイス判定（キャッシュ済み）
+    let isMobileDevice = null;
+    function isMobile() {
+        if (isMobileDevice === null) {
+            isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+                (window.innerWidth <= 768);
+        }
+        return isMobileDevice;
+    }
+
     let translationPromise = null;
     let translations = {};
     const aliasIndex = new Map();
@@ -374,7 +384,9 @@
         if (!raw) {
             return '';
         }
-        return raw.startsWith('/proxy/') ? raw : `/proxy/${raw}`;
+        const baseUrl = raw.startsWith('/proxy/') ? raw : `/proxy/${raw}`;
+        // モバイルの場合のみサムネイルを使用
+        return isMobile() ? `${baseUrl}?thumbnail=true&small=true` : baseUrl;
     }
 
     function buildThumbnailStyle(entry) {
@@ -772,5 +784,6 @@
         importUserData,
         getSearchSettings,
         saveSearchSettings,
+        isMobile,
     };
 })();

@@ -113,12 +113,26 @@
                     const card = entry.target;
                     const img = card.querySelector('img[data-src]');
                     if (img && !img.src) {
-                        img.src = img.dataset.src;
+                        const lowRes = img.dataset.lowRes;
+                        const finalSrc = img.dataset.src;
+
+                        // PCならまず軽量版をセット
+                        img.src = lowRes || finalSrc;
+
                         img.onload = () => {
                             img.style.display = 'block';
                             const placeholder = card.querySelector('.image-placeholder');
                             if (placeholder) {
                                 placeholder.remove();
+                            }
+
+                            // 軽量版から高画質版への切り替え（PCのみ）
+                            if (lowRes) {
+                                const originalImg = new Image();
+                                originalImg.src = finalSrc;
+                                originalImg.onload = () => {
+                                    img.src = finalSrc;
+                                };
                             }
                         };
                     }
@@ -495,14 +509,33 @@
         }
 
         if (firstImage) {
-            const resolved = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
-            img.dataset.src = resolved;
+            const baseUrl = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
+            const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+            const fullUrl = baseUrl;
+
+            // モバイルなら軽量版のみ、PCならプログレッシブ読み込み
+            if (MangaApp.isMobile()) {
+                img.dataset.src = thumbUrl;
+            } else {
+                img.dataset.src = fullUrl;
+                img.dataset.lowRes = thumbUrl;
+            }
+
             if (!cardObserver) {
-                img.src = resolved;
+                // Observerがない場合の直列処理
+                const initialSrc = img.dataset.lowRes || img.dataset.src;
+                img.src = initialSrc;
                 img.onload = () => {
                     const placeholder = thumbnail.querySelector('.image-placeholder');
-                    if (placeholder) {
-                        placeholder.remove();
+                    if (placeholder) placeholder.remove();
+
+                    // PCかつ軽量版が読み込まれたなら高画質版を読み込み開始
+                    if (img.dataset.lowRes && img.src.includes('thumbnail=true')) {
+                        const originalImg = new Image();
+                        originalImg.src = img.dataset.src;
+                        originalImg.onload = () => {
+                            img.src = originalImg.src;
+                        };
                     }
                 };
             }
@@ -595,7 +628,18 @@
             : '';
 
         if (url) {
-            element.style.backgroundImage = `url(${url})`;
+            if (MangaApp.isMobile()) {
+                element.style.backgroundImage = `url(${url})`;
+            } else {
+                const bUrl = url.split('?')[0];
+                const tUrl = `${bUrl}?thumbnail=true&small=true`;
+                element.style.backgroundImage = `url(${tUrl})`;
+                const originalImg = new Image();
+                originalImg.src = bUrl;
+                originalImg.onload = () => {
+                    element.style.backgroundImage = `url(${originalImg.src})`;
+                };
+            }
             return;
         }
 
@@ -614,8 +658,19 @@
                 if (element.dataset.galleryId !== String(galleryId)) {
                     return;
                 }
-                const resolved = fetchedUrl.startsWith('/proxy/') ? fetchedUrl : `/proxy/${fetchedUrl}`;
-                element.style.backgroundImage = `url(${resolved})`;
+                const baseUrl = fetchedUrl.startsWith('/proxy/') ? fetchedUrl : `/proxy/${fetchedUrl}`;
+                const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+
+                if (MangaApp.isMobile()) {
+                    element.style.backgroundImage = `url(${thumbUrl})`;
+                } else {
+                    element.style.backgroundImage = `url(${thumbUrl})`;
+                    const originalImg = new Image();
+                    originalImg.src = baseUrl;
+                    originalImg.onload = () => {
+                        element.style.backgroundImage = `url(${originalImg.src})`;
+                    };
+                }
             })
             .catch(() => {
                 element.style.backgroundImage = '';
@@ -780,13 +835,32 @@
         }
 
         if (firstImage) {
-            const resolved = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
-            img.dataset.src = resolved;
+            const baseUrl = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
+            const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+            const fullUrl = baseUrl;
+
+            // モバイルなら軽量版のみ、PCならプログレッシブ読み込み
+            if (MangaApp.isMobile()) {
+                img.dataset.src = thumbUrl;
+            } else {
+                img.dataset.src = fullUrl;
+                img.dataset.lowRes = thumbUrl;
+            }
+
             if (!cardObserver) {
-                img.src = resolved;
+                const initialSrc = img.dataset.lowRes || img.dataset.src;
+                img.src = initialSrc;
                 img.onload = () => {
                     const ph = thumbnail.querySelector('.image-placeholder');
                     if (ph) ph.remove();
+
+                    if (img.dataset.lowRes && img.src.includes('thumbnail=true')) {
+                        const originalImg = new Image();
+                        originalImg.src = img.dataset.src;
+                        originalImg.onload = () => {
+                            img.src = originalImg.src;
+                        };
+                    }
                 };
             }
         }
@@ -1107,7 +1181,8 @@
                 }
 
                 if (imageUrl) {
-                    const resolved = imageUrl.startsWith('/proxy/') ? imageUrl : `/proxy/${imageUrl}`;
+                    const baseUrl = imageUrl.startsWith('/proxy/') ? imageUrl : `/proxy/${imageUrl}`;
+                    const resolved = MangaApp.isMobile() ? `${baseUrl}?thumbnail=true&small=true` : baseUrl;
                     thumbnailUrls.push(resolved);
                 }
             });
