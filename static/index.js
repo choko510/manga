@@ -3,10 +3,14 @@
     let currentPage = 1;
     let currentQuery = '';
     let currentResolvedQuery = '';
-    let currentMinPages = 0;
+    let currentUnifiedQuery = '';
+    let currentMinPages = 10;
     let currentMaxPages = null;
     let isLoading = false;
+
     let cardObserver = null;
+    let isPageLoaded = false;
+    const deferredToObserve = []; // 読み込み完了後にobserveする画像を一時保存
     const searchCache = new Map();
 
     function logSearchTracking(query, resolvedQuery) {
@@ -99,11 +103,30 @@
             const params = new URLSearchParams(window.location.search);
             const page = parseInt(params.get('page'), 10) || 1;
             const tag = params.get('tag') || '';
+            const q = params.get('q') || '';
             currentPage = page;
-            currentQuery = tag;
-            elements.searchInput.value = tag;
+            currentQuery = tag || q;
+            currentUnifiedQuery = q;
+            currentResolvedQuery = tag;
+            elements.searchInput.value = tag || q;
             performSearch(elements, false);
         });
+
+        // ページ全体の読み込みが完了したら遅延読み込みを開始
+        if (document.readyState === 'complete') {
+            isPageLoaded = true;
+        } else {
+            window.addEventListener('load', () => {
+                isPageLoaded = true;
+                // Deferされていた画像をobserve開始
+                if (cardObserver && deferredToObserve.length > 0) {
+                    deferredToObserve.forEach((card) => {
+                        cardObserver.observe(card);
+                    });
+                    deferredToObserve.length = 0; // 配列を空にする
+                }
+            });
+        }
     });
 
     function setupObservers() {
@@ -181,23 +204,24 @@
         }
 
         elements.minPagesSelect.addEventListener('change', () => {
-            currentMinPages = parseInt(elements.minPagesSelect.value, 10) || 0;
             ensureValidPageRange(elements);
             // 設定を保存
             if (typeof MangaApp.saveSearchSettings === 'function') {
-                MangaApp.saveSearchSettings({ minPages: currentMinPages });
+                MangaApp.saveSearchSettings({
+                    minPages: currentMinPages,
+                    maxPages: currentMaxPages
+                });
             }
             performSearch(elements, true);
         });
         elements.maxPagesSelect.addEventListener('change', () => {
-            currentMaxPages = parseInt(elements.maxPagesSelect.value, 10);
-            if (Number.isNaN(currentMaxPages)) {
-                currentMaxPages = null;
-            }
             ensureValidPageRange(elements);
             // 設定を保存
             if (typeof MangaApp.saveSearchSettings === 'function') {
-                MangaApp.saveSearchSettings({ maxPages: currentMaxPages });
+                MangaApp.saveSearchSettings({
+                    minPages: currentMinPages,
+                    maxPages: currentMaxPages
+                });
             }
             performSearch(elements, true);
         });
@@ -316,7 +340,7 @@
         }
         if (maxVal !== null && maxVal < minVal) {
             elements.maxPagesSelect.value = '';
-            currentMaxPages = null;
+            maxVal = null;
         }
         currentMinPages = minVal;
         currentMaxPages = maxVal;
@@ -346,10 +370,24 @@
 
         if (reset) {
             currentPage = 1;
-            currentQuery = elements.searchInput.value.trim();
+            const rawInput = elements.searchInput.value.trim();
+            currentQuery = rawInput;
+
+            // 入力が作品コード(RJ/BJ等)っぽかったり、コロンを含まない単一ワードなら
+            // タイトル・コード検索(q)を優先的に検討する。
+            // ただし MangaApp.resolveTagQueryString がタグとして解決した場合は両方検討したいが、
+            // 現状のバックエンド仕様では q と tag は AND になるため、
+            // 検索ボックスからの入力は基本的に q として送る。
+
             currentResolvedQuery = typeof MangaApp.resolveTagQueryString === 'function'
                 ? MangaApp.resolveTagQueryString(currentQuery)
                 : currentQuery;
+
+            currentUnifiedQuery = currentQuery;
+
+            // もし入力が完全にタグ形式(例: "artist:xxx" や "female:xxx")だけで構成されているなら
+            // tagとして扱う方が精度的には高い。
+            // しかし「どこでも検索」を優先するため、常にqをセットする。
 
             // 新トラッキング: 検索実行を記録
             if (currentQuery) {
@@ -376,7 +414,8 @@
                 currentPage,
                 currentMinPages,
                 currentMaxPages,
-                sortBy
+                sortBy,
+                currentUnifiedQuery
             );
             const { results, totalPages, totalCount } = data;
 
@@ -400,7 +439,7 @@
             }
 
             // URLにページ番号を反映
-            updateUrlWithPage(currentPage, currentQuery);
+            updateUrlWithPage(currentPage, currentQuery, currentUnifiedQuery);
 
             if (results.length) {
                 const hiddenTags = MangaApp.getHiddenTags();
@@ -411,7 +450,7 @@
                 // 次のページのサムネイルを先読み
                 if (currentPage < totalPages) {
                     waitForAllImagesLoaded(elements.cardGrid).then(() => {
-                        prefetchNextPageThumbnails(currentPage + 1, sortBy);
+                        prefetchNextPageThumbnails(currentPage + 1, sortBy, currentUnifiedQuery);
                     });
                 }
             }
@@ -424,8 +463,8 @@
             showLoading(elements, false);
         }
     }
-    async function fetchSearchResults(resolvedQuery, userQuery, page, minPages, maxPages, sortBy = 'created_at') {
-        const cacheKey = `${resolvedQuery}|${userQuery}|${page}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
+    async function fetchSearchResults(resolvedQuery, userQuery, page, minPages, maxPages, sortBy = 'created_at', unifiedQuery = '') {
+        const cacheKey = `${resolvedQuery}|${userQuery}|${unifiedQuery}|${page}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
         if (searchCache.has(cacheKey)) {
             return searchCache.get(cacheKey);
         }
@@ -434,7 +473,9 @@
         params.append('limit', LIMIT.toString());
         params.append('page', page.toString());
         const queryForRequest = resolvedQuery || userQuery;
-        if (queryForRequest) {
+        if (unifiedQuery) {
+            params.append('q', unifiedQuery);
+        } else if (queryForRequest) {
             params.append('tag', queryForRequest);
         }
         if (typeof minPages === 'number' && minPages > 0) {
@@ -486,7 +527,11 @@
         results.forEach((gallery, index) => {
             const card = createGalleryCard(gallery, index);
             if (cardObserver && index >= 4) {
-                cardObserver.observe(card);
+                if (isPageLoaded) {
+                    cardObserver.observe(card);
+                } else {
+                    deferredToObserve.push(card);
+                }
             }
             fragment.appendChild(card);
         });
@@ -1113,9 +1158,9 @@
     // 次のページのサムネイルを先読みする
     let prefetchedPages = new Set();
 
-    async function prefetchNextPageThumbnails(nextPage, sortBy) {
+    async function prefetchNextPageThumbnails(nextPage, sortBy, unifiedQuery = '') {
         // 既に先読み済みの場合はスキップ
-        const cacheKey = `${currentResolvedQuery}|${nextPage}|${sortBy}`;
+        const cacheKey = `${currentResolvedQuery}|${unifiedQuery}|${nextPage}|${sortBy}`;
         if (prefetchedPages.has(cacheKey)) {
             return;
         }
@@ -1135,7 +1180,8 @@
                 nextPage,
                 currentMinPages,
                 currentMaxPages,
-                sortBy
+                sortBy,
+                unifiedQuery
             );
 
             if (!data.results || data.results.length === 0) {
@@ -1175,7 +1221,7 @@
 
 
     // URLにページ番号を反映する関数
-    function updateUrlWithPage(page, query) {
+    function updateUrlWithPage(page, query, unifiedQuery = '') {
         const url = new URL(window.location);
 
         // ページ番号を設定（1ページ目の場合は削除してURLをきれいに）
@@ -1186,10 +1232,17 @@
         }
 
         // タグを設定
-        if (query) {
+        if (query && !unifiedQuery) {
             url.searchParams.set('tag', query);
         } else {
             url.searchParams.delete('tag');
+        }
+
+        // 統一検索クエリを設定
+        if (unifiedQuery) {
+            url.searchParams.set('q', unifiedQuery);
+        } else {
+            url.searchParams.delete('q');
         }
 
         // URLを更新（履歴に追加）

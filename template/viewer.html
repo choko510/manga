@@ -1396,7 +1396,8 @@
         const sizeToggle = document.getElementById('sizeToggle');
 
         // 画像サイズ調整用変数
-        let currentImageSize = 100; // パーセント
+        // PCなどの横長デバイスはデフォルトで50%程度に調整
+        let currentImageSize = (window.innerWidth > 767 && window.innerWidth > window.innerHeight) ? 50 : 100; // パーセント
         const imageSizeStep = 25; // ステップサイズ
         const minImageSize = 50; // 最小サイズ
         const maxImageSize = 200; // 最大サイズ
@@ -1423,6 +1424,11 @@
                 currentImageSize = parseInt(savedImageSize, 10);
                 if (currentImageSize < minImageSize) currentImageSize = minImageSize;
                 if (currentImageSize > maxImageSize) currentImageSize = maxImageSize;
+            } else {
+                // 保存された設定がない場合、PCなどの横長デバイスは50%をデフォルトにする
+                if (window.innerWidth > 767 && window.innerWidth > window.innerHeight) {
+                    currentImageSize = 50;
+                }
             }
 
             // コントロールパネルの表示状態を読み込む
@@ -1658,7 +1664,7 @@
 
         // 画像サイズをリセット
         function resetImageSize() {
-            currentImageSize = 100;
+            currentImageSize = (window.innerWidth > 767 && window.innerWidth > window.innerHeight) ? 50 : 100;
             updateImageSize();
             saveSettings();
         }

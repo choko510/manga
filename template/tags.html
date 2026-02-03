@@ -543,13 +543,55 @@
         function sortTagsForGroup(items) {
             const sorted = Array.isArray(items) ? [...items] : [];
             sorted.sort((a, b) => {
-                const usageDiff = getUsageScore(b.tag) - getUsageScore(a.tag);
-                if (usageDiff !== 0) {
-                    return usageDiff;
+                // 優先度 (Server-side priority)
+                // 1. Priority >= 1 (High Priority logic)
+                // 2. Others
+                const pA = a.priority || 0;
+                const pB = b.priority || 0;
+
+                const isHighA = pA >= 1;
+                const isHighB = pB >= 1;
+
+                if (isHighA && !isHighB) return -1;
+                if (!isHighA && isHighB) return 1;
+                if (isHighA && isHighB) {
+                    return pB - pA; // Descending priority
                 }
-                const countDiff = (b.count || 0) - (a.count || 0);
-                if (countDiff !== 0) {
-                    return countDiff;
+
+                // Normal sorting (effective count/usage)
+                // Negative priority reduces effective usage/count
+                const getEffectiveScore = (item) => {
+                    const serverUsage = item.usage_count || 0;
+                    const localUsage = getUsageScore(item.tag);
+                    const usage = Math.max(serverUsage, localUsage);
+                    const count = item.count || 0;
+                    const p = item.priority || 0;
+
+                    // User Request: "元々の件数*使用した回数ぐらいにするようにして"
+                    // (Make it roughly original_count * usage_count)
+                    // Prioritize past used tags.
+
+                    let score;
+                    if (usage > 0) {
+                        score = count * usage;
+                    } else {
+                        // Unused tags: Scale down significantly to appear below used tags,
+                        // but preserve count-based ordering.
+                        // Assuming count <= 10^9, 10^-5 ensures unused < used (min score 1).
+                        score = count * 0.00001;
+                    }
+
+                    if (p < 0) {
+                        score = score / Math.abs(p);
+                    }
+                    return score;
+                };
+
+                const scoreA = getEffectiveScore(a);
+                const scoreB = getEffectiveScore(b);
+
+                if (scoreA !== scoreB) {
+                    return scoreB - scoreA;
                 }
                 return (a.tag || '').localeCompare(b.tag || '');
             });
@@ -664,6 +706,14 @@
                 if (state.search) {
                     params.append('search', state.search);
                 }
+
+                if (window.Tracking && typeof window.Tracking.getUserId === 'function') {
+                    const uid = window.Tracking.getUserId();
+                    if (uid) {
+                        params.append('user_id', uid);
+                    }
+                }
+
                 const response = await fetch(`/api/tags?${params}`);
                 if (!response.ok) {
                     throw new Error(`HTTP error ${response.status}`);

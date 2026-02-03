@@ -27,6 +27,7 @@ import secrets
 import string
 from datetime import datetime, timedelta
 from lib import ImageUriResolver
+from dlsite_async import DlsiteAPI
 
 # =========================
 # グローバル変数管理
@@ -313,6 +314,25 @@ def _sanitize_tag_usage(usage: Dict[str, int]) -> Dict[str, int]:
     return {key: value for key, value in sorted_items}
 
 
+def _extract_dlsite_id(q: str) -> Optional[int]:
+    """RJ123456, BJ123456 などの作品コードから数値部分を抽出する。"""
+    if not q:
+        return None
+    # 一般的なDLsiteコード形式: [A-Z]{2,}\d+
+    match = re.search(r'(?i)(?:RJ|BJ|VJ|RE|OR|RG|CJ|WJ)(\d+)', q)
+    if match:
+        try:
+            return int(match.group(1))
+        except (ValueError, TypeError):
+            pass
+    
+    # 数値のみの場合もIDとして扱う（作品コード直接入力の可能性）
+    if q.isdigit() and 4 < len(q) < 10:
+        return int(q)
+    
+    return None
+
+
 class TagTranslationsState:
     def __init__(self) -> None:
         self._version: Optional[str] = None
@@ -376,16 +396,22 @@ def _sanitize_alias_list(values: Any) -> List[str]:
 def _normalize_translation_entry(value: Any) -> Dict[str, Any]:
     translation = ""
     description = ""
+    priority = 0
     aliases: List[str] = []
     if isinstance(value, Mapping):
         translation = str(value.get("translation", "")).strip()
         description = str(value.get("description", "")).strip()
         aliases = _sanitize_alias_list(value.get("aliases", []))
+        try:
+            priority = int(value.get("priority", 0))
+        except (ValueError, TypeError):
+            priority = 0
     elif isinstance(value, str):
         translation = value.strip()
     return {
         "translation": translation,
         "description": description,
+        "priority": priority,
         "aliases": aliases,
     }
 
@@ -517,6 +543,7 @@ def _make_search_results_cache_key(
     tag: Optional[str],
     exclude_tag: Optional[str],
     character: Optional[str],
+    q: Optional[str],
     limit: int,
     offset: int,
     after_created_at: Optional[str],
@@ -532,6 +559,7 @@ def _make_search_results_cache_key(
         tag or "",
         exclude_tag or "",
         character or "",
+        q or "",
         str(limit),
         str(offset),
         after_created_at or "",
@@ -594,6 +622,7 @@ def _make_search_count_cache_key(
     tag: Optional[str],
     exclude_tag: Optional[str],
     character: Optional[str],
+    q: Optional[str],
     min_pages: Optional[int],
     max_pages: Optional[int],
 ) -> str:
@@ -604,6 +633,7 @@ def _make_search_count_cache_key(
         tag or "",
         exclude_tag or "",
         character or "",
+        q or "",
         str(min_pages) if min_pages is not None else "",
         str(max_pages) if max_pages is not None else "",
     ]
@@ -614,6 +644,7 @@ async def _get_search_count(
     tag: Optional[str],
     exclude_tag: Optional[str],
     character: Optional[str],
+    q: Optional[str],
     min_pages: Optional[int],
     max_pages: Optional[int],
     known_tags: Set[str],
@@ -623,7 +654,7 @@ async def _get_search_count(
     独自のDBセッションを使用することで、検索クエリと並列実行可能。
     """
     cache_key = _make_search_count_cache_key(
-        title, tag, exclude_tag, character, min_pages, max_pages
+        title, tag, exclude_tag, character, q, min_pages, max_pages
     )
     
     # キャッシュにあればそのまま返す（TTLチェックなし）
@@ -662,6 +693,29 @@ async def _get_search_count(
                 not_exists_clauses, not_exists_params = _build_tag_not_exists_clause("g", exclude_tag_terms)
                 count_where_clauses.extend(not_exists_clauses)
                 count_params.update(not_exists_params)
+        
+        if q:
+            q_clauses = []
+            q_clauses.append("g.japanese_title LIKE :q_like")
+            q_clauses.append("g.characters LIKE :q_like")
+            
+            # タグとしてのチェック
+            q_tag = q.lower()
+            q_artist = f"artist:{q_tag}"
+            
+            # EXISTS句でのタグチェック
+            q_clauses.append(f"EXISTS (SELECT 1 FROM gallery_tags WHERE gallery_id = g.gallery_id AND tag IN (:q_tag, :q_artist))")
+            
+            # 作品コードのチェック
+            code_id = _extract_dlsite_id(q)
+            if code_id:
+                q_clauses.append("g.gallery_id = :code_id")
+                count_params["code_id"] = code_id
+
+            count_where_clauses.append("(" + " OR ".join(q_clauses) + ")")
+            count_params["q_like"] = f"%{q}%"
+            count_params["q_tag"] = q_tag
+            count_params["q_artist"] = q_artist
         
         if min_pages is not None or max_pages is not None:
             min_val = max(min_pages or 0, 0)
@@ -1339,6 +1393,15 @@ async def init_database():
         for stmt in ranking_indexes:
             await conn.execute(text(stmt))
 
+        # --- tag_priorities テーブル ---
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS tag_priorities (
+                tag TEXT PRIMARY KEY,
+                priority INTEGER NOT NULL DEFAULT 0
+            )
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tag_priorities_priority ON tag_priorities(priority)"))
+
     # --- 初期データ同期（別トランザクション） ---
     print("[init_db] 初期データ同期確認中...")
     async with engine.begin() as conn:
@@ -1374,6 +1437,30 @@ async def init_database():
                 SELECT tag, COUNT(*) FROM gallery_tags GROUP BY tag
             """))
             print(f"[init_db] tag_stats 完了 ({time.time() - stats_start:.1f}秒)")
+
+        # tag_priorities 初期同期
+        print("[init_db] tag_priorities 同期中...")
+        prio_start = time.time()
+        try:
+            translations_data = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
+            priorities = []
+            if isinstance(translations_data, dict):
+                for tag, data in translations_data.items():
+                    if isinstance(data, dict):
+                        p = data.get("priority")
+                        if isinstance(p, int) and p != 0:
+                            priorities.append({"tag": tag, "priority": p})
+            
+            if priorities:
+                # 一旦クリア
+                await conn.execute(text("DELETE FROM tag_priorities"))
+                await conn.execute(
+                    text("INSERT INTO tag_priorities(tag, priority) VALUES (:tag, :priority)"),
+                    priorities
+                )
+            print(f"[init_db] tag_priorities 同期完了 ({len(priorities)}件, {time.time() - prio_start:.1f}秒)")
+        except Exception as e:
+            print(f"[init_db] tag_priorities 同期エラー: {e}")
 
         # 統計最適化
         await conn.execute(text("ANALYZE"))
@@ -1590,6 +1677,7 @@ async def search_galleries_fast(
     title: str = None,
     tag: str = None,
     character: str = None,
+    q: str = None,
     limit: int = 50,
     offset: int = 0,
     after_created_at: str | None = None,
@@ -1660,6 +1748,29 @@ async def search_galleries_fast(
             where_clauses.extend(exists_clauses)
             params.update(exists_params)
 
+        if q:
+            q_clauses = []
+            q_clauses.append("g.japanese_title LIKE :q_like")
+            q_clauses.append("g.characters LIKE :q_like")
+            
+            # タグとしてのチェック
+            q_tag = q.lower()
+            q_artist = f"artist:{q_tag}"
+            
+            # EXISTS句でのタグチェック
+            q_clauses.append(f"EXISTS (SELECT 1 FROM gallery_tags WHERE gallery_id = g.gallery_id AND tag IN (:q_tag, :q_artist))")
+            
+            # 作品コードのチェック
+            code_id = _extract_dlsite_id(q)
+            if code_id:
+                q_clauses.append("g.gallery_id = :code_id")
+                params["code_id"] = code_id
+
+            where_clauses.append("(" + " OR ".join(q_clauses) + ")")
+            params["q_like"] = f"%{q}%"
+            params["q_tag"] = q_tag
+            params["q_artist"] = q_artist
+
         if exclude_tag_terms:
             not_exists_clauses, not_exists_params = _build_tag_not_exists_clause("g", exclude_tag_terms)
             where_clauses.extend(not_exists_clauses)
@@ -1714,6 +1825,7 @@ async def search_galleries_fast(
             title=title,
             tag=tag,
             character=character,
+            q=q,
             limit=limit,
             offset=offset,
             exclude_tag=exclude_tag,
@@ -1723,6 +1835,7 @@ async def search_galleries(
     title: str = None,
     tag: str = None,
     character: str = None,
+    q: str = None,
     limit: int = None,
     offset: int = None,
     exclude_tag: str = None,
@@ -2329,6 +2442,7 @@ async def api_recommendations(
 async def search_galleries_get(
     title: Optional[str] = None,
     tag: Optional[str] = None,
+    q: Optional[str] = None,
     exclude_tag: Optional[str] = None,
     character: Optional[str] = None,
     limit: int = 50,
@@ -2353,6 +2467,7 @@ async def search_galleries_get(
         cache_key = _make_search_results_cache_key(
             title=title,
             tag=tag,
+            q=q,
             exclude_tag=exclude_tag,
             character=character,
             limit=limit,
@@ -2497,6 +2612,7 @@ async def search_galleries_get(
                         db,
                         title=title,
                         tag=tag,
+                        q=q,
                         exclude_tag=exclude_tag,
                         character=character,
                         limit=limit,
@@ -2512,6 +2628,7 @@ async def search_galleries_get(
                         tag=tag,
                         exclude_tag=exclude_tag,
                         character=character,
+                        q=q,
                         min_pages=min_pages,
                         max_pages=max_pages,
                         known_tags=known_tags,
@@ -2924,13 +3041,22 @@ async def get_artist_works(
 # タグ API（tag_stats 使用で高速化）
 # -------------------------
 @app.get("/api/tags")
-async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = None):
+async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = None, user_id: Optional[str] = None):
     """
     tag-translations.json を用いて:
       - 日本語訳やエイリアスから英語タグへ正規化して検索可能にする
       - 英語タグ指定時も従来通り部分一致検索
     """
     try:
+
+        search_counts: Dict[str, int] = {}
+        if user_id:
+            try:
+                async with get_tracking_db_session() as tracking_db:
+                    search_counts = await _get_user_search_counts(tracking_db, user_id)
+            except Exception as e:
+                print(f"Tracking DB error in get_tags: {e}")
+
         async with get_db_session() as db:
             params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
@@ -2991,21 +3117,104 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
                     where_clauses.append("LOWER(tag) LIKE :search")
                     params["search"] = search_param
 
-            base_query = "SELECT tag, count FROM tag_stats"
-            base_total = "SELECT COUNT(*) FROM tag_stats"
+            base_query = """
+                SELECT ts.tag, ts.count, COALESCE(tp.priority, 0) as priority,
+                0 as usage_count -- Placeholder, updated dynamically if search_counts exists
+                FROM tag_stats ts
+                LEFT JOIN tag_priorities tp ON ts.tag = tp.tag
+            """
+            base_total = """
+                SELECT COUNT(*)
+                FROM tag_stats ts
+                LEFT JOIN tag_priorities tp ON ts.tag = tp.tag
+            """
+
+            # ユーザー検索履歴に基づく `usage_count` (CASE文生成)
+            orders = []
+            
+            # 使用回数があるタグのためのソートロジック
+            # 優先度ソート:
+            # 1. Server-side Priority >= 1
+            # 2. Dynamic Score (Count * Usage) if Usage > 0
+            # 3. Else Count * small_factor (Default behavior)
+            
+            # CASE文で usage_count を定義
+            # "CASE tag WHEN 't1' THEN c1 WHEN 't2' THEN c2 ... ELSE 0 END"
+            usage_case_parts = []
+            usage_params = {}
+            
+            if search_counts:
+                # パラメータ数上限を考慮しつつ、上位のタグのみをSQLに埋め込む
+                # SQLiteのパラメータ上限は通常999だが、安全のため上位200件程度にする
+                sorted_usage = sorted(search_counts.items(), key=lambda x: x[1], reverse=True)[:200]
+                
+                for idx, (t_name, t_count) in enumerate(sorted_usage):
+                    p_tag = f"u_tag_{idx}"
+                    p_val = f"u_val_{idx}"
+                    usage_case_parts.append(f"WHEN :u_tag_{idx} THEN :u_val_{idx}")
+                    usage_params[p_tag] = t_name
+                    usage_params[p_val] = t_count
+                
+                params.update(usage_params)
+
+            if usage_case_parts:
+                usage_sql = "CASE ts.tag " + " ".join(usage_case_parts) + " ELSE 0 END"
+                # SELECT句を書き換えるのは面倒なので、Orderingで計算する
+                # ただし、レスポンスに usage_count を含めるため、SELECT句も調整したいが
+                # ここでは簡易的に、Orderingで制御し、usage_countは0のままでもフロントエンドでlocalStorageとマージできる
+                # (フロントエンドは既にlocalStorageの値を使っているため)
+                # しかし、Userは "Backend knows usage" と言っているため、backend dataを返すべきか。
+                # ユーザーの要望「上に優先的に表示」はソートで達成できる。
+                
+                # スコア計算式:
+                # IF priority >= 1 THEN (Priority * 10^9) -- Push to absolute top
+                # ELSE IF usage > 0 THEN (Count * Usage)
+                # ELSE Count * 0.00001 (Unused tags)
+                
+                # Priority >= 1 logic is handled by first order term.
+                # Here we define the score for the rest.
+                
+                # Note: ts.count is integer.
+                
+                dynamic_score_sql = f"""
+                    CASE
+                        WHEN ({usage_sql}) > 0 THEN CAST(ts.count AS REAL) * ({usage_sql})
+                        ELSE CAST(ts.count AS REAL) * 0.00001
+                    END
+                """
+                
+                orders = [
+                    "CASE WHEN COALESCE(tp.priority, 0) >= 1 THEN 0 ELSE 1 END ASC",
+                    "CASE WHEN COALESCE(tp.priority, 0) >= 1 THEN COALESCE(tp.priority, 0) ELSE 0 END DESC",
+                    f"{dynamic_score_sql} DESC",
+                    "ts.tag ASC"
+                ]
+            else:
+                 orders = [
+                    "CASE WHEN COALESCE(tp.priority, 0) >= 1 THEN 0 ELSE 1 END ASC",
+                    "CASE WHEN COALESCE(tp.priority, 0) >= 1 THEN COALESCE(tp.priority, 0) ELSE 0 END DESC",
+                    """CASE
+                        WHEN COALESCE(tp.priority, 0) < 0 THEN CAST(ts.count AS REAL) / ABS(COALESCE(tp.priority, 0))
+                        ELSE ts.count
+                    END DESC""",
+                    "ts.tag ASC"
+                ]
+
 
             if where_clauses:
                 where_sql = " WHERE " + " AND ".join(where_clauses)
                 query = (
                     base_query
                     + where_sql
-                    + " ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
+                    + " ORDER BY " + ", ".join(orders)
+                    + " LIMIT :limit OFFSET :offset"
                 )
                 total_sql = base_total + where_sql
             else:
                 query = (
                     base_query
-                    + " ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
+                    + " ORDER BY " + ", ".join(orders)
+                    + " LIMIT :limit OFFSET :offset"
                 )
                 total_sql = base_total
 
@@ -3013,7 +3222,19 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
             total_count = total_result.scalar()
             rows_result = await db.execute(text(query), params)
             rows = rows_result.fetchall()
-            tags = [{"tag": r.tag, "count": r.count} for r in rows]
+            tags = []
+            for row in rows:
+                t_tag = row.tag
+                t_count = row.count
+                t_priority = row.priority
+                t_usage = search_counts.get(t_tag.lower(), 0) if search_counts else 0
+                
+                tags.append({
+                    "tag": t_tag,
+                    "count": t_count,
+                    "priority": t_priority,
+                    "usage_count": t_usage
+                })
 
             return {
                 "tags": tags,
@@ -3969,6 +4190,18 @@ async def _get_user_known_tags(tracking_db: AsyncSession, user_id: str) -> Set[s
         known_tags.add(row[0].lower())
     
     return known_tags
+
+
+async def _get_user_search_counts(tracking_db: AsyncSession, user_id: str) -> Dict[str, int]:
+    """ユーザーの検索回数履歴を取得"""
+    counts: Dict[str, int] = {}
+    stmt = select(SearchHistory).where(SearchHistory.user_id == user_id)
+    result = await tracking_db.execute(stmt)
+    for row in result.scalars():
+        if row.tag:
+            counts[row.tag.lower()] = row.search_count or 0
+    return counts
+
 
 
 def _calculate_quality_factor(avg_time: float, ctr: float) -> float:

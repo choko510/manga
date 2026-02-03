@@ -79,6 +79,7 @@
         if (value && typeof value === 'object') {
             const translation = typeof value.translation === 'string' ? value.translation : '';
             const description = typeof value.description === 'string' ? value.description : '';
+            const priority = typeof value.priority === 'number' ? value.priority : 0;
             const aliases = [];
             if (Array.isArray(value.aliases)) {
                 const seen = new Set();
@@ -98,12 +99,12 @@
                     aliases.push(trimmed);
                 });
             }
-            return { translation, description, aliases };
+            return { translation, description, priority, aliases };
         }
         if (typeof value === 'string') {
-            return { translation: value, description: '', aliases: [] };
+            return { translation: value, description: '', priority: 0, aliases: [] };
         }
-        return { translation: '', description: '', aliases: [] };
+        return { translation: '', description: '', priority: 0, aliases: [] };
     }
 
     function getTagMetadata(tag) {
@@ -679,6 +680,7 @@
             hidden_tags: getHiddenTags(),
             likes: Array.from(getLikedSet()),
             tag_usage: getTagUsageCounts(),
+            search_settings: getSearchSettings(),
         };
     }
 
@@ -701,6 +703,10 @@
         }
         if (data.tag_usage && typeof data.tag_usage === 'object') {
             replaceTagUsage(data.tag_usage);
+            changed = true;
+        }
+        if (data.search_settings && typeof data.search_settings === 'object') {
+            saveSearchSettings(data.search_settings);
             changed = true;
         }
         return changed;
