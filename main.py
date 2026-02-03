@@ -4922,7 +4922,7 @@ async def _precache_search_counts():
             for min_pages in [None] + popular_min_pages:
                 try:
                     cache_key = _make_search_count_cache_key(
-                        None, None, None, None, min_pages, None
+                        None, None, None, None, None, min_pages, None
                     )
                     
                     # 既にキャッシュされている場合はスキップ
