@@ -391,11 +391,11 @@ async def download_all_popular_files() -> None:
     
     # 人気ランキングファイルの情報
     popular_files = [
-        {"name": "all", "url": AllURL, "output": "all_ids.txt"},
-        {"name": "year", "url": YearURL, "output": "year_ids.txt"},
-        {"name": "month", "url": MonthURL, "output": "month_ids.txt"},
-        {"name": "week", "url": WeekURL, "output": "week_ids.txt"},
-        {"name": "day", "url": DayURL, "output": "day_ids.txt"},
+        {"name": "all", "url": AllURL, "output": "cache/all_ids.txt"},
+        {"name": "year", "url": YearURL, "output": "cache/year_ids.txt"},
+        {"name": "month", "url": MonthURL, "output": "cache/month_ids.txt"},
+        {"name": "week", "url": WeekURL, "output": "cache/week_ids.txt"},
+        {"name": "day", "url": DayURL, "output": "cache/day_ids.txt"},
     ]
     
     print("人気ランキングファイルのダウンロードを開始します...")

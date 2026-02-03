@@ -46,6 +46,7 @@
             searchInput: document.getElementById('searchInput'),
             searchButton: document.getElementById('searchButton'),
             sortBySelect: document.getElementById('sortBySelect'),
+            sortBySelectMobile: document.getElementById('sortBySelectMobile'),
             minPagesSelect: document.getElementById('minPagesSelect'),
             maxPagesSelect: document.getElementById('maxPagesSelect'),
             cardGrid: document.getElementById('cardGrid'),
@@ -135,8 +136,9 @@
             : { sortBy: 'weekly', minPages: 10, maxPages: null };
 
         // 並び順を復元
-        if (elements.sortBySelect && savedSettings.sortBy) {
-            elements.sortBySelect.value = savedSettings.sortBy;
+        if (savedSettings.sortBy) {
+            if (elements.sortBySelect) elements.sortBySelect.value = savedSettings.sortBy;
+            if (elements.sortBySelectMobile) elements.sortBySelectMobile.value = savedSettings.sortBy;
         }
 
         // 最小ページ数を復元
@@ -200,14 +202,34 @@
             performSearch(elements, true);
         });
 
+        // 並び順の同期関数
+        const syncSortBy = (val) => {
+            if (elements.sortBySelect) elements.sortBySelect.value = val;
+            if (elements.sortBySelectMobile) elements.sortBySelectMobile.value = val;
+        };
+
         // 並び順の変更イベントリスナーを追加
-        elements.sortBySelect.addEventListener('change', () => {
-            // 設定を保存
-            if (typeof MangaApp.saveSearchSettings === 'function') {
-                MangaApp.saveSearchSettings({ sortBy: elements.sortBySelect.value });
-            }
-            performSearch(elements, true);
-        });
+        if (elements.sortBySelect) {
+            elements.sortBySelect.addEventListener('change', () => {
+                const val = elements.sortBySelect.value;
+                syncSortBy(val);
+                if (typeof MangaApp.saveSearchSettings === 'function') {
+                    MangaApp.saveSearchSettings({ sortBy: val });
+                }
+                performSearch(elements, true);
+            });
+        }
+
+        if (elements.sortBySelectMobile) {
+            elements.sortBySelectMobile.addEventListener('change', () => {
+                const val = elements.sortBySelectMobile.value;
+                syncSortBy(val);
+                if (typeof MangaApp.saveSearchSettings === 'function') {
+                    MangaApp.saveSearchSettings({ sortBy: val });
+                }
+                performSearch(elements, true);
+            });
+        }
         elements.themeToggle.addEventListener('click', () => {
             const theme = MangaApp.toggleTheme();
             updateThemeToggleIcon(elements.themeToggle, theme);
@@ -341,7 +363,9 @@
         }
 
         // 並び順の値を取得
-        const sortBy = elements.sortBySelect ? elements.sortBySelect.value : 'created_at';
+        const sortBy = (elements.sortBySelectMobile && window.getComputedStyle(elements.sortBySelectMobile.parentElement).display !== 'none')
+            ? elements.sortBySelectMobile.value
+            : (elements.sortBySelect ? elements.sortBySelect.value : 'created_at');
 
         showLoading(elements, true);
 
@@ -459,9 +483,9 @@
 
     function renderResults(elements, results, reset) {
         const fragment = document.createDocumentFragment();
-        results.forEach((gallery) => {
-            const card = createGalleryCard(gallery);
-            if (cardObserver) {
+        results.forEach((gallery, index) => {
+            const card = createGalleryCard(gallery, index);
+            if (cardObserver && index >= 4) {
                 cardObserver.observe(card);
             }
             fragment.appendChild(card);
@@ -472,7 +496,7 @@
         elements.cardGrid.appendChild(fragment);
     }
 
-    function createGalleryCard(gallery) {
+    function createGalleryCard(gallery, index = 100) {
         const card = document.createElement('a');
         card.href = `/viewer?id=${gallery.gallery_id}`;
         card.className = 'card';
@@ -496,10 +520,34 @@
 
         if (firstImage) {
             const resolved = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
-            img.dataset.src = resolved;
-            if (!cardObserver) {
+
+            // 最初の4枚は即時読み込み（Lazy Loadを回避）して表示速度を向上
+            const isPriority = index < 4;
+
+            if (isPriority) {
+                img.src = resolved;
+                img.style.display = 'block';
+                // プレースホルダーを即座に削除
+                const placeholder = thumbnail.querySelector('.image-placeholder');
+                if (placeholder) {
+                    placeholder.remove();
+                }
+
+                // 1枚目はさらに優先度を上げる
+                if (index === 0) {
+                    img.setAttribute('fetchpriority', 'high');
+                }
+            } else {
+                img.dataset.src = resolved;
+                // Lazy Load対象としてObserverに登録は呼び出し元で行うが、
+                // ここではsrcをセットしないことで遅延読み込みの準備とする
+            }
+
+            if (!cardObserver && !isPriority) {
+                // Fallback if observer not supported but not priority
                 img.src = resolved;
                 img.onload = () => {
+                    img.style.display = 'block';
                     const placeholder = thumbnail.querySelector('.image-placeholder');
                     if (placeholder) {
                         placeholder.remove();
