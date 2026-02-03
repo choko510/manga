@@ -541,61 +541,64 @@
         }
 
         function sortTagsForGroup(items) {
-            const sorted = Array.isArray(items) ? [...items] : [];
-            sorted.sort((a, b) => {
-                // 優先度 (Server-side priority)
-                // 1. Priority >= 1 (High Priority logic)
-                // 2. Others
-                const pA = a.priority || 0;
-                const pB = b.priority || 0;
+            if (!Array.isArray(items)) return [];
 
-                const isHighA = pA >= 1;
-                const isHighB = pB >= 1;
+            // Pre-calculate scores for sorting (Schwartzian transform)
+            const mapped = items.map((item, index) => {
+                // Priority (Server-side)
+                const p = item.priority || 0;
+                const isHigh = p >= 1;
 
-                if (isHighA && !isHighB) return -1;
-                if (!isHighA && isHighB) return 1;
-                if (isHighA && isHighB) {
-                    return pB - pA; // Descending priority
+                // Effective Score calculation
+                const serverUsage = item.usage_count || 0;
+                const localUsage = getUsageScore(item.tag);
+                const usage = Math.max(serverUsage, localUsage);
+                const count = item.count || 0;
+
+                let score;
+                if (usage > 0) {
+                    score = count * usage;
+                } else {
+                    // Unused tags: Scale down significantly
+                    score = count * 0.00001;
                 }
 
-                // Normal sorting (effective count/usage)
-                // Negative priority reduces effective usage/count
-                const getEffectiveScore = (item) => {
-                    const serverUsage = item.usage_count || 0;
-                    const localUsage = getUsageScore(item.tag);
-                    const usage = Math.max(serverUsage, localUsage);
-                    const count = item.count || 0;
-                    const p = item.priority || 0;
+                if (p < 0) {
+                    score = score / Math.abs(p);
+                }
 
-                    // User Request: "元々の件数*使用した回数ぐらいにするようにして"
-                    // (Make it roughly original_count * usage_count)
-                    // Prioritize past used tags.
-
-                    let score;
-                    if (usage > 0) {
-                        score = count * usage;
-                    } else {
-                        // Unused tags: Scale down significantly to appear below used tags,
-                        // but preserve count-based ordering.
-                        // Assuming count <= 10^9, 10^-5 ensures unused < used (min score 1).
-                        score = count * 0.00001;
-                    }
-
-                    if (p < 0) {
-                        score = score / Math.abs(p);
-                    }
-                    return score;
+                return {
+                    index, // preserve original order for stable sort
+                    value: item,
+                    isHigh,
+                    priority: p,
+                    score
                 };
-
-                const scoreA = getEffectiveScore(a);
-                const scoreB = getEffectiveScore(b);
-
-                if (scoreA !== scoreB) {
-                    return scoreB - scoreA;
-                }
-                return (a.tag || '').localeCompare(b.tag || '');
             });
-            return sorted;
+
+            mapped.sort((a, b) => {
+                // 1. High Priority First
+                if (a.isHigh && !b.isHigh) return -1;
+                if (!a.isHigh && b.isHigh) return 1;
+
+                // 2. Descending Priority within High Priority group
+                if (a.isHigh && b.isHigh) {
+                    if (a.priority !== b.priority) {
+                        return b.priority - a.priority;
+                    }
+                }
+
+                // 3. Effective Score (Descending)
+                // Note: Low priority (negative) has already reduced the score above
+                if (a.score !== b.score) {
+                    return b.score - a.score;
+                }
+
+                // 4. Tag Name (Ascending)
+                return (a.value.tag || '').localeCompare(b.value.tag || '');
+            });
+
+            return mapped.map(v => v.value);
         }
 
         function setupEventHandlers() {

@@ -1246,6 +1246,14 @@
                     <button id="viewerLikeButton" class="viewer-like-button" type="button"><i class="far fa-heart"></i>
                         いいね</button>
                 </div>
+
+                <!-- 作者情報セクション -->
+                <div class="artist-section" id="artistInfoSection" style="display: none;">
+                    <div class="artist-info">
+                        <span class="artist-label">作者:</span>
+                        <div id="artistBadgesContainer" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+                    </div>
+                </div>
                 <div class="manga-tags" id="mangaTagsInfo"></div>
                 <div class="viewer-options">
                     <label for="readingModeSelect">表示モード</label>
@@ -1383,6 +1391,8 @@
         const artistWorksSection = document.getElementById('artistWorksSection');
         const artistWorksGrid = document.getElementById('artistWorksGrid');
         const artistNameTitle = document.getElementById('artistNameTitle');
+        const artistInfoSection = document.getElementById('artistInfoSection');
+        const artistBadgesContainer = document.getElementById('artistBadgesContainer');
 
         // 現在の作者情報
         let currentArtists = [];
@@ -1395,9 +1405,18 @@
         const sizeDisplay = document.getElementById('sizeDisplay');
         const sizeToggle = document.getElementById('sizeToggle');
 
+        // デバイスの向き判定ヘルパー
+        function isLandscape() {
+            return window.innerWidth > 767 && window.innerWidth > window.innerHeight;
+        }
+
+        // 画像サイズ調整用定数
+        const DEFAULT_LANDSCAPE_SCALE = 50;
+        const DEFAULT_PORTRAIT_SCALE = 100;
+
         // 画像サイズ調整用変数
         // PCなどの横長デバイスはデフォルトで50%程度に調整
-        let currentImageSize = (window.innerWidth > 767 && window.innerWidth > window.innerHeight) ? 50 : 100; // パーセント
+        let currentImageSize = isLandscape() ? DEFAULT_LANDSCAPE_SCALE : DEFAULT_PORTRAIT_SCALE;
         const imageSizeStep = 25; // ステップサイズ
         const minImageSize = 50; // 最小サイズ
         const maxImageSize = 200; // 最大サイズ
@@ -1425,10 +1444,8 @@
                 if (currentImageSize < minImageSize) currentImageSize = minImageSize;
                 if (currentImageSize > maxImageSize) currentImageSize = maxImageSize;
             } else {
-                // 保存された設定がない場合、PCなどの横長デバイスは50%をデフォルトにする
-                if (window.innerWidth > 767 && window.innerWidth > window.innerHeight) {
-                    currentImageSize = 50;
-                }
+                // 保存された設定がない場合、デバイスの向きに応じてデフォルトを設定
+                currentImageSize = isLandscape() ? DEFAULT_LANDSCAPE_SCALE : DEFAULT_PORTRAIT_SCALE;
             }
 
             // コントロールパネルの表示状態を読み込む
@@ -1664,7 +1681,7 @@
 
         // 画像サイズをリセット
         function resetImageSize() {
-            currentImageSize = (window.innerWidth > 767 && window.innerWidth > window.innerHeight) ? 50 : 100;
+            currentImageSize = isLandscape() ? DEFAULT_LANDSCAPE_SCALE : DEFAULT_PORTRAIT_SCALE;
             updateImageSize();
             saveSettings();
         }
@@ -2314,31 +2331,19 @@
             }
 
             // 作者情報を表示
-            if (currentArtists.length > 0) {
-                const artistGroup = document.createElement('div');
-                artistGroup.className = 'tag-group';
-
-                const artistLabel = document.createElement('span');
-                artistLabel.className = 'tag-label';
-                artistLabel.textContent = '作者:';
-                artistGroup.appendChild(artistLabel);
-
-                currentArtists.forEach(artist => {
-                    const artistItem = document.createElement('span');
-                    artistItem.className = 'tag-item';
-                    const artistLink = document.createElement('a');
-                    artistLink.href = `/?tag=${encodeURIComponent('artist:' + artist)}`;
-                    artistLink.textContent = artist;
-                    artistLink.title = `artist:${artist}`;
-                    artistItem.appendChild(artistLink);
-                    artistGroup.appendChild(artistItem);
-                });
-
-                // タグ情報の先頭に作者情報を挿入
-                if (mangaTagsInfo.firstChild) {
-                    mangaTagsInfo.insertBefore(artistGroup, mangaTagsInfo.firstChild);
+            if (artistInfoSection && artistBadgesContainer) {
+                if (currentArtists.length > 0) {
+                    artistBadgesContainer.innerHTML = '';
+                    currentArtists.forEach(artist => {
+                        const badge = document.createElement('a');
+                        badge.className = 'artist-badge';
+                        badge.href = `/?tag=${encodeURIComponent('artist:' + artist)}`;
+                        badge.innerHTML = `<i class="fas fa-user-pen"></i> ${artist}`;
+                        artistBadgesContainer.appendChild(badge);
+                    });
+                    artistInfoSection.style.display = 'block';
                 } else {
-                    mangaTagsInfo.appendChild(artistGroup);
+                    artistInfoSection.style.display = 'none';
                 }
             }
         }
