@@ -3107,8 +3107,6 @@ async def proxy_request(
                                 'X-Download-Mode': 'fallback',
                             },
                         )
-
-                        )
                         
             except aiohttp.ClientError as e:
                 if attempt < max_retries:
