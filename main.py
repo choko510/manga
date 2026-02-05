@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, Response, JSONResponse
+from starlette.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import aiohttp
 import asyncio
@@ -27,6 +28,7 @@ import secrets
 import string
 from datetime import datetime, timedelta
 from lib import ImageUriResolver
+from dlsite_async import DlsiteAPI
 
 # =========================
 # グローバル変数管理
@@ -396,6 +398,37 @@ def _sanitize_tag_usage(usage: Dict[str, int]) -> Dict[str, int]:
     return {key: value for key, value in sorted_items}
 
 
+def _extract_dlsite_id(q: str) -> Optional[int]:
+    """RJ123456, BJ123456 などの作品コードから数値部分を抽出する。"""
+    if not q:
+        return None
+    # 一般的なDLsiteコード形式: [A-Z]{2,}\d+
+    match = re.search(r'(?i)(?:RJ|BJ|VJ|RE|OR|RG|CJ|WJ)(\d+)', q)
+    if match:
+        try:
+            return int(match.group(1))
+        except (ValueError, TypeError):
+            pass
+    
+    # 数値のみの場合もIDとして扱う（作品コード直接入力の可能性）
+    if q.isdigit() and 4 < len(q) < 10:
+        return int(q)
+    
+    return None
+
+
+def _extract_dlsite_product_code(q: str) -> Optional[str]:
+    """URLや文字列からRJ123456などのプロダクトコードを抜き出す。"""
+    if not q:
+        return None
+    # http または https または /dlsite.com/ が含まれる場合はURLとして扱う
+    if q.startswith(("http://", "https://")) or "dlsite.com" in q:
+        match = re.search(r'(?i)((?:RJ|BJ|VJ|RE|OR|RG|CJ|WJ)\d+)', q)
+        if match:
+            return match.group(1).upper()
+    return None
+
+
 class TagTranslationsState:
     def __init__(self) -> None:
         self._version: Optional[str] = None
@@ -459,16 +492,22 @@ def _sanitize_alias_list(values: Any) -> List[str]:
 def _normalize_translation_entry(value: Any) -> Dict[str, Any]:
     translation = ""
     description = ""
+    priority = 0
     aliases: List[str] = []
     if isinstance(value, Mapping):
         translation = str(value.get("translation", "")).strip()
         description = str(value.get("description", "")).strip()
         aliases = _sanitize_alias_list(value.get("aliases", []))
+        try:
+            priority = int(value.get("priority", 0))
+        except (ValueError, TypeError):
+            priority = 0
     elif isinstance(value, str):
         translation = value.strip()
     return {
         "translation": translation,
         "description": description,
+        "priority": priority,
         "aliases": aliases,
     }
 
@@ -600,6 +639,7 @@ def _make_search_results_cache_key(
     tag: Optional[str],
     exclude_tag: Optional[str],
     character: Optional[str],
+    q: Optional[str],
     limit: int,
     offset: int,
     after_created_at: Optional[str],
@@ -615,6 +655,7 @@ def _make_search_results_cache_key(
         tag or "",
         exclude_tag or "",
         character or "",
+        q or "",
         str(limit),
         str(offset),
         after_created_at or "",
@@ -677,6 +718,7 @@ def _make_search_count_cache_key(
     tag: Optional[str],
     exclude_tag: Optional[str],
     character: Optional[str],
+    q: Optional[str],
     min_pages: Optional[int],
     max_pages: Optional[int],
 ) -> str:
@@ -687,6 +729,7 @@ def _make_search_count_cache_key(
         tag or "",
         exclude_tag or "",
         character or "",
+        q or "",
         str(min_pages) if min_pages is not None else "",
         str(max_pages) if max_pages is not None else "",
     ]
@@ -697,6 +740,7 @@ async def _get_search_count(
     tag: Optional[str],
     exclude_tag: Optional[str],
     character: Optional[str],
+    q: Optional[str],
     min_pages: Optional[int],
     max_pages: Optional[int],
     known_tags: Set[str],
@@ -706,7 +750,7 @@ async def _get_search_count(
     独自のDBセッションを使用することで、検索クエリと並列実行可能。
     """
     cache_key = _make_search_count_cache_key(
-        title, tag, exclude_tag, character, min_pages, max_pages
+        title, tag, exclude_tag, character, q, min_pages, max_pages
     )
     
     # キャッシュにあればそのまま返す（TTLチェックなし）
@@ -745,6 +789,29 @@ async def _get_search_count(
                 not_exists_clauses, not_exists_params = _build_tag_not_exists_clause("g", exclude_tag_terms)
                 count_where_clauses.extend(not_exists_clauses)
                 count_params.update(not_exists_params)
+        
+        if q:
+            q_clauses = []
+            q_clauses.append("g.japanese_title LIKE :q_like")
+            q_clauses.append("g.characters LIKE :q_like")
+            
+            # タグとしてのチェック
+            q_tag = q.lower()
+            q_artist = f"artist:{q_tag}"
+            
+            # EXISTS句でのタグチェック
+            q_clauses.append(f"EXISTS (SELECT 1 FROM gallery_tags WHERE gallery_id = g.gallery_id AND tag IN (:q_tag, :q_artist))")
+            
+            # 作品コードのチェック
+            code_id = _extract_dlsite_id(q)
+            if code_id:
+                q_clauses.append("g.gallery_id = :code_id")
+                count_params["code_id"] = code_id
+
+            count_where_clauses.append("(" + " OR ".join(q_clauses) + ")")
+            count_params["q_like"] = f"%{q}%"
+            count_params["q_tag"] = q_tag
+            count_params["q_artist"] = q_artist
         
         if min_pages is not None or max_pages is not None:
             min_val = max(min_pages or 0, 0)
@@ -891,6 +958,99 @@ async def _write_json_file(path: Path, data: Any, *, sort_keys: bool = False) ->
 
 class MultipartDownloadError(Exception):
     """Raised when multi-part download cannot be completed."""
+
+
+# =========================
+# 画像プロキシ高速化用キャッシュ
+# =========================
+class ImageProxyCache:
+    """
+    LRUベースのインメモリ画像キャッシュ
+    - 小さい画像（サムネイル等）を高速に返すためのキャッシュ
+    - サイズ制限と有効期限でメモリ使用量を制御
+    """
+    def __init__(self, max_size_bytes: int = 150 * 1024 * 1024, max_item_size: int = 512 * 1024, ttl_seconds: int = 600):
+        self._cache: Dict[str, Tuple[bytes, str, float]] = {}  # {key: (data, content_type, timestamp)}
+        self._access_order: List[str] = []  # LRU tracking
+        self._current_size: int = 0
+        self._max_size = max_size_bytes
+        self._max_item_size = max_item_size  # 個別アイテムの最大サイズ（これ以上はキャッシュしない）
+        self._ttl = ttl_seconds
+        self._lock = asyncio.Lock()
+        self._hits = 0
+        self._misses = 0
+    
+    def _make_key(self, url: str) -> str:
+        """URLからキャッシュキーを生成"""
+        import hashlib
+        return hashlib.md5(url.encode()).hexdigest()
+    
+    async def get(self, url: str) -> Optional[Tuple[bytes, str]]:
+        """キャッシュから取得。ヒットしたらデータとcontent_typeを返す"""
+        key = self._make_key(url)
+        async with self._lock:
+            if key in self._cache:
+                data, content_type, ts = self._cache[key]
+                # TTLチェック
+                if time.time() - ts > self._ttl:
+                    # 期限切れ
+                    self._evict_key(key)
+                    self._misses += 1
+                    return None
+                # LRU更新
+                if key in self._access_order:
+                    self._access_order.remove(key)
+                self._access_order.append(key)
+                self._hits += 1
+                return data, content_type
+            self._misses += 1
+            return None
+    
+    async def set(self, url: str, data: bytes, content_type: str) -> None:
+        """キャッシュに保存（サイズ制限を超えるアイテムはスキップ）"""
+        if len(data) > self._max_item_size:
+            return  # 大きすぎるアイテムはキャッシュしない
+        
+        key = self._make_key(url)
+        async with self._lock:
+            # 既存エントリを削除
+            if key in self._cache:
+                self._evict_key(key)
+            
+            # スペースを確保
+            while self._current_size + len(data) > self._max_size and self._access_order:
+                oldest_key = self._access_order[0]
+                self._evict_key(oldest_key)
+            
+            # 追加
+            self._cache[key] = (data, content_type, time.time())
+            self._access_order.append(key)
+            self._current_size += len(data)
+    
+    def _evict_key(self, key: str) -> None:
+        """キーを削除（ロック保持前提）"""
+        if key in self._cache:
+            data, _, _ = self._cache.pop(key)
+            self._current_size -= len(data)
+        if key in self._access_order:
+            self._access_order.remove(key)
+    
+    def stats(self) -> Dict[str, Any]:
+        """統計情報を取得"""
+        total = self._hits + self._misses
+        hit_rate = (self._hits / total * 100) if total > 0 else 0
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate": f"{hit_rate:.1f}%",
+            "cached_items": len(self._cache),
+            "current_size_mb": round(self._current_size / 1024 / 1024, 2),
+            "max_size_mb": round(self._max_size / 1024 / 1024, 2),
+        }
+
+# グローバルキャッシュインスタンス
+_image_proxy_cache = ImageProxyCache()
+
 
 # =========================
 # DB 初期化
@@ -1422,6 +1582,15 @@ async def init_database():
         for stmt in ranking_indexes:
             await conn.execute(text(stmt))
 
+        # --- tag_priorities テーブル ---
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS tag_priorities (
+                tag TEXT PRIMARY KEY,
+                priority INTEGER NOT NULL DEFAULT 0
+            )
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tag_priorities_priority ON tag_priorities(priority)"))
+
     # --- 初期データ同期（別トランザクション） ---
     print("[init_db] 初期データ同期確認中...")
     async with engine.begin() as conn:
@@ -1457,6 +1626,30 @@ async def init_database():
                 SELECT tag, COUNT(*) FROM gallery_tags GROUP BY tag
             """))
             print(f"[init_db] tag_stats 完了 ({time.time() - stats_start:.1f}秒)")
+
+        # tag_priorities 初期同期
+        print("[init_db] tag_priorities 同期中...")
+        prio_start = time.time()
+        try:
+            translations_data = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
+            priorities = []
+            if isinstance(translations_data, dict):
+                for tag, data in translations_data.items():
+                    if isinstance(data, dict):
+                        p = data.get("priority")
+                        if isinstance(p, int) and p != 0:
+                            priorities.append({"tag": tag, "priority": p})
+            
+            if priorities:
+                # 一旦クリア
+                await conn.execute(text("DELETE FROM tag_priorities"))
+                await conn.execute(
+                    text("INSERT INTO tag_priorities(tag, priority) VALUES (:tag, :priority)"),
+                    priorities
+                )
+            print(f"[init_db] tag_priorities 同期完了 ({len(priorities)}件, {time.time() - prio_start:.1f}秒)")
+        except Exception as e:
+            print(f"[init_db] tag_priorities 同期エラー: {e}")
 
         # 統計最適化
         await conn.execute(text("ANALYZE"))
@@ -1673,6 +1866,7 @@ async def search_galleries_fast(
     title: str = None,
     tag: str = None,
     character: str = None,
+    q: str = None,
     limit: int = 50,
     offset: int = 0,
     after_created_at: str | None = None,
@@ -1743,6 +1937,29 @@ async def search_galleries_fast(
             where_clauses.extend(exists_clauses)
             params.update(exists_params)
 
+        if q:
+            q_clauses = []
+            q_clauses.append("g.japanese_title LIKE :q_like")
+            q_clauses.append("g.characters LIKE :q_like")
+            
+            # タグとしてのチェック
+            q_tag = q.lower()
+            q_artist = f"artist:{q_tag}"
+            
+            # EXISTS句でのタグチェック
+            q_clauses.append(f"EXISTS (SELECT 1 FROM gallery_tags WHERE gallery_id = g.gallery_id AND tag IN (:q_tag, :q_artist))")
+            
+            # 作品コードのチェック
+            code_id = _extract_dlsite_id(q)
+            if code_id:
+                q_clauses.append("g.gallery_id = :code_id")
+                params["code_id"] = code_id
+
+            where_clauses.append("(" + " OR ".join(q_clauses) + ")")
+            params["q_like"] = f"%{q}%"
+            params["q_tag"] = q_tag
+            params["q_artist"] = q_artist
+
         if exclude_tag_terms:
             not_exists_clauses, not_exists_params = _build_tag_not_exists_clause("g", exclude_tag_terms)
             where_clauses.extend(not_exists_clauses)
@@ -1797,6 +2014,7 @@ async def search_galleries_fast(
             title=title,
             tag=tag,
             character=character,
+            q=q,
             limit=limit,
             offset=offset,
             exclude_tag=exclude_tag,
@@ -1806,6 +2024,7 @@ async def search_galleries(
     title: str = None,
     tag: str = None,
     character: str = None,
+    q: str = None,
     limit: int = None,
     offset: int = None,
     exclude_tag: str = None,
@@ -2412,6 +2631,7 @@ async def api_recommendations(
 async def search_galleries_get(
     title: Optional[str] = None,
     tag: Optional[str] = None,
+    q: Optional[str] = None,
     exclude_tag: Optional[str] = None,
     character: Optional[str] = None,
     limit: int = 50,
@@ -2428,14 +2648,26 @@ async def search_galleries_get(
         limit = MAX_LIMIT
 
     try:
+        # q が URL の場合はプロダクトコード（RJ****等）に変換する
+        if q:
+            extracted_code = _extract_dlsite_product_code(q)
+            if extracted_code:
+                q = extracted_code
+
         # page パラメータが指定されている場合は offset を上書き
         if page > 1:
             offset = (page - 1) * limit
+
+        # タイトル検索、自由入力検索（作品コード、作者名等含む）、またはタグによる作者検索の場合は、
+        # ランキングソートを無視して新着順（デフォルト）を優先する
+        if (title or q or (tag and "artist:" in tag.lower())) and sort_by in ['daily', 'weekly', 'monthly', 'yearly', 'all_time']:
+            sort_by = None
 
         # キャッシュキーを生成
         cache_key = _make_search_results_cache_key(
             title=title,
             tag=tag,
+            q=q,
             exclude_tag=exclude_tag,
             character=character,
             limit=limit,
@@ -2580,6 +2812,7 @@ async def search_galleries_get(
                         db,
                         title=title,
                         tag=tag,
+                        q=q,
                         exclude_tag=exclude_tag,
                         character=character,
                         limit=limit,
@@ -2595,6 +2828,7 @@ async def search_galleries_get(
                         tag=tag,
                         exclude_tag=exclude_tag,
                         character=character,
+                        q=q,
                         min_pages=min_pages,
                         max_pages=max_pages,
                         known_tags=known_tags,
@@ -2667,20 +2901,21 @@ async def proxy_request(
     small: bool = False,
 ):
     """
-    画像プロキシエンドポイント
+    高速化された画像プロキシエンドポイント
     - hashが渡された場合: ImageUriResolverでURLを解決してからプロキシ
     - URLが渡された場合: 従来通りそのままプロキシ（後方互換性）
-    
+    - ストリーミングレスポンス: TTFBを最小化
+    - インメモリキャッシュ: 小さい画像を即座に返却
+    - 並列Range Request: 大きい画像を高速ダウンロード
+
     クエリパラメータ:
     - thumbnail: サムネイル画像を取得する場合はtrue
     - small: 小さいサムネイルを取得する場合はtrue（thumbnailがtrueの時のみ有効）
     """
     # URLかhashかを判定
     if hash_or_path.startswith(("http://", "https://")) or "gold-usergeneratedcontent.net" in hash_or_path:
-        # 従来のURL形式（後方互換性のため維持）
         url = hash_or_path if hash_or_path.startswith(("http://", "https://")) else f"https://{hash_or_path}"
     else:
-        # hash形式: ImageUriResolverでURLを解決
         resolver_ready = await _ensure_image_resolver_ready()
         if not resolver_ready:
             raise HTTPException(status_code=503, detail="ImageUriResolver is not ready")
@@ -2702,7 +2937,7 @@ async def proxy_request(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"URL resolution failed: {str(e)}")
     
-    if not "gold-usergeneratedcontent.net" in url:
+    if "gold-usergeneratedcontent.net" not in url:
         raise HTTPException(status_code=400, detail="Invalid URL")
 
     # キャッシュキーの生成（URLをベースにする）
@@ -2719,17 +2954,47 @@ async def proxy_request(
                 headers={'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'HIT'},
             )
     
+    # === キャッシュチェック（最速パス）===
+    cached = await _image_proxy_cache.get(url)
+    if cached:
+        data, content_type = cached
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={
+                'Cache-Control': 'public, max-age=86400',  # 24時間
+                'Access-Control-Allow-Origin': '*',
+                'X-Cache': 'HIT',
+            },
+        )
+    
     headers = _build_headers()
-
-    # セッションが未初期化でも動くようフォールバック
-    session = global_session or aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), headers=headers)
-    created_local = session is not global_session
-
-    max_retries = 3
-    retry_delay = 1
+    
+    # セッション取得（グローバル優先）
+    session = global_session
+    created_local = False
+    if session is None:
+        connector = aiohttp.TCPConnector(limit=50, limit_per_host=20, ttl_dns_cache=300)
+        session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=60, connect=10, sock_read=30),
+            headers=headers,
+            connector=connector,
+        )
+        created_local = True
+    
+    max_retries = 2
+    retry_delay = 0.5
+    
+    # 定数（ループ外で定義してパフォーマンス向上）
+    PARALLEL_THRESHOLD = 256 * 1024  # 256KB以上で並列化
+    CHUNK_SIZE = 128 * 1024  # 128KBチャンク
+    MAX_PARALLEL_CONNECTIONS = 6
+    STREAMING_THRESHOLD = 512 * 1024  # 512KB以下はバッファ
+    
     try:
         for attempt in range(max_retries + 1):
             try:
+                # === GETリクエスト開始（HEADリクエスト省略で1往復節約）===
                 async with session.get(url, headers=headers) as resp:
                     if resp.status >= 500:
                         if attempt < max_retries:
@@ -2737,24 +3002,114 @@ async def proxy_request(
                             continue
                         raise HTTPException(status_code=resp.status, detail=f"Upstream 5xx: {resp.status}")
                     
-                    if resp.status != 200:
+                    if resp.status >= 400:
                         raise HTTPException(status_code=resp.status, detail=f"Upstream error: {resp.status}")
-
-                    if resp.content_type and resp.content_type.startswith("image/"):
-                        data = await resp.read()
-                        
-                        # サムネイルまたはスモール画像の場合はキャッシュに保存
-                        if use_cache:
-                            thumbnail_cache.put(cache_key, data, resp.content_type)
+                    
+                    content_type = resp.content_type or "application/octet-stream"
+                    resp_length = resp.headers.get("Content-Length")
+                    total_length = int(resp_length) if resp_length and resp_length.isdigit() else None
+                    accept_ranges = resp.headers.get("Accept-Ranges", "")
+                    supports_range = accept_ranges == "bytes"
+                    
+                    # === 大きいファイル + Range対応 → 並列ダウンロードに切り替え ===
+                    if content_type.startswith("image/") and supports_range and total_length and total_length > PARALLEL_THRESHOLD:
+                        # 最初のチャンクを読み込み済みの場合があるので、respを閉じて並列ダウンロードに切り替え
+                        # ここではrespはまだデータを読んでいないので、単に並列ダウンロードに移行
+                        pass  # async withを抜けた後に並列ダウンロードを実行
+                    else:
+                        # === 通常ダウンロード（ストリーミング対応）===
+                        if content_type.startswith("image/"):
+                            # 小さいファイル: 一括読み込み + キャッシュ
+                            if total_length and total_length <= STREAMING_THRESHOLD:
+                                data = await resp.read()
+                                await _image_proxy_cache.set(url, data, content_type)
+                                if use_cache:
+                                    thumbnail_cache.put(cache_key, data, content_type)
+                                return Response(
+                                    content=data,
+                                    media_type=content_type,
+                                    headers={
+                                        'Cache-Control': 'public, max-age=86400',
+                                        'Access-Control-Allow-Origin': '*',
+                                        'X-Cache': 'MISS',
+                                        'X-Download-Mode': 'buffered',
+                                    },
+                                )
                             
+                            # 中〜大ファイル（Range非対応）: ストリーミングレスポンス
+                            async def stream_content():
+                                async for chunk in resp.content.iter_chunked(64 * 1024):
+                                    yield chunk
+                            
+                            response_headers = {
+                                'Cache-Control': 'public, max-age=86400',
+                                'Access-Control-Allow-Origin': '*',
+                                'X-Cache': 'MISS',
+                                'X-Download-Mode': 'streaming',
+                            }
+                            if total_length:
+                                response_headers['Content-Length'] = str(total_length)
+                            
+                            return StreamingResponse(
+                                stream_content(),
+                                media_type=content_type,
+                                headers=response_headers,
+                            )
+                        else:
+                            # 非画像コンテンツ
+                            content = await resp.text()
+                            return HTMLResponse(content=content)
+                
+                # === 並列ダウンロード（async with外で実行）===
+                # ここに到達 = 大きいファイル + Range対応
+                try:
+                    data, final_content_type = await _download_with_ranges(
+                        session, url, headers,
+                        chunk_size=CHUNK_SIZE,
+                        max_connections=MAX_PARALLEL_CONNECTIONS,
+                        total_length=total_length,
+                        content_type=content_type,
+                    )
+                    result_content_type = final_content_type or content_type or "image/avif"
+                    
+                    # キャッシュに保存
+                    await _image_proxy_cache.set(url, data, result_content_type)
+                    if use_cache:
+                        thumbnail_cache.put(cache_key, data, result_content_type)
+                    
+                    return Response(
+                        content=data,
+                        media_type=result_content_type,
+                        headers={
+                            'Cache-Control': 'public, max-age=86400',
+                            'Access-Control-Allow-Origin': '*',
+                            'X-Cache': 'MISS',
+                            'X-Download-Mode': 'parallel',
+                        },
+                    )
+                except MultipartDownloadError:
+                    # 並列ダウンロード失敗 → 通常のGETで再取得
+                    async with session.get(url, headers=headers) as fallback_resp:
+                        if fallback_resp.status >= 400:
+                            raise HTTPException(status_code=fallback_resp.status, detail=f"Upstream error: {fallback_resp.status}")
+                        data = await fallback_resp.read()
+                        ct = fallback_resp.content_type or "image/avif"
+                        await _image_proxy_cache.set(url, data, ct)
+                        if use_cache:
+                            thumbnail_cache.put(cache_key, data, ct)
                         return Response(
                             content=data,
-                            media_type=resp.content_type,
-                            headers={'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'MISS'},
+                            media_type=ct,
+                            headers={
+                                'Cache-Control': 'public, max-age=86400',
+                                'Access-Control-Allow-Origin': '*',
+                                'X-Cache': 'MISS',
+                                'X-Download-Mode': 'fallback',
+                            },
                         )
-                    else:
-                        content = await resp.text()
-                        return HTMLResponse(content=content)
+
+                        )
+                        
             except aiohttp.ClientError as e:
                 if attempt < max_retries:
                     await asyncio.sleep(retry_delay * (2 ** attempt))
@@ -2763,6 +3118,14 @@ async def proxy_request(
     finally:
         if created_local:
             await session.close()
+
+
+# キャッシュ統計API
+@app.get("/api/proxy-cache-stats")
+async def get_proxy_cache_stats():
+    """プロキシキャッシュの統計情報を取得"""
+    return _image_proxy_cache.stats()
+
 
 async def _download_entire(session: aiohttp.ClientSession, url: str, headers: Dict[str, str]) -> Tuple[bytes, Optional[str]]:
     async with session.get(url, headers=headers) as resp:
@@ -2841,14 +3204,31 @@ async def _download_with_ranges(
     return combined, content_type
 
 async def _warmup_connections(session: aiohttp.ClientSession):
-    domains = ["a1.gold-usergeneratedcontent.net", "a2.gold-usergeneratedcontent.net"]
-    for domain in domains:
+    """
+    事前接続ウォームアップ
+    - 複数ドメインに並列で接続してTCP/TLSハンドシェイクを事前完了
+    - 接続プールを温めて初回リクエストを高速化
+    """
+    domains = [
+        "a1.gold-usergeneratedcontent.net",
+        "a2.gold-usergeneratedcontent.net",
+        "a3.gold-usergeneratedcontent.net",
+        "b.gold-usergeneratedcontent.net",
+    ]
+    
+    async def warmup_single(domain: str) -> None:
         url = f"https://{domain}"
         try:
             async with session.head(url) as resp:
-                print(f"事前接続成功: {url} (Status: {resp.status})")
+                print(f"事前接続成功: {domain} (Status: {resp.status})")
         except Exception as e:
-            print(f"事前接続失敗: {url} (Error: {str(e)})")
+            print(f"事前接続失敗: {domain} (Error: {str(e)[:50]})")
+    
+    # 並列でウォームアップ
+    tasks = [warmup_single(domain) for domain in domains]
+    await asyncio.gather(*tasks, return_exceptions=True)
+    print(f"接続ウォームアップ完了 ({len(domains)}ドメイン)")
+
 
 async def _download_single_url(session: aiohttp.ClientSession, url: str, headers: Dict[str, str]) -> Dict[str, str]:
     try:
@@ -3043,13 +3423,22 @@ async def get_artist_works(
 # タグ API（tag_stats 使用で高速化）
 # -------------------------
 @app.get("/api/tags")
-async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = None):
+async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = None, user_id: Optional[str] = None):
     """
     tag-translations.json を用いて:
       - 日本語訳やエイリアスから英語タグへ正規化して検索可能にする
       - 英語タグ指定時も従来通り部分一致検索
     """
     try:
+
+        search_counts: Dict[str, int] = {}
+        if user_id:
+            try:
+                async with get_tracking_db_session() as tracking_db:
+                    search_counts = await _get_user_search_counts(tracking_db, user_id)
+            except Exception as e:
+                print(f"Tracking DB error in get_tags: {e}")
+
         async with get_db_session() as db:
             params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
@@ -3110,21 +3499,104 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
                     where_clauses.append("LOWER(tag) LIKE :search")
                     params["search"] = search_param
 
-            base_query = "SELECT tag, count FROM tag_stats"
-            base_total = "SELECT COUNT(*) FROM tag_stats"
+            base_query = """
+                SELECT ts.tag, ts.count, COALESCE(tp.priority, 0) as priority,
+                0 as usage_count -- Placeholder, updated dynamically if search_counts exists
+                FROM tag_stats ts
+                LEFT JOIN tag_priorities tp ON ts.tag = tp.tag
+            """
+            base_total = """
+                SELECT COUNT(*)
+                FROM tag_stats ts
+                LEFT JOIN tag_priorities tp ON ts.tag = tp.tag
+            """
+
+            # ユーザー検索履歴に基づく `usage_count` (CASE文生成)
+            orders = []
+            
+            # 使用回数があるタグのためのソートロジック
+            # 優先度ソート:
+            # 1. Server-side Priority >= 1
+            # 2. Dynamic Score (Count * Usage) if Usage > 0
+            # 3. Else Count * small_factor (Default behavior)
+            
+            # CASE文で usage_count を定義
+            # "CASE tag WHEN 't1' THEN c1 WHEN 't2' THEN c2 ... ELSE 0 END"
+            usage_case_parts = []
+            usage_params = {}
+            
+            if search_counts:
+                # パラメータ数上限を考慮しつつ、上位のタグのみをSQLに埋め込む
+                # SQLiteのパラメータ上限は通常999だが、安全のため上位200件程度にする
+                sorted_usage = sorted(search_counts.items(), key=lambda x: x[1], reverse=True)[:200]
+                
+                for idx, (t_name, t_count) in enumerate(sorted_usage):
+                    p_tag = f"u_tag_{idx}"
+                    p_val = f"u_val_{idx}"
+                    usage_case_parts.append(f"WHEN :u_tag_{idx} THEN :u_val_{idx}")
+                    usage_params[p_tag] = t_name
+                    usage_params[p_val] = t_count
+                
+                params.update(usage_params)
+
+            if usage_case_parts:
+                usage_sql = "CASE ts.tag " + " ".join(usage_case_parts) + " ELSE 0 END"
+                # SELECT句を書き換えるのは面倒なので、Orderingで計算する
+                # ただし、レスポンスに usage_count を含めるため、SELECT句も調整したいが
+                # ここでは簡易的に、Orderingで制御し、usage_countは0のままでもフロントエンドでlocalStorageとマージできる
+                # (フロントエンドは既にlocalStorageの値を使っているため)
+                # しかし、Userは "Backend knows usage" と言っているため、backend dataを返すべきか。
+                # ユーザーの要望「上に優先的に表示」はソートで達成できる。
+                
+                # スコア計算式:
+                # IF priority >= 1 THEN (Priority * 10^9) -- Push to absolute top
+                # ELSE IF usage > 0 THEN (Count * Usage)
+                # ELSE Count * 0.00001 (Unused tags)
+                
+                # Priority >= 1 logic is handled by first order term.
+                # Here we define the score for the rest.
+                
+                # Note: ts.count is integer.
+                
+                dynamic_score_sql = f"""
+                    CASE
+                        WHEN ({usage_sql}) > 0 THEN CAST(ts.count AS REAL) * ({usage_sql})
+                        ELSE CAST(ts.count AS REAL) * 0.00001
+                    END
+                """
+                
+                orders = [
+                    "CASE WHEN COALESCE(tp.priority, 0) >= 1 THEN 0 ELSE 1 END ASC",
+                    "CASE WHEN COALESCE(tp.priority, 0) >= 1 THEN COALESCE(tp.priority, 0) ELSE 0 END DESC",
+                    f"{dynamic_score_sql} DESC",
+                    "ts.tag ASC"
+                ]
+            else:
+                 orders = [
+                    "CASE WHEN COALESCE(tp.priority, 0) >= 1 THEN 0 ELSE 1 END ASC",
+                    "CASE WHEN COALESCE(tp.priority, 0) >= 1 THEN COALESCE(tp.priority, 0) ELSE 0 END DESC",
+                    """CASE
+                        WHEN COALESCE(tp.priority, 0) < 0 THEN CAST(ts.count AS REAL) / ABS(COALESCE(tp.priority, 0))
+                        ELSE ts.count
+                    END DESC""",
+                    "ts.tag ASC"
+                ]
+
 
             if where_clauses:
                 where_sql = " WHERE " + " AND ".join(where_clauses)
                 query = (
                     base_query
                     + where_sql
-                    + " ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
+                    + " ORDER BY " + ", ".join(orders)
+                    + " LIMIT :limit OFFSET :offset"
                 )
                 total_sql = base_total + where_sql
             else:
                 query = (
                     base_query
-                    + " ORDER BY count DESC, tag ASC LIMIT :limit OFFSET :offset"
+                    + " ORDER BY " + ", ".join(orders)
+                    + " LIMIT :limit OFFSET :offset"
                 )
                 total_sql = base_total
 
@@ -3132,7 +3604,19 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
             total_count = total_result.scalar()
             rows_result = await db.execute(text(query), params)
             rows = rows_result.fetchall()
-            tags = [{"tag": r.tag, "count": r.count} for r in rows]
+            tags = []
+            for row in rows:
+                t_tag = row.tag
+                t_count = row.count
+                t_priority = row.priority
+                t_usage = search_counts.get(t_tag.lower(), 0) if search_counts else 0
+                
+                tags.append({
+                    "tag": t_tag,
+                    "count": t_count,
+                    "priority": t_priority,
+                    "usage_count": t_usage
+                })
 
             return {
                 "tags": tags,
@@ -4090,6 +4574,18 @@ async def _get_user_known_tags(tracking_db: AsyncSession, user_id: str) -> Set[s
     return known_tags
 
 
+async def _get_user_search_counts(tracking_db: AsyncSession, user_id: str) -> Dict[str, int]:
+    """ユーザーの検索回数履歴を取得"""
+    counts: Dict[str, int] = {}
+    stmt = select(SearchHistory).where(SearchHistory.user_id == user_id)
+    result = await tracking_db.execute(stmt)
+    for row in result.scalars():
+        if row.tag:
+            counts[row.tag.lower()] = row.search_count or 0
+    return counts
+
+
+
 def _calculate_quality_factor(avg_time: float, ctr: float) -> float:
     """品質係数を計算（サムネ詐欺 / 隠れた名作判定）"""
     # CTR高 + avg_time低 = サムネ詐欺
@@ -4546,7 +5042,7 @@ async def _precache_search_counts():
             for min_pages in [None] + popular_min_pages:
                 try:
                     cache_key = _make_search_count_cache_key(
-                        None, None, None, None, min_pages, None
+                        None, None, None, None, None, min_pages, None
                     )
                     
                     # 既にキャッシュされている場合はスキップ
@@ -4601,16 +5097,25 @@ async def startup_event():
     except Exception as e:
         print(f"ImageUriResolver 初期化エラー: {str(e)}")
 
-    # HTTP セッション
+    # HTTP セッション（高速化最適化済み）
     connector = aiohttp.TCPConnector(
-        limit=100,
-        limit_per_host=30,
-        ttl_dns_cache=300,
+        limit=200,                    # 全体接続数を増加
+        limit_per_host=50,            # 同一ホストへの同時接続数を増加
+        ttl_dns_cache=600,            # DNSキャッシュを10分に延長
         use_dns_cache=True,
-        keepalive_timeout=75,
+        keepalive_timeout=120,        # Keep-alive延長（接続再利用を促進）
         force_close=False,
+        enable_cleanup_closed=True,   # 閉じた接続のクリーンアップ
     )
-    global_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), headers=_build_headers(), connector=connector)
+    global_session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(
+            total=60,       # 全体タイムアウト
+            connect=10,     # 接続タイムアウト
+            sock_read=30,   # 読み取りタイムアウト
+        ),
+        headers=_build_headers(),
+        connector=connector,
+    )
     global_state.global_session = global_session
 
     # 事前ウォームアップ

@@ -159,6 +159,21 @@
         });
         descriptionCell.appendChild(descriptionInput);
 
+        // 優先度列
+        const priorityCell = document.createElement('td');
+        const priorityInput = document.createElement('input');
+        priorityInput.type = 'number';
+        priorityInput.className = 'table-input';
+        priorityInput.value = typeof entry.priority === 'number' ? entry.priority : 0;
+        priorityInput.placeholder = '0';
+        priorityInput.style.minWidth = '60px';
+        priorityInput.addEventListener('input', () => {
+            const val = parseInt(priorityInput.value, 10);
+            entry.priority = isNaN(val) ? 0 : val;
+            markDirty();
+        });
+        priorityCell.appendChild(priorityInput);
+
         // あいまい検索キーワード列
         const aliasesCell = document.createElement('td');
         const aliasesInput = document.createElement('input');
@@ -189,10 +204,11 @@
         tr.appendChild(tagCell);
         tr.appendChild(translationCell);
         tr.appendChild(descriptionCell);
+        tr.appendChild(priorityCell);
         tr.appendChild(aliasesCell);
         tr.appendChild(actionCell);
 
-        tr._inputs = { tagInput, translationInput, aliasesInput, descriptionInput };
+        tr._inputs = { tagInput, translationInput, aliasesInput, descriptionInput, priorityInput };
         return tr;
     }
 
@@ -471,8 +487,9 @@
             const entry = value && typeof value === 'object' ? value : {};
             const translation = typeof entry.translation === 'string' ? entry.translation : typeof value === 'string' ? value : '';
             const description = typeof entry.description === 'string' ? entry.description : '';
+            const priority = typeof entry.priority === 'number' ? entry.priority : 0;
             const aliases = Array.isArray(entry.aliases) ? entry.aliases : [];
-            return { tag, translation, description, aliases };
+            return { tag, translation, description, priority, aliases };
         });
     }
 
@@ -524,11 +541,12 @@
         const duplicates = new Map();
         const aliasDuplicates = new Map();
         for (const row of rows) {
-            const { tagInput, translationInput, aliasesInput, descriptionInput } = row._inputs || {};
+            const { tagInput, translationInput, aliasesInput, descriptionInput, priorityInput } = row._inputs || {};
             if (!tagInput || !translationInput) continue;
             const rawTag = tagInput.value.trim();
             const rawTranslation = translationInput.value.trim();
             const rawDescription = descriptionInput ? descriptionInput.value.trim() : '';
+            const rawPriority = priorityInput ? parseInt(priorityInput.value, 10) : 0;
             const rawAliases = aliasesInput ? parseAliases(aliasesInput.value) : [];
             if (!rawTag) {
                 continue;
@@ -551,6 +569,7 @@
             const entry = {
                 translation: rawTranslation,
                 description: rawDescription,
+                priority: isNaN(rawPriority) ? 0 : rawPriority,
             };
             if (rawAliases.length) {
                 entry.aliases = rawAliases;
@@ -645,7 +664,7 @@
 
 
     addTranslationButton?.addEventListener('click', () => {
-        const entry = { tag: '', translation: '', description: '', aliases: [] };
+        const entry = { tag: '', translation: '', description: '', priority: 0, aliases: [] };
         state.translations.push(entry);
         const row = createTranslationRow(entry);
         translationsTableBody?.prepend(row);
@@ -695,6 +714,7 @@
                     tag: tagInfo.tag,
                     translation: '',
                     description: '',
+                    priority: 0,
                     aliases: [],
                 };
                 state.translations.push(entry);

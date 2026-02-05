@@ -5,7 +5,8 @@
             "あへかお"
         ],
         "description": "性行為時のキャラクターのオーガズムの表情。白目・舌出し・ヨダレの3点が揃ったものを指すことが多い。",
-        "translation": "アへ顔"
+        "translation": "アへ顔",
+        "priority": 1
     },
     "already uploaded": {
         "translation": ""
@@ -18,31 +19,36 @@
             "お尻",
             "おしり"
         ],
-        "translation": "アナル"
+        "translation": "アナル",
+        "priority": 1
     },
     "anal intercourse": {
         "translation": "アナルセックス"
     },
     "anthology": {
         "description": "複数の作者による作品を、特定のテーマや基準で選び集めた作品集",
-        "translation": "アンソロジー"
+        "translation": "アンソロジー",
+        "priority": -3
     },
     "apron": {
         "translation": "エプロン"
     },
     "artbook": {
         "description": "一枚絵の集合体。漫画と違いストーリーがない。",
-        "translation": "アートブック"
+        "translation": "アートブック",
+        "priority": -2
     },
     "bald": {
         "description": "ありのままという意味もある",
-        "translation": "ハゲ"
+        "translation": "ハゲ",
+        "priority": -1
     },
     "bbm": {
         "aliases": [
             "ふとっただんせい"
         ],
-        "translation": "太った男性"
+        "translation": "太った男性",
+        "priority": -1
     },
     "bbw": {
         "aliases": [
@@ -384,6 +390,7 @@
         ],
         "description": "性的ないし人物的に魅力的な壮年～中年の男性",
         "translation": "美中年"
+        
     },
     "dog": {
         "translation": "犬"
@@ -536,7 +543,8 @@
         "translation": "性器完全モザイク"
     },
     "full color": {
-        "translation": "フルカラー"
+        "translation": "フルカラー",
+        "priority": 10
     },
     "furry": {
         "translation": "ケモノ"
@@ -751,14 +759,15 @@
     },
     "leotard": {
         "description": "体操競技などで着用される、全身にフィットするような衣服のこと",
-        "translation": "レオタード"
+        "translation": "体操服"
     },
     "lingerie": {
         "description": "女性用の下着の中でも装飾性があるもの",
         "translation": "ランジェリー"
     },
     "loli": {
-        "translation": "ロリ"
+        "translation": "ロリ",
+        "priority": 1   
     },
     "magical girl": {
         "aliases": [
@@ -787,10 +796,12 @@
     },
     "masturbation": {
         "description": "その場にいる他の誰かを対象にする",
-        "translation": "オナニー"
+        "translation": "オナニー",
+        "priority": 1   
     },
     "mesuiki": {
-        "translation": "メスイキ"
+        "translation": "メスイキ",
+        "priority": 1
     },
     "miko": {
         "aliases": [
@@ -849,13 +860,15 @@
             "もんすたーむすめ"
         ],
         "description": "モンスターの要素を含んだ女性キャラクター",
-        "translation": "モンスター娘"
+        "translation": "モンスター娘",
+        "priority": -1
     },
     "mosaic censorship": {
         "aliases": [
             "もざいくあり"
         ],
-        "translation": "モザイク有り"
+        "translation": "モザイク有り",
+        "priority": -1
     },
     "mother": {
         "aliases": [
@@ -1351,7 +1364,8 @@
             "はね",
             "つばさ"
         ],
-        "translation": "翼"
+        "translation": "翼",
+        "priority": 1
     },
     "wolf girl": {
         "description": "狼耳と尻尾のついた女の子のこと",
@@ -1361,7 +1375,8 @@
         "aliases": [
             "だんめんず"
         ],
-        "translation": "断面図"
+        "translation": "断面図",
+        "priority": -1
     },
     "yaoi": {
         "aliases": [
@@ -1375,6 +1390,7 @@
             "ゆり"
         ],
         "description": "GLともいう",
-        "translation": "百合"
+        "translation": "百合",
+        "priority": 1
     }
 }

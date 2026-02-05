@@ -3,10 +3,14 @@
     let currentPage = 1;
     let currentQuery = '';
     let currentResolvedQuery = '';
-    let currentMinPages = 0;
+    let currentUnifiedQuery = '';
+    let currentMinPages = 10;
     let currentMaxPages = null;
     let isLoading = false;
+
     let cardObserver = null;
+    let isPageLoaded = false;
+    const deferredToObserve = []; // 読み込み完了後にobserveする画像を一時保存
     const searchCache = new Map();
 
     function logSearchTracking(query, resolvedQuery) {
@@ -46,6 +50,7 @@
             searchInput: document.getElementById('searchInput'),
             searchButton: document.getElementById('searchButton'),
             sortBySelect: document.getElementById('sortBySelect'),
+            sortBySelectMobile: document.getElementById('sortBySelectMobile'),
             minPagesSelect: document.getElementById('minPagesSelect'),
             maxPagesSelect: document.getElementById('maxPagesSelect'),
             cardGrid: document.getElementById('cardGrid'),
@@ -98,11 +103,30 @@
             const params = new URLSearchParams(window.location.search);
             const page = parseInt(params.get('page'), 10) || 1;
             const tag = params.get('tag') || '';
+            const q = params.get('q') || '';
             currentPage = page;
-            currentQuery = tag;
-            elements.searchInput.value = tag;
+            currentQuery = tag || q;
+            currentUnifiedQuery = q;
+            currentResolvedQuery = tag;
+            elements.searchInput.value = tag || q;
             performSearch(elements, false);
         });
+
+        // ページ全体の読み込みが完了したら遅延読み込みを開始
+        if (document.readyState === 'complete') {
+            isPageLoaded = true;
+        } else {
+            window.addEventListener('load', () => {
+                isPageLoaded = true;
+                // Deferされていた画像をobserve開始
+                if (cardObserver && deferredToObserve.length > 0) {
+                    deferredToObserve.forEach((card) => {
+                        cardObserver.observe(card);
+                    });
+                    deferredToObserve.length = 0; // 配列を空にする
+                }
+            });
+        }
     });
 
     function setupObservers() {
@@ -149,8 +173,9 @@
             : { sortBy: 'weekly', minPages: 10, maxPages: null };
 
         // 並び順を復元
-        if (elements.sortBySelect && savedSettings.sortBy) {
-            elements.sortBySelect.value = savedSettings.sortBy;
+        if (savedSettings.sortBy) {
+            if (elements.sortBySelect) elements.sortBySelect.value = savedSettings.sortBy;
+            if (elements.sortBySelectMobile) elements.sortBySelectMobile.value = savedSettings.sortBy;
         }
 
         // 最小ページ数を復元
@@ -193,35 +218,56 @@
         }
 
         elements.minPagesSelect.addEventListener('change', () => {
-            currentMinPages = parseInt(elements.minPagesSelect.value, 10) || 0;
             ensureValidPageRange(elements);
             // 設定を保存
             if (typeof MangaApp.saveSearchSettings === 'function') {
-                MangaApp.saveSearchSettings({ minPages: currentMinPages });
+                MangaApp.saveSearchSettings({
+                    minPages: currentMinPages,
+                    maxPages: currentMaxPages
+                });
             }
             performSearch(elements, true);
         });
         elements.maxPagesSelect.addEventListener('change', () => {
-            currentMaxPages = parseInt(elements.maxPagesSelect.value, 10);
-            if (Number.isNaN(currentMaxPages)) {
-                currentMaxPages = null;
-            }
             ensureValidPageRange(elements);
             // 設定を保存
             if (typeof MangaApp.saveSearchSettings === 'function') {
-                MangaApp.saveSearchSettings({ maxPages: currentMaxPages });
+                MangaApp.saveSearchSettings({
+                    minPages: currentMinPages,
+                    maxPages: currentMaxPages
+                });
             }
             performSearch(elements, true);
         });
 
+        // 並び順の同期関数
+        const syncSortBy = (val) => {
+            if (elements.sortBySelect) elements.sortBySelect.value = val;
+            if (elements.sortBySelectMobile) elements.sortBySelectMobile.value = val;
+        };
+
         // 並び順の変更イベントリスナーを追加
-        elements.sortBySelect.addEventListener('change', () => {
-            // 設定を保存
-            if (typeof MangaApp.saveSearchSettings === 'function') {
-                MangaApp.saveSearchSettings({ sortBy: elements.sortBySelect.value });
-            }
-            performSearch(elements, true);
-        });
+        if (elements.sortBySelect) {
+            elements.sortBySelect.addEventListener('change', () => {
+                const val = elements.sortBySelect.value;
+                syncSortBy(val);
+                if (typeof MangaApp.saveSearchSettings === 'function') {
+                    MangaApp.saveSearchSettings({ sortBy: val });
+                }
+                performSearch(elements, true);
+            });
+        }
+
+        if (elements.sortBySelectMobile) {
+            elements.sortBySelectMobile.addEventListener('change', () => {
+                const val = elements.sortBySelectMobile.value;
+                syncSortBy(val);
+                if (typeof MangaApp.saveSearchSettings === 'function') {
+                    MangaApp.saveSearchSettings({ sortBy: val });
+                }
+                performSearch(elements, true);
+            });
+        }
         elements.themeToggle.addEventListener('click', () => {
             const theme = MangaApp.toggleTheme();
             updateThemeToggleIcon(elements.themeToggle, theme);
@@ -308,7 +354,7 @@
         }
         if (maxVal !== null && maxVal < minVal) {
             elements.maxPagesSelect.value = '';
-            currentMaxPages = null;
+            maxVal = null;
         }
         currentMinPages = minVal;
         currentMaxPages = maxVal;
@@ -338,10 +384,24 @@
 
         if (reset) {
             currentPage = 1;
-            currentQuery = elements.searchInput.value.trim();
+            const rawInput = elements.searchInput.value.trim();
+            currentQuery = rawInput;
+
+            // 入力が作品コード(RJ/BJ等)っぽかったり、コロンを含まない単一ワードなら
+            // タイトル・コード検索(q)を優先的に検討する。
+            // ただし MangaApp.resolveTagQueryString がタグとして解決した場合は両方検討したいが、
+            // 現状のバックエンド仕様では q と tag は AND になるため、
+            // 検索ボックスからの入力は基本的に q として送る。
+
             currentResolvedQuery = typeof MangaApp.resolveTagQueryString === 'function'
                 ? MangaApp.resolveTagQueryString(currentQuery)
                 : currentQuery;
+
+            currentUnifiedQuery = currentQuery;
+
+            // もし入力が完全にタグ形式(例: "artist:xxx" や "female:xxx")だけで構成されているなら
+            // tagとして扱う方が精度的には高い。
+            // しかし「どこでも検索」を優先するため、常にqをセットする。
 
             // 新トラッキング: 検索実行を記録
             if (currentQuery) {
@@ -355,7 +415,9 @@
         }
 
         // 並び順の値を取得
-        const sortBy = elements.sortBySelect ? elements.sortBySelect.value : 'created_at';
+        const sortBy = (elements.sortBySelectMobile && window.getComputedStyle(elements.sortBySelectMobile.parentElement).display !== 'none')
+            ? elements.sortBySelectMobile.value
+            : (elements.sortBySelect ? elements.sortBySelect.value : 'created_at');
 
         showLoading(elements, true);
 
@@ -366,7 +428,8 @@
                 currentPage,
                 currentMinPages,
                 currentMaxPages,
-                sortBy
+                sortBy,
+                currentUnifiedQuery
             );
             const { results, totalPages, totalCount } = data;
 
@@ -390,7 +453,7 @@
             }
 
             // URLにページ番号を反映
-            updateUrlWithPage(currentPage, currentQuery);
+            updateUrlWithPage(currentPage, currentQuery, currentUnifiedQuery);
 
             if (results.length) {
                 const hiddenTags = MangaApp.getHiddenTags();
@@ -401,7 +464,7 @@
                 // 次のページのサムネイルを先読み
                 if (currentPage < totalPages) {
                     waitForAllImagesLoaded(elements.cardGrid).then(() => {
-                        prefetchNextPageThumbnails(currentPage + 1, sortBy);
+                        prefetchNextPageThumbnails(currentPage + 1, sortBy, currentUnifiedQuery);
                     });
                 }
             }
@@ -414,8 +477,8 @@
             showLoading(elements, false);
         }
     }
-    async function fetchSearchResults(resolvedQuery, userQuery, page, minPages, maxPages, sortBy = 'created_at') {
-        const cacheKey = `${resolvedQuery}|${userQuery}|${page}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
+    async function fetchSearchResults(resolvedQuery, userQuery, page, minPages, maxPages, sortBy = 'created_at', unifiedQuery = '') {
+        const cacheKey = `${resolvedQuery}|${userQuery}|${unifiedQuery}|${page}|${minPages ?? 0}|${maxPages ?? ''}|${sortBy}|${MangaApp.getHiddenTags().join(',')}`;
         if (searchCache.has(cacheKey)) {
             return searchCache.get(cacheKey);
         }
@@ -424,7 +487,9 @@
         params.append('limit', LIMIT.toString());
         params.append('page', page.toString());
         const queryForRequest = resolvedQuery || userQuery;
-        if (queryForRequest) {
+        if (unifiedQuery) {
+            params.append('q', unifiedQuery);
+        } else if (queryForRequest) {
             params.append('tag', queryForRequest);
         }
         if (typeof minPages === 'number' && minPages > 0) {
@@ -473,10 +538,14 @@
 
     function renderResults(elements, results, reset) {
         const fragment = document.createDocumentFragment();
-        results.forEach((gallery) => {
-            const card = createGalleryCard(gallery);
-            if (cardObserver) {
-                cardObserver.observe(card);
+        results.forEach((gallery, index) => {
+            const card = createGalleryCard(gallery, index);
+            if (cardObserver && index >= 4) {
+                if (isPageLoaded) {
+                    cardObserver.observe(card);
+                } else {
+                    deferredToObserve.push(card);
+                }
             }
             fragment.appendChild(card);
         });
@@ -486,7 +555,7 @@
         elements.cardGrid.appendChild(fragment);
     }
 
-    function createGalleryCard(gallery) {
+    function createGalleryCard(gallery, index = 100) {
         const card = document.createElement('a');
         card.href = `/viewer?id=${gallery.gallery_id}`;
         card.className = 'card';
@@ -513,19 +582,46 @@
             const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
             const fullUrl = baseUrl;
 
-            // モバイルなら軽量版のみ、PCならプログレッシブ読み込み
+            // 最初の4枚は即時読み込み（Lazy Loadを回避）して表示速度を向上
+            const isPriority = index < 4;
+
+            // 環境に応じたターゲットURL
+            let finalSrc = fullUrl;
+            let lowResSrc = null;
+
             if (MangaApp.isMobile()) {
-                img.dataset.src = thumbUrl;
+                finalSrc = thumbUrl;
             } else {
-                img.dataset.src = fullUrl;
-                img.dataset.lowRes = thumbUrl;
+                finalSrc = fullUrl;
+                lowResSrc = thumbUrl;
             }
 
-            if (!cardObserver) {
+            if (isPriority) {
+                img.src = finalSrc;
+                img.style.display = 'block';
+                // プレースホルダーを即座に削除
+                const placeholder = thumbnail.querySelector('.image-placeholder');
+                if (placeholder) {
+                    placeholder.remove();
+                }
+
+                // 1枚目はさらに優先度を上げる
+                if (index === 0) {
+                    img.setAttribute('fetchpriority', 'high');
+                }
+            } else {
+                img.dataset.src = finalSrc;
+                if (lowResSrc) {
+                    img.dataset.lowRes = lowResSrc;
+                }
+            }
+
+            if (!cardObserver && !isPriority) {
                 // Observerがない場合の直列処理
-                const initialSrc = img.dataset.lowRes || img.dataset.src;
+                const initialSrc = lowResSrc || finalSrc;
                 img.src = initialSrc;
                 img.onload = () => {
+                    img.style.display = 'block';
                     const placeholder = thumbnail.querySelector('.image-placeholder');
                     if (placeholder) placeholder.remove();
 
@@ -1139,9 +1235,9 @@
     // 次のページのサムネイルを先読みする
     let prefetchedPages = new Set();
 
-    async function prefetchNextPageThumbnails(nextPage, sortBy) {
+    async function prefetchNextPageThumbnails(nextPage, sortBy, unifiedQuery = '') {
         // 既に先読み済みの場合はスキップ
-        const cacheKey = `${currentResolvedQuery}|${nextPage}|${sortBy}`;
+        const cacheKey = `${currentResolvedQuery}|${unifiedQuery}|${nextPage}|${sortBy}`;
         if (prefetchedPages.has(cacheKey)) {
             return;
         }
@@ -1161,7 +1257,8 @@
                 nextPage,
                 currentMinPages,
                 currentMaxPages,
-                sortBy
+                sortBy,
+                unifiedQuery
             );
 
             if (!data.results || data.results.length === 0) {
@@ -1202,7 +1299,7 @@
 
 
     // URLにページ番号を反映する関数
-    function updateUrlWithPage(page, query) {
+    function updateUrlWithPage(page, query, unifiedQuery = '') {
         const url = new URL(window.location);
 
         // ページ番号を設定（1ページ目の場合は削除してURLをきれいに）
@@ -1213,10 +1310,17 @@
         }
 
         // タグを設定
-        if (query) {
+        if (query && !unifiedQuery) {
             url.searchParams.set('tag', query);
         } else {
             url.searchParams.delete('tag');
+        }
+
+        // 統一検索クエリを設定
+        if (unifiedQuery) {
+            url.searchParams.set('q', unifiedQuery);
+        } else {
+            url.searchParams.delete('q');
         }
 
         // URLを更新（履歴に追加）

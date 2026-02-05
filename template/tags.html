@@ -541,19 +541,64 @@
         }
 
         function sortTagsForGroup(items) {
-            const sorted = Array.isArray(items) ? [...items] : [];
-            sorted.sort((a, b) => {
-                const usageDiff = getUsageScore(b.tag) - getUsageScore(a.tag);
-                if (usageDiff !== 0) {
-                    return usageDiff;
+            if (!Array.isArray(items)) return [];
+
+            // Pre-calculate scores for sorting (Schwartzian transform)
+            const mapped = items.map((item, index) => {
+                // Priority (Server-side)
+                const p = item.priority || 0;
+                const isHigh = p >= 1;
+
+                // Effective Score calculation
+                const serverUsage = item.usage_count || 0;
+                const localUsage = getUsageScore(item.tag);
+                const usage = Math.max(serverUsage, localUsage);
+                const count = item.count || 0;
+
+                let score;
+                if (usage > 0) {
+                    score = count * usage;
+                } else {
+                    // Unused tags: Scale down significantly
+                    score = count * 0.00001;
                 }
-                const countDiff = (b.count || 0) - (a.count || 0);
-                if (countDiff !== 0) {
-                    return countDiff;
+
+                if (p < 0) {
+                    score = score / Math.abs(p);
                 }
-                return (a.tag || '').localeCompare(b.tag || '');
+
+                return {
+                    index, // preserve original order for stable sort
+                    value: item,
+                    isHigh,
+                    priority: p,
+                    score
+                };
             });
-            return sorted;
+
+            mapped.sort((a, b) => {
+                // 1. High Priority First
+                if (a.isHigh && !b.isHigh) return -1;
+                if (!a.isHigh && b.isHigh) return 1;
+
+                // 2. Descending Priority within High Priority group
+                if (a.isHigh && b.isHigh) {
+                    if (a.priority !== b.priority) {
+                        return b.priority - a.priority;
+                    }
+                }
+
+                // 3. Effective Score (Descending)
+                // Note: Low priority (negative) has already reduced the score above
+                if (a.score !== b.score) {
+                    return b.score - a.score;
+                }
+
+                // 4. Tag Name (Ascending)
+                return (a.value.tag || '').localeCompare(b.value.tag || '');
+            });
+
+            return mapped.map(v => v.value);
         }
 
         function setupEventHandlers() {
@@ -664,6 +709,14 @@
                 if (state.search) {
                     params.append('search', state.search);
                 }
+
+                if (window.Tracking && typeof window.Tracking.getUserId === 'function') {
+                    const uid = window.Tracking.getUserId();
+                    if (uid) {
+                        params.append('user_id', uid);
+                    }
+                }
+
                 const response = await fetch(`/api/tags?${params}`);
                 if (!response.ok) {
                     throw new Error(`HTTP error ${response.status}`);
