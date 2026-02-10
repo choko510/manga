@@ -1,18 +1,24 @@
-from fastapi import FastAPI, HTTPException, Request, Query
-from fastapi.responses import HTMLResponse, Response, JSONResponse
-from starlette.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
-import aiohttp
 import asyncio
+import json
+import random
+import re
+import secrets
+import shlex
+import string
+import time
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
-from types import SimpleNamespace
+
+import aiohttp
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, Index, Integer, String, Text, select, func
-from sqlalchemy import text
-import random
+from sqlalchemy import Column, Index, Integer, String, Text, func, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -20,15 +26,10 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import declarative_base
-import re
-import shlex
-import json
-import time
-import secrets
-import string
-from datetime import datetime, timedelta
-from lib import ImageUriResolver
+from starlette.responses import StreamingResponse
+
 from dlsite_async import DlsiteAPI
+from lib import ImageUriResolver
 
 # =========================
 # グローバル変数管理
@@ -204,6 +205,7 @@ class Gallery(Base):
     manga_type = Column(String)
     created_at = Column(String) # ISO8601 文字列想定
     page_count = Column(Integer, nullable=True)
+    artists = Column(Text)
     # 注意: Computedではなく通常のINTEGERカラム
     # SQLiteのstrftimeはタイムゾーン付き日付をパースできないため
     # Pythonのバックフィル処理で値を設定する
@@ -2648,6 +2650,14 @@ async def search_galleries_get(
         limit = MAX_LIMIT
 
     try:
+        # q にカンマが含まれている場合はタグ検索として扱う
+        if q and "," in q:
+            if tag:
+                tag = f"{tag},{q}"
+            else:
+                tag = q
+            q = None
+
         # q が URL の場合はプロダクトコード（RJ****等）に変換する
         if q:
             extracted_code = _extract_dlsite_product_code(q)
@@ -3338,6 +3348,7 @@ async def get_gallery(gallery_id: int):
             return {
                 "gallery_id": gallery.gallery_id,
                 "japanese_title": gallery.japanese_title,
+                "artists": gallery.artists,
                 "tags": gallery.tags,
                 "characters": gallery.characters,
                 "image_urls": image_urls,
@@ -3688,11 +3699,14 @@ async def get_tag_translations() -> Dict[str, Any]:
                 record["description"] = normalized["description"]
             if normalized["aliases"]:
                 record["aliases"] = normalized["aliases"]
+            if normalized["priority"] != 0:
+                record["priority"] = normalized["priority"]
             storage[tag] = record
             response[tag] = {
                 "translation": normalized["translation"],
                 "description": normalized["description"],
                 "aliases": normalized["aliases"],
+                "priority": normalized["priority"],
             }
 
         if raw_data != storage:
@@ -3727,6 +3741,8 @@ async def update_tag_translations(request: TagTranslationsUpdateRequest) -> Dict
                 record["description"] = normalized["description"]
             if normalized["aliases"]:
                 record["aliases"] = normalized["aliases"]
+            if normalized["priority"] != 0:
+                record["priority"] = normalized["priority"]
             current_storage[tag] = record
             current_response[tag] = normalized
 
@@ -3778,10 +3794,32 @@ async def update_tag_translations(request: TagTranslationsUpdateRequest) -> Dict
                         raise HTTPException(status_code=400, detail=f"検索キーワードが重複しています: {alias}")
                     alias_map[alias_norm] = tag
 
+            if normalized["priority"] != 0:
+                record["priority"] = normalized["priority"]
+
             processed[tag] = record
             response_payload[tag] = normalized
 
         await _write_json_file(TAG_TRANSLATIONS_FILE, processed, sort_keys=True)
+
+        # tag_priorities DB同期
+        try:
+            priorities_to_insert = []
+            for tag, entry in processed.items():
+                p = entry.get("priority", 0)
+                if isinstance(p, int) and p != 0:
+                    priorities_to_insert.append({"tag": tag, "priority": p})
+            
+            async with get_db_session() as db:
+                async with db.begin():
+                    await db.execute(text("DELETE FROM tag_priorities"))
+                    if priorities_to_insert:
+                        await db.execute(
+                            text("INSERT INTO tag_priorities(tag, priority) VALUES (:tag, :priority)"),
+                            priorities_to_insert
+                        )
+        except Exception as e:
+            print(f"tag_priorities sync error: {e}")
 
         reason = (request.message or "").strip()
         if reason:

@@ -2118,7 +2118,7 @@
             mangaPagesContainer.classList.remove('pages-layout-vertical', 'pages-layout-horizontal', 'pages-layout-swiper');
             destroySwiper();
 
-            mangaPagesContainer.innerHTML = '';
+            clearMangaPagesContainer();
 
             const initialCount = Math.min(INITIAL_PAGE_LOAD_COUNT, imageUrls.length);
             for (let i = 0; i < initialCount; i++) {
@@ -2357,7 +2357,7 @@
 
             destroySwiper();
             mangaPagesContainer.classList.remove('pages-layout-vertical', 'pages-layout-horizontal', 'pages-layout-swiper');
-            mangaPagesContainer.innerHTML = '';
+            clearMangaPagesContainer();
 
             let effectiveIndex = desiredIndex;
 
@@ -2405,22 +2405,98 @@
             return imageUrl.startsWith('/proxy/') ? imageUrl : `/proxy/${imageUrl}`;
         }
 
+        // 503エラー時にリトライする画像読み込み関数
+        async function loadImageWithRetry(img, url) {
+            const RETRY_DELAY = 1000;
+            const controller = new AbortController();
+            img._abortController = controller; // キャンセル用にコントローラーを保持
+
+            const fetchImage = async () => {
+                if (controller.signal.aborted) return;
+
+                try {
+                    // data: URLなどの場合はそのまま設定
+                    if (url.startsWith('data:')) {
+                        img.src = url;
+                        return;
+                    }
+
+                    const response = await fetch(url, { signal: controller.signal });
+                    if (response.status === 503) {
+                        if (controller.signal.aborted) return;
+                        console.warn(`503 Service Unavailable: ${url}. Retrying in ${RETRY_DELAY}ms...`);
+                        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                        return fetchImage();
+                    }
+
+                    if (!response.ok) {
+                        console.error(`Failed to load image: ${url}, status: ${response.status}`);
+                        img.src = ERROR_IMAGE_SRC;
+                        return;
+                    }
+
+                    const blob = await response.blob();
+                    if (controller.signal.aborted) return;
+
+                    const objectUrl = URL.createObjectURL(blob);
+
+                    // 既存のBlob URLがあれば解放
+                    if (img.src && img.src.startsWith('blob:')) {
+                        URL.revokeObjectURL(img.src);
+                    }
+
+                    img.src = objectUrl;
+                    img.dataset.blobUrl = "true";
+
+                } catch (error) {
+                    if (error.name === 'AbortError') return;
+                    console.error(`Error loading image ${url}:`, error);
+                    img.src = ERROR_IMAGE_SRC;
+                }
+            };
+
+            fetchImage();
+        }
+
+        function clearMangaPagesContainer() {
+            if (!mangaPagesContainer) return;
+            const images = mangaPagesContainer.querySelectorAll('img');
+            images.forEach(img => {
+                // 読み込み中のリクエストをキャンセル
+                if (img._abortController) {
+                    img._abortController.abort();
+                }
+                // Blob URLの解放
+                if (img.src && img.src.startsWith('blob:')) {
+                    URL.revokeObjectURL(img.src);
+                }
+            });
+            mangaPagesContainer.innerHTML = '';
+        }
+
         function createPageElement(imageUrl, index) {
             const pageDiv = document.createElement('div');
             pageDiv.className = 'manga-page';
             pageDiv.dataset.index = index;
 
             const img = document.createElement('img');
-            img.src = getImageSrc(imageUrl);
+            // img.src = getImageSrc(imageUrl); // 503リトライ対応のため廃止
             img.alt = `漫画ページ ${index + 1}`;
             img.addEventListener('error', () => {
-                img.src = ERROR_IMAGE_SRC;
+                // Fetchでのエラーハンドリングが基本だが、もし設定されたURLがエラーになった場合のフォールバック
+                if (!img.src.startsWith('blob:')) {
+                    img.src = ERROR_IMAGE_SRC;
+                }
             });
 
             // 現在の画像サイズ設定を適用
             applyImageSizeClass(img);
 
             pageDiv.appendChild(img);
+
+            // 画像読み込み開始
+            loadImageWithRetry(img, getImageSrc(imageUrl));
+
             return pageDiv;
         }
 

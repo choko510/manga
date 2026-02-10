@@ -76,9 +76,21 @@
 
         const urlParams = new URLSearchParams(window.location.search);
         const initialTag = urlParams.get('tag');
-        if (initialTag) {
+        const initialQ = urlParams.get('q');
+
+        if (initialQ) {
+            elements.searchInput.value = initialQ;
+            currentQuery = initialQ;
+            currentUnifiedQuery = initialQ;
+            currentResolvedQuery = typeof MangaApp.resolveTagQueryString === 'function'
+                ? MangaApp.resolveTagQueryString(initialQ)
+                : initialQ;
+        } else if (initialTag) {
             elements.searchInput.value = initialTag;
             currentQuery = initialTag;
+            currentResolvedQuery = typeof MangaApp.resolveTagQueryString === 'function'
+                ? MangaApp.resolveTagQueryString(initialTag)
+                : initialTag;
         }
 
         // URLからページ番号を読み取る
