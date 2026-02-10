@@ -1229,7 +1229,7 @@
             エラーが発生しました。もう一度お試しください。
         </div>
 
-        <div class="resume-overlay" id="resumeOverlay" hidden aria-hidden="true">
+        <div class="resume-overlay" id="resumeOverlay" hidden>
             <div class="resume-dialog" role="dialog" aria-modal="true">
                 <p class="resume-message" id="resumeMessage">前回の続きから再開しますか？</p>
                 <div class="resume-actions">
@@ -1366,8 +1366,6 @@
 
         // デバイス情報
         const isMobile = window.innerWidth <= 767;
-        const isTablet = window.innerWidth > 767 && window.innerWidth <= 1279;
-        const devicePixelRatio = window.devicePixelRatio || 1;
 
         // DOM要素
         const loadingIndicator = document.getElementById('loadingIndicator');
@@ -1974,13 +1972,11 @@
         // メニューの切り替え
         function toggleMenu() {
             // TODO: メニュー実装
-            console.log('Menu toggle');
         }
 
         // ズームの切り替え
         function toggleZoom() {
             // TODO: ズーム実装
-            console.log('Zoom toggle');
         }
 
         // 遅延ロード用設定
@@ -1997,7 +1993,6 @@
                 }
 
                 galleryData = await response.json();
-                console.log('ギャラリーデータ:', galleryData);
 
                 // 画像URLを解析
                 if (galleryData.image_urls) {
@@ -2022,12 +2017,10 @@
                         imageUrls = [];
                     }
                 } else {
-                    console.warn('image_urlsフィールドがありません');
                     imageUrls = [];
                 }
 
                 imageUrls = imageUrls.filter(url => typeof url === 'string' && url.trim() !== '');
-                console.log('解析後の画像URL:', imageUrls);
 
                 if (!imageUrls.length) {
                     showError('画像が見つかりませんでした。');
@@ -2181,9 +2174,49 @@
 
         // 日本語テキストを検出する関数
         function containsJapanese(text) {
-            // ひらがな、カタカナ、漢字の正規表現
             const japaneseRegex = /[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/;
             return japaneseRegex.test(text);
+        }
+
+        /**
+         * タグ/キャラクターグループのDOM要素を作成する共通関数。
+         * @param {string} label - ラベルテキスト（例: 'タグ:', 'キャラ:'）
+         * @param {string[]} items - 表示する項目の配列
+         * @param {object} [options] - オプション
+         * @param {boolean} [options.asLinks=false] - リンクとして表示するか
+         * @param {boolean} [options.translate=false] - MangaApp.translateTagを適用するか
+         */
+        function createTagGroup(label, items, options = {}) {
+            const { asLinks = false, translate = false } = options;
+            const group = document.createElement('div');
+            group.className = 'tag-group';
+
+            if (items.some(item => containsJapanese(item))) {
+                group.classList.add('vertical');
+            }
+
+            const labelEl = document.createElement('span');
+            labelEl.className = 'tag-label';
+            labelEl.textContent = label;
+            group.appendChild(labelEl);
+
+            items.forEach(item => {
+                if (!item) return;
+                const itemEl = document.createElement('span');
+                itemEl.className = 'tag-item';
+                if (asLinks) {
+                    const link = document.createElement('a');
+                    link.href = `/?tag=${encodeURIComponent(item)}`;
+                    link.textContent = translate ? MangaApp.translateTag(item) : item;
+                    link.title = item;
+                    itemEl.appendChild(link);
+                } else {
+                    itemEl.textContent = item;
+                }
+                group.appendChild(itemEl);
+            });
+
+            return group;
         }
 
         // ギャラリー情報を更新
@@ -2202,59 +2235,14 @@
                 try {
                     const tagArray = JSON.parse(galleryData.tags);
                     if (Array.isArray(tagArray) && tagArray.length > 0) {
-                        const tagGroup = document.createElement('div');
-                        tagGroup.className = 'tag-group';
-
-                        // 日本語タグが含まれているかチェック
-                        const hasJapaneseTags = tagArray.some(tag => containsJapanese(tag));
-                        if (hasJapaneseTags) {
-                            tagGroup.classList.add('vertical');
-                        }
-
-                        const tagLabel = document.createElement('span');
-                        tagLabel.className = 'tag-label';
-                        tagLabel.textContent = 'タグ:';
-                        tagGroup.appendChild(tagLabel);
-
-                        tagArray.forEach(tag => {
-                            if (!tag) return;
-                            const tagItem = document.createElement('span');
-                            tagItem.className = 'tag-item';
-                            const tagLink = document.createElement('a');
-                            tagLink.href = `/?tag=${encodeURIComponent(tag)}`;
-                            tagLink.textContent = MangaApp.translateTag(tag);
-                            tagLink.title = tag;
-                            tagItem.appendChild(tagLink);
-                            tagGroup.appendChild(tagItem);
-                        });
-
-                        mangaTagsInfo.appendChild(tagGroup);
+                        mangaTagsInfo.appendChild(
+                            createTagGroup('タグ:', tagArray, { asLinks: true, translate: true })
+                        );
                     }
                 } catch (e) {
-                    // パースに失敗した場合はテキストとして表示
-                    const tagGroup = document.createElement('div');
-                    tagGroup.className = 'tag-group';
-
-                    // 日本語タグが含まれているかチェック
-                    if (containsJapanese(galleryData.tags)) {
-                        tagGroup.classList.add('vertical');
-                    }
-
-                    const tagLabel = document.createElement('span');
-                    tagLabel.className = 'tag-label';
-                    tagLabel.textContent = 'タグ:';
-                    tagGroup.appendChild(tagLabel);
-
-                    const tagItem = document.createElement('span');
-                    tagItem.className = 'tag-item';
-                    const tagLink = document.createElement('a');
-                    tagLink.href = `/?tag=${encodeURIComponent(galleryData.tags)}`;
-                    tagLink.textContent = MangaApp.translateTag(galleryData.tags);
-                    tagLink.title = galleryData.tags;
-                    tagItem.appendChild(tagLink);
-                    tagGroup.appendChild(tagItem);
-
-                    mangaTagsInfo.appendChild(tagGroup);
+                    mangaTagsInfo.appendChild(
+                        createTagGroup('タグ:', [galleryData.tags], { asLinks: true, translate: true })
+                    );
                 }
             }
 
@@ -2263,50 +2251,14 @@
                 try {
                     const characterArray = JSON.parse(galleryData.characters);
                     if (Array.isArray(characterArray) && characterArray.length > 0) {
-                        const characterGroup = document.createElement('div');
-                        characterGroup.className = 'tag-group';
-
-                        // 日本語キャラクター名が含まれているかチェック
-                        const hasJapaneseCharacters = characterArray.some(character => containsJapanese(character));
-                        if (hasJapaneseCharacters) {
-                            characterGroup.classList.add('vertical');
-                        }
-
-                        const characterLabel = document.createElement('span');
-                        characterLabel.className = 'tag-label';
-                        characterLabel.textContent = 'キャラ:';
-                        characterGroup.appendChild(characterLabel);
-
-                        characterArray.forEach(character => {
-                            const characterItem = document.createElement('span');
-                            characterItem.className = 'tag-item';
-                            characterItem.textContent = character;
-                            characterGroup.appendChild(characterItem);
-                        });
-
-                        mangaTagsInfo.appendChild(characterGroup);
+                        mangaTagsInfo.appendChild(
+                            createTagGroup('キャラ:', characterArray)
+                        );
                     }
                 } catch (e) {
-                    // パースに失敗した場合はテキストとして表示
-                    const characterGroup = document.createElement('div');
-                    characterGroup.className = 'tag-group';
-
-                    // 日本語キャラクター名が含まれているかチェック
-                    if (containsJapanese(galleryData.characters)) {
-                        characterGroup.classList.add('vertical');
-                    }
-
-                    const characterLabel = document.createElement('span');
-                    characterLabel.className = 'tag-label';
-                    characterLabel.textContent = 'キャラ:';
-                    characterGroup.appendChild(characterLabel);
-
-                    const characterItem = document.createElement('span');
-                    characterItem.className = 'tag-item';
-                    characterItem.textContent = galleryData.characters;
-                    characterGroup.appendChild(characterItem);
-
-                    mangaTagsInfo.appendChild(characterGroup);
+                    mangaTagsInfo.appendChild(
+                        createTagGroup('キャラ:', [galleryData.characters])
+                    );
                 }
             }
 
@@ -2637,24 +2589,6 @@
             doublePageStartIndices = [];
         }
 
-        // すべてのページを表示（単純なimgタグを追加）
-        function displayAllPages() {
-            // 画像URLがない場合はエラーメッセージを表示
-            if (!imageUrls || imageUrls.length === 0) {
-                showError('画像が見つかりませんでした。');
-                return;
-            }
-
-            console.log('表示する画像URL:', imageUrls);
-
-            renderPagesByMode();
-
-            // 画像サイズ調整機能を初期化（PCのみ）
-            if (!isMobile && imageSizeControls) {
-                saveSettings();
-            }
-        }
-
         // ローディング表示の切り替え
         function showLoading(show) {
             loadingIndicator.style.display = show ? 'block' : 'none';
@@ -2917,19 +2851,14 @@
         }
 
         // 作者の作品を描画
-        function renderArtistWorks(items) {
-            if (!artistWorksSection || !artistWorksGrid) return;
+        const RECOMMENDATION_CARD_MAX = 6;
 
-            if (!items.length) {
-                artistWorksSection.style.display = 'none';
-                return;
-            }
-
-            artistWorksSection.style.display = 'block';
-            artistWorksGrid.innerHTML = '';
-
+        /**
+         * おすすめ/作者作品カードのフラグメントを作成する共通関数。
+         */
+        function createRecommendationCards(items) {
             const fragment = document.createDocumentFragment();
-            items.slice(0, 6).forEach((item) => {
+            items.slice(0, RECOMMENDATION_CARD_MAX).forEach((item) => {
                 const card = document.createElement('a');
                 card.href = `/viewer?id=${item.gallery_id}`;
                 card.className = 'recommendation-card';
@@ -2950,8 +2879,25 @@
                 card.appendChild(body);
                 fragment.appendChild(card);
             });
+            return fragment;
+        }
 
-            artistWorksGrid.appendChild(fragment);
+        /**
+         * セクションにカードを描画する共通関数。
+         */
+        function renderCardSection(section, grid, items) {
+            if (!section || !grid) return;
+            if (!items.length) {
+                section.style.display = 'none';
+                return;
+            }
+            section.style.display = 'block';
+            grid.innerHTML = '';
+            grid.appendChild(createRecommendationCards(items));
+        }
+
+        function renderArtistWorks(items) {
+            renderCardSection(artistWorksSection, artistWorksGrid, items);
         }
 
         async function loadRecommendations(galleryId) {
@@ -2987,31 +2933,7 @@
         }
 
         function renderRecommendations(items) {
-            if (!recommendationSection || !recommendationGrid) return;
-            if (!items.length) {
-                recommendationSection.style.display = 'none';
-                return;
-            }
-            recommendationSection.style.display = 'block';
-            recommendationGrid.innerHTML = '';
-            const fragment = document.createDocumentFragment();
-            items.slice(0, 6).forEach((item) => {
-                const card = document.createElement('a');
-                card.href = `/viewer?id=${item.gallery_id}`;
-                card.className = 'recommendation-card';
-                const img = document.createElement('img');
-                const firstImage = Array.isArray(item.image_urls) && item.image_urls.length > 0 ? item.image_urls[0] : '';
-                if (firstImage) {
-                    img.src = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
-                }
-                const body = document.createElement('div');
-                body.className = 'card-body';
-                body.textContent = item.japanese_title || '無題';
-                card.appendChild(img);
-                card.appendChild(body);
-                fragment.appendChild(card);
-            });
-            recommendationGrid.appendChild(fragment);
+            renderCardSection(recommendationSection, recommendationGrid, items);
         }
 
         // ページ離脱/クローズ時に閲覧終了を通知（ベストエフォート）

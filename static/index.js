@@ -1,5 +1,14 @@
 (function () {
     const LIMIT = 30;
+    const SEARCH_CACHE_MAX_SIZE = 60;
+    const PAGINATION_MAX_BUTTONS = 5;
+    const PRIORITY_IMAGE_COUNT = 4;
+    const VISIBLE_TAGS_COUNT = 5;
+    const HISTORY_DISPLAY_COUNT = 8;
+    const RECOMMENDATION_LIMIT = 20;
+    const DEBOUNCE_DELAY_MS = 400;
+    const TRACKING_MAX_TAGS = 50;
+    const OBSERVER_ROOT_MARGIN = '200px 0px';
     let currentPage = 1;
     let currentQuery = '';
     let currentResolvedQuery = '';
@@ -7,6 +16,65 @@
     let currentMinPages = 10;
     let currentMaxPages = null;
     let isLoading = false;
+
+    /**
+     * ギャラリーオブジェクトから最初の画像URLを取得する。
+     * image_urls (配列/文字列) と thumbnail_url の両方に対応。
+     */
+    function resolveFirstImageUrl(gallery) {
+        if (Array.isArray(gallery.image_urls) && gallery.image_urls.length > 0) {
+            return gallery.image_urls[0];
+        }
+        if (typeof gallery.image_urls === 'string' && gallery.image_urls) {
+            return gallery.image_urls;
+        }
+        if (gallery.thumbnail_url) {
+            return gallery.thumbnail_url;
+        }
+        return '';
+    }
+
+    /**
+     * Observer が無い場合のフォールバック: 低解像度→高解像度の段階的読み込みを設定する。
+     */
+    function setupFallbackImageLoad(img, thumbnailEl) {
+        const initialSrc = img.dataset.lowRes || img.dataset.src;
+        img.src = initialSrc;
+        img.onload = () => {
+            img.style.display = 'block';
+            const ph = thumbnailEl.querySelector('.image-placeholder');
+            if (ph) ph.remove();
+
+            if (img.dataset.lowRes && img.src.includes('thumbnail=true')) {
+                const originalImg = new Image();
+                originalImg.src = img.dataset.src;
+                originalImg.onload = () => {
+                    img.src = originalImg.src;
+                };
+            }
+        };
+    }
+
+    /**
+     * いいねボタンを作成する共通関数。
+     */
+    function createLikeButton(galleryId) {
+        const likeButton = document.createElement('button');
+        likeButton.className = 'like-button';
+        likeButton.type = 'button';
+        likeButton.setAttribute('aria-label', 'いいね');
+        const liked = MangaApp.isLiked(galleryId);
+        likeButton.classList.toggle('active', liked);
+        likeButton.innerHTML = liked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
+        likeButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const isLiked = MangaApp.toggleLike(galleryId);
+            likeButton.classList.toggle('active', isLiked);
+            likeButton.innerHTML = isLiked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
+        });
+        return likeButton;
+    }
 
     let cardObserver = null;
     let isPageLoaded = false;
@@ -174,7 +242,7 @@
                     }
                     cardObserver.unobserve(card);
                 });
-            }, { rootMargin: '200px 0px' });
+            }, { rootMargin: OBSERVER_ROOT_MARGIN });
         }
     }
 
@@ -301,7 +369,7 @@
                 .filter((tag) => tag);
             MangaApp.saveHiddenTags(tags);
             updateHiddenTagsSummary(elements);
-        }, 400));
+        }, DEBOUNCE_DELAY_MS));
 
         if (elements.clearHistoryButton) {
             elements.clearHistoryButton.addEventListener('click', () => {
@@ -541,7 +609,7 @@
             totalCount: totalCount,
         };
         searchCache.set(cacheKey, result);
-        if (searchCache.size > 60) {
+        if (searchCache.size > SEARCH_CACHE_MAX_SIZE) {
             const firstKey = searchCache.keys().next().value;
             searchCache.delete(firstKey);
         }
@@ -579,23 +647,16 @@
         placeholder.className = 'image-placeholder';
         thumbnail.appendChild(placeholder);
         const img = document.createElement('img');
-        let firstImage = '';
-        // ランキングAPIと検索APIで画像URLの形式が異なる可能性があるため、両方に対応
-        if (Array.isArray(gallery.image_urls) && gallery.image_urls.length > 0) {
-            firstImage = gallery.image_urls[0];
-        } else if (typeof gallery.image_urls === 'string' && gallery.image_urls) {
-            firstImage = gallery.image_urls;
-        } else if (gallery.thumbnail_url) {
-            firstImage = gallery.thumbnail_url;
-        }
+        img.alt = gallery.japanese_title || '';
+        const firstImage = resolveFirstImageUrl(gallery);
 
         if (firstImage) {
             const baseUrl = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
             const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
             const fullUrl = baseUrl;
 
-            // 最初の4枚は即時読み込み（Lazy Loadを回避）して表示速度を向上
-            const isPriority = index < 4;
+            // 最初の数枚は即時読み込み（Lazy Loadを回避）して表示速度を向上
+            const isPriority = index < PRIORITY_IMAGE_COUNT;
 
             // 環境に応じたターゲットURL
             let finalSrc = fullUrl;
@@ -611,13 +672,9 @@
             if (isPriority) {
                 img.src = finalSrc;
                 img.style.display = 'block';
-                // プレースホルダーを即座に削除
-                const placeholder = thumbnail.querySelector('.image-placeholder');
-                if (placeholder) {
-                    placeholder.remove();
-                }
+                const ph = thumbnail.querySelector('.image-placeholder');
+                if (ph) ph.remove();
 
-                // 1枚目はさらに優先度を上げる
                 if (index === 0) {
                     img.setAttribute('fetchpriority', 'high');
                 }
@@ -629,41 +686,12 @@
             }
 
             if (!cardObserver && !isPriority) {
-                // Observerがない場合の直列処理
-                const initialSrc = lowResSrc || finalSrc;
-                img.src = initialSrc;
-                img.onload = () => {
-                    img.style.display = 'block';
-                    const placeholder = thumbnail.querySelector('.image-placeholder');
-                    if (placeholder) placeholder.remove();
-
-                    // PCかつ軽量版が読み込まれたなら高画質版を読み込み開始
-                    if (img.dataset.lowRes && img.src.includes('thumbnail=true')) {
-                        const originalImg = new Image();
-                        originalImg.src = img.dataset.src;
-                        originalImg.onload = () => {
-                            img.src = originalImg.src;
-                        };
-                    }
-                };
+                setupFallbackImageLoad(img, thumbnail);
             }
         }
         thumbnail.appendChild(img);
 
-        const likeButton = document.createElement('button');
-        likeButton.className = 'like-button';
-        likeButton.type = 'button';
-        likeButton.setAttribute('aria-label', 'いいね');
-        const liked = MangaApp.isLiked(gallery.gallery_id);
-        likeButton.classList.toggle('active', liked);
-        likeButton.innerHTML = liked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
-        likeButton.addEventListener('click', (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            const isLiked = MangaApp.toggleLike(gallery.gallery_id);
-            likeButton.classList.toggle('active', isLiked);
-            likeButton.innerHTML = isLiked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
-        });
+        const likeButton = createLikeButton(gallery.gallery_id);
 
         const info = document.createElement('div');
         info.className = 'card-info';
@@ -683,7 +711,7 @@
         const tagsList = document.createElement('ul');
         tagsList.className = 'card-tags';
         const tagArray = safeParseArray(gallery.tags);
-        tagArray.slice(0, 5).forEach((tag) => {
+        tagArray.slice(0, VISIBLE_TAGS_COUNT).forEach((tag) => {
             const tagItem = document.createElement('li');
             const chip = document.createElement('a');
             chip.href = `/tags?tag=${encodeURIComponent(tag)}`;
@@ -798,7 +826,7 @@
         elements.historySection.classList.add('active');
         elements.historyGrid.innerHTML = '';
         const fragment = document.createDocumentFragment();
-        history.slice(0, 8).forEach((item) => {
+        history.slice(0, HISTORY_DISPLAY_COUNT).forEach((item) => {
             const card = document.createElement('a');
             card.href = `/viewer?id=${item.gallery_id}`;
             card.className = 'history-card';
@@ -829,7 +857,6 @@
         }
 
         if (!userId) {
-            console.log('No user_id, skipping personalized recommendations');
             return;
         }
 
@@ -839,7 +866,7 @@
 
             const params = new URLSearchParams();
             params.append('user_id', userId);
-            params.append('limit', '20');
+            params.append('limit', String(RECOMMENDATION_LIMIT));
             if (excludeTag) {
                 params.append('exclude_tag', excludeTag);
             }
@@ -853,7 +880,6 @@
 
             // おすすめがない場合または機能が無効の場合は何もしない
             if (!data.results || data.results.length === 0 || data.disabled) {
-                console.log('No recommendations available or feature disabled');
                 return;
             }
 
@@ -911,7 +937,7 @@
             if (window.Tracking && window.Tracking.logImpression) {
                 window.Tracking.logImpression({
                     mangaIds: mangaIds,
-                    tags: allTags.slice(0, 50) // 最大50タグ
+                    tags: allTags.slice(0, TRACKING_MAX_TAGS)
                 });
             }
 
@@ -935,19 +961,14 @@
         thumbnail.appendChild(placeholder);
 
         const img = document.createElement('img');
-        let firstImage = '';
-        if (Array.isArray(gallery.image_urls) && gallery.image_urls.length > 0) {
-            firstImage = gallery.image_urls[0];
-        } else if (typeof gallery.image_urls === 'string' && gallery.image_urls) {
-            firstImage = gallery.image_urls;
-        }
+        img.alt = gallery.japanese_title || '';
+        const firstImage = resolveFirstImageUrl(gallery);
 
         if (firstImage) {
             const baseUrl = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
             const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
             const fullUrl = baseUrl;
 
-            // モバイルなら軽量版のみ、PCならプログレッシブ読み込み
             if (MangaApp.isMobile()) {
                 img.dataset.src = thumbUrl;
             } else {
@@ -956,39 +977,12 @@
             }
 
             if (!cardObserver) {
-                const initialSrc = img.dataset.lowRes || img.dataset.src;
-                img.src = initialSrc;
-                img.onload = () => {
-                    const ph = thumbnail.querySelector('.image-placeholder');
-                    if (ph) ph.remove();
-
-                    if (img.dataset.lowRes && img.src.includes('thumbnail=true')) {
-                        const originalImg = new Image();
-                        originalImg.src = img.dataset.src;
-                        originalImg.onload = () => {
-                            img.src = originalImg.src;
-                        };
-                    }
-                };
+                setupFallbackImageLoad(img, thumbnail);
             }
         }
         thumbnail.appendChild(img);
 
-        // いいねボタン
-        const likeButton = document.createElement('button');
-        likeButton.className = 'like-button';
-        likeButton.type = 'button';
-        likeButton.setAttribute('aria-label', 'いいね');
-        const liked = MangaApp.isLiked(gallery.gallery_id);
-        likeButton.classList.toggle('active', liked);
-        likeButton.innerHTML = liked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
-        likeButton.addEventListener('click', (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            const isLiked = MangaApp.toggleLike(gallery.gallery_id);
-            likeButton.classList.toggle('active', isLiked);
-            likeButton.innerHTML = isLiked ? '<i class="fas fa-heart"></i>' : '<i class="far fa-heart"></i>';
-        });
+        const likeButton = createLikeButton(gallery.gallery_id);
 
         // 情報
         const info = document.createElement('div');
@@ -1029,7 +1023,7 @@
 
     function showLoading(elements, visible) {
         isLoading = visible;
-        elements.loadingIndicator.style.display = visible ? 'block' : 'none';
+        elements.loadingIndicator.classList.toggle('hidden', !visible);
     }
 
     // ページネーションをレンダリングする関数
@@ -1044,11 +1038,7 @@
             existingPaginationBottom.remove();
         }
 
-        // デバッグ情報をコンソールに出力
-        console.log('renderPagination called:', { page, totalPages, totalCount });
-
         if (totalPages <= 1) {
-            console.log('Total pages <= 1, not showing pagination');
             return; // 1ページのみの場合はページネーションを表示しない
         }
 
@@ -1077,12 +1067,11 @@
             paginationContainer.appendChild(prevButton);
 
             // ページ番号ボタン
-            const maxButtons = 5;
-            let startPage = Math.max(1, page - Math.floor(maxButtons / 2));
-            let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+            let startPage = Math.max(1, page - Math.floor(PAGINATION_MAX_BUTTONS / 2));
+            let endPage = Math.min(totalPages, startPage + PAGINATION_MAX_BUTTONS - 1);
 
-            if (endPage - startPage < maxButtons - 1) {
-                startPage = Math.max(1, endPage - maxButtons + 1);
+            if (endPage - startPage < PAGINATION_MAX_BUTTONS - 1) {
+                startPage = Math.max(1, endPage - PAGINATION_MAX_BUTTONS + 1);
             }
 
             if (startPage > 1) {
@@ -1153,7 +1142,6 @@
             const bottomPagination = createPaginationContainer('paginationContainerBottom');
             cardGrid.parentNode.insertBefore(bottomPagination, cardGrid.nextSibling);
 
-            console.log('Pagination containers added to DOM (top and bottom)');
         } else {
             console.error('cardGrid not found');
         }
@@ -1303,7 +1291,6 @@
                 img.src = url;
             });
 
-            console.log(`Prefetched ${thumbnailUrls.length} thumbnails for page ${nextPage}`);
         } catch (error) {
             console.error('Prefetch error:', error);
         }

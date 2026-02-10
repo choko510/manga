@@ -1,14 +1,19 @@
 import asyncio
+import hashlib
 import json
+import os
 import random
 import re
 import secrets
 import shlex
+import shutil
 import string
 import time
-from datetime import datetime, timedelta
+from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock as ThreadLock
 from types import SimpleNamespace
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -68,9 +73,6 @@ global_state = GlobalState()
 # =========================
 # サムネイルメモリキャッシュ
 # =========================
-from collections import OrderedDict
-from threading import Lock as ThreadLock
-
 class ThumbnailCache:
     """
     サムネイル画像のLRUメモリキャッシュ
@@ -651,7 +653,6 @@ def _make_search_results_cache_key(
     sort_by: Optional[str],
 ) -> str:
     """検索条件からキャッシュキーを生成"""
-    import hashlib
     key_parts = [
         title or "",
         tag or "",
@@ -725,7 +726,6 @@ def _make_search_count_cache_key(
     max_pages: Optional[int],
 ) -> str:
     """検索条件からキャッシュキーを生成"""
-    import hashlib
     key_parts = [
         title or "",
         tag or "",
@@ -870,7 +870,7 @@ async def _load_ranking_ids(ranking_type: str) -> List[int]:
                     result = await db.execute(stmt, {"ranking_type": ranking_type})
                     rows = result.fetchall()
             except Exception as exc:
-                print("ランキングデータのDB読込に失敗: %s", exc)
+                print(f"ランキングデータのDB読込に失敗: {exc}")
                 return []
 
             ids: List[int] = []
@@ -984,7 +984,6 @@ class ImageProxyCache:
     
     def _make_key(self, url: str) -> str:
         """URLからキャッシュキーを生成"""
-        import hashlib
         return hashlib.md5(url.encode()).hexdigest()
     
     async def get(self, url: str) -> Optional[Tuple[bytes, str]]:
@@ -1368,8 +1367,6 @@ async def init_database():
     - SQL文をバッチ実行してオーバーヘッド削減
     - 重複したDROP TRIGGER文を削除
     """
-    import os
-    import shutil
 
     global engine, SessionLocal
     
@@ -1735,7 +1732,7 @@ async def _get_known_tag_set(db_session: AsyncSession) -> Set[str]:
             result = await db_session.execute(text("SELECT tag FROM tag_stats"))
             rows = result.fetchall()
         except Exception as exc:
-            print("タグ一覧の取得に失敗しました: %s", exc)
+            print(f"タグ一覧の取得に失敗しました: {exc}")
             return _KNOWN_TAGS_CACHE
 
         tags: Set[str] = set()
@@ -2102,6 +2099,8 @@ def _normalize_tag_value(tag_value: Any) -> Optional[str]:
     return None
 
 
+# TODO: TrackingMangaView が未定義のため、この関数は実行時に NameError になる。
+#       session_id, page_url, time_on_page 等のカラムも既存モデルに存在しない。
 async def build_session_tag_profile(
     db_session: AsyncSession,
     session_id: str,
@@ -2122,13 +2121,12 @@ async def build_session_tag_profile(
             result = await tracking_db.execute(stmt)
             page_views = result.scalars().all()
     except Exception as exc:
-        print("セッションプロファイル取得エラー: %s", exc)
+        print(f"セッションプロファイル取得エラー: {exc}")
         return {}
 
     if not page_views:
         return {}
 
-    from datetime import timezone
     now = datetime.now(timezone.utc)
     gallery_scores: Dict[int, float] = {}
     lookback_seconds = max(lookback_days, 1) * 86400
@@ -2184,7 +2182,7 @@ async def build_session_tag_profile(
         result = await db_session.execute(stmt)
         gallery_rows = result.all()
     except Exception as exc:
-        print("ギャラリータグ取得エラー: %s", exc)
+        print(f"ギャラリータグ取得エラー: {exc}")
         return {}
 
     tag_weights: Dict[str, float] = {}
@@ -2308,7 +2306,7 @@ async def get_recommended_galleries(
             try:
                 g_tags = {t.strip().lower() for t in json.loads(g.get("tags") or "[]")}
                 return not any(ex_tag in g_tags for ex_tag in exclude_terms)
-            except:
+            except (TypeError, json.JSONDecodeError):
                 return True
         sorted_galleries = [g for g in sorted_galleries if check_exclude(g)]
 
@@ -2424,7 +2422,7 @@ async def _ensure_image_resolver_ready() -> bool:
         except asyncio.TimeoutError:
             print("ImageUriResolver 同期がタイムアウトしました")
         except Exception as exc:
-            print("ImageUriResolver 初期化エラー: %s", exc)
+            print(f"ImageUriResolver 初期化エラー: {exc}")
 
         _IMAGE_RESOLVER_FAILURE_AT = now
         _IMAGE_RESOLVER_READY = False
@@ -2570,7 +2568,7 @@ async def api_recommendations(
                     # NOTE: さらなる高速化のため、この結果をキャッシュすることも検討できます
                     session_tag_weights = await build_session_tag_profile(db, session_id)
                 except Exception as exc:
-                    print("おすすめ個人化プロファイル作成エラー: %s", exc)
+                    print(f"おすすめ個人化プロファイル作成エラー: {exc}")
                     session_tag_weights = None
 
             # 1. 高速化された関数でギャラリーリストを取得
@@ -4374,9 +4372,9 @@ async def _get_user_favorite_authors(db: AsyncSession, tracking_db: AsyncSession
         # タグから作者を抽出
         try:
             tags = json.loads(gallery.tags) if gallery.tags else []
-        except:
+        except (TypeError, json.JSONDecodeError):
             tags = []
-        
+
         author = None
         for tag in tags:
             if isinstance(tag, str) and tag.startswith("artist:"):
@@ -4432,12 +4430,12 @@ async def _get_low_ctr_authors(db: AsyncSession, tracking_db: AsyncSession, user
         imp = impressions.get(gallery.gallery_id)
         if not imp:
             continue
-        
+
         try:
             tags = json.loads(gallery.tags) if gallery.tags else []
-        except:
+        except (TypeError, json.JSONDecodeError):
             tags = []
-        
+
         author = None
         for tag in tags:
             if isinstance(tag, str) and tag.startswith("artist:"):
@@ -4656,38 +4654,6 @@ def _calculate_shown_decay(shown_count: int) -> float:
     return RECOMMENDATION_SHOWN_DECAY_RATE ** excess
 
 
-async def _process_results_with_image_urls(results: List[Dict[str, Any]]):
-    """結果リストに画像URLを付与（非同期並列処理）"""
-    if not results:
-        return
-
-    tasks = []
-    for item in results:
-        gallery_id = item.get("gallery_id")
-        files_str = item.get("files")
-        
-        try:
-            files_list = json.loads(files_str) if files_str else []
-            if not isinstance(files_list, list):
-                files_list = []
-        except:
-            files_list = []
-            
-        gallery_info = {"gallery_id": gallery_id, "files": files_list}
-        tasks.append(geturl(gallery_info))
-    
-    image_urls_list = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    for item, image_urls in zip(results, image_urls_list):
-        if isinstance(image_urls, Exception):
-            item["image_urls"] = []
-        else:
-            item["image_urls"] = image_urls
-        
-        # filesはレスポンスに不要なので削除
-        item.pop("files", None)
-
-
 @app.get("/api/recommendations/personal")
 async def api_recommendations_personal(
     user_id: str,
@@ -4764,7 +4730,7 @@ async def api_recommendations_personal(
                 # タグ解析
                 try:
                     tags = json.loads(gallery.tags) if gallery.tags else []
-                except:
+                except (TypeError, json.JSONDecodeError):
                     tags = []
                 
                 tag_list = [t.lower() for t in tags if isinstance(t, str)]
