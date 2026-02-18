@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import http.client
-from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Dict, Optional
 from urllib.parse import urlsplit
+
+import httpx
 
 from .constants import BASE_DOMAIN, ErrorCode, RESOURCE_DOMAIN
 from .types import IdSet, Node
@@ -36,10 +36,45 @@ class HitomiError(Exception):
 _DEFAULT_HEADERS: Dict[str, str] = {
     "Accept": "*/*",
     "Connection": "keep-alive",
-    "Referer": f"https://{BASE_DOMAIN}",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/133.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://hitomi.la/",
+    "Origin": "https://hitomi.la",
 }
 
-_FETCH_EXECUTOR = ThreadPoolExecutor()
+# httpx セッション管理
+_async_client: Optional[httpx.AsyncClient] = None
+_sync_client: Optional[httpx.Client] = None
+
+
+async def _get_async_client() -> httpx.AsyncClient:
+    """Get or create httpx async client."""
+    global _async_client
+    if _async_client is None or _async_client.is_closed:
+        _async_client = httpx.AsyncClient(headers=_DEFAULT_HEADERS, http2=True, timeout=10.0)
+    return _async_client
+
+
+def _get_sync_client() -> httpx.Client:
+    """Get or create httpx sync client."""
+    global _sync_client
+    if _sync_client is None or _sync_client.is_closed:
+        _sync_client = httpx.Client(headers=_DEFAULT_HEADERS, timeout=10.0)
+    return _sync_client
+
+
+async def close_session() -> None:
+    """Close the httpx clients."""
+    global _async_client, _sync_client
+    if _async_client is not None and not _async_client.is_closed:
+        await _async_client.aclose()
+        _async_client = None
+    if _sync_client is not None and not _sync_client.is_closed:
+        _sync_client.close()
+        _sync_client = None
 
 
 def _normalise_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
@@ -53,7 +88,7 @@ def _normalise_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
     return merged
 
 
-def fetch(
+async def async_fetch(
     uri: str,
     headers: Optional[Dict[str, str]] = None,
     *,
@@ -61,15 +96,13 @@ def fetch(
     retry_delay: float = 1.0,
 ) -> bytes:
     """Fetch a resource over HTTPS and return the raw body.
-    
+
     Args:
         uri: URL to fetch
         headers: Optional HTTP headers
         max_retries: Maximum number of retry attempts (default: 3)
         retry_delay: Initial delay between retries in seconds (default: 1.0)
     """
-    import time as time_module
-    
     parsed = urlsplit(f"https://{uri}" if "//" not in uri else uri)
     if not parsed.hostname:
         raise HitomiError(ErrorCode.INVALID_VALUE, "uri", "contain a hostname")
@@ -78,43 +111,78 @@ def fetch(
     if parsed.query:
         path = f"{path}?{parsed.query}"
 
+    url = f"https://{parsed.hostname}{path}"
+    req_headers = _normalise_headers(headers)
+
     last_error: Optional[Exception] = None
-    
+
     for attempt in range(max_retries):
-        connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=10)
         try:
-            connection.request("GET", path, headers=_normalise_headers(headers))
-            response = connection.getresponse()
-            status = response.status
+            client = await _get_async_client()
+            response = await client.get(url, headers=req_headers)
+            status = response.status_code
             if status not in (200, 206):
-                # HTTPエラーもリトライ対象とする
-                last_error = HitomiError(ErrorCode.REQUEST_REJECTED, f"https://{uri} (status={status})")
+                last_error = HitomiError(
+                    ErrorCode.REQUEST_REJECTED,
+                    f"https://{uri} (status={status})",
+                )
                 if attempt < max_retries - 1:
-                    wait_time = retry_delay * (2 ** attempt)
-                    time_module.sleep(wait_time)
+                    wait_time = retry_delay * (2**attempt)
+                    await asyncio.sleep(wait_time)
                 continue
-            data = response.read()
-            return data
+            return response.content
         except Exception as e:
             last_error = e
             if attempt < max_retries - 1:
-                # 指数バックオフ: 1秒, 2秒, 4秒...
-                wait_time = retry_delay * (2 ** attempt)
-                time_module.sleep(wait_time)
-        finally:
-            connection.close()
-    
-    # All retries failed
+                wait_time = retry_delay * (2**attempt)
+                await asyncio.sleep(wait_time)
+
     raise last_error or HitomiError(ErrorCode.REQUEST_REJECTED, f"https://{uri}")
 
 
-async def async_fetch(
-    uri: str, headers: Optional[Dict[str, str]] = None
+def fetch(
+    uri: str,
+    headers: Optional[Dict[str, str]] = None,
+    *,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
 ) -> bytes:
-    """Asynchronous wrapper around :func:`fetch` using a thread executor."""
+    """Synchronous fetch using httpx.Client."""
+    parsed = urlsplit(f"https://{uri}" if "//" not in uri else uri)
+    if not parsed.hostname:
+        raise HitomiError(ErrorCode.INVALID_VALUE, "uri", "contain a hostname")
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_FETCH_EXECUTOR, fetch, uri, headers)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    url = f"https://{parsed.hostname}{path}"
+    req_headers = _normalise_headers(headers)
+
+    last_error: Optional[Exception] = None
+
+    for attempt in range(max_retries):
+        try:
+            client = _get_sync_client()
+            response = client.get(url, headers=req_headers)
+            status = response.status_code
+            if status not in (200, 206):
+                last_error = HitomiError(
+                    ErrorCode.REQUEST_REJECTED,
+                    f"https://{uri} (status={status})",
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (2**attempt))
+                continue
+            return response.content
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(retry_delay * (2**attempt))
+
+    raise last_error or HitomiError(ErrorCode.REQUEST_REJECTED, f"https://{uri}")
+
 
 
 def get_id_set(buffer: bytes, is_negative: bool = False) -> IdSet:
@@ -155,6 +223,24 @@ def _parse_node(data: bytes) -> Node:
     return keys, datas, subnodes
 
 
+# 非同期キャッシュ用
+_node_cache: Dict[tuple[int, str], bytes] = {}
+
+
+async def _async_get_node_bytes(address: int, version: str) -> bytes:
+    """Async version to fetch node bytes with caching."""
+    cache_key = (address, version)
+    if cache_key in _node_cache:
+        return _node_cache[cache_key]
+
+    data = await async_fetch(
+        f"{RESOURCE_DOMAIN}/galleriesindex/galleries.{version}.index",
+        headers={"Range": f"bytes={address}-{address + 463}"},
+    )
+    _node_cache[cache_key] = data
+    return data
+
+
 @lru_cache(maxsize=256)
 def _get_node_bytes(address: int, version: str) -> bytes:
     return fetch(
@@ -163,56 +249,18 @@ def _get_node_bytes(address: int, version: str) -> bytes:
     )
 
 
+async def async_get_node_at_address(address: int, version: str) -> Optional[Node]:
+    data = await _async_get_node_bytes(address, version)
+    if data:
+        return _parse_node(data)
+    return None
+
+
 def get_node_at_address(address: int, version: str) -> Optional[Node]:
     data = _get_node_bytes(address, version)
     if data:
         return _parse_node(data)
     return None
-
-
-async def async_get_node_at_address(address: int, version: str) -> Optional[Node]:
-    data = await asyncio.get_running_loop().run_in_executor(
-        _FETCH_EXECUTOR, _get_node_bytes, address, version
-    )
-    if data:
-        return _parse_node(data)
-    return None
-
-
-def binary_search(key: bytes, node: Node, version: str) -> Optional[tuple[int, int]]:
-    if not node[0]:
-        return None
-
-    compare_result = -1
-    index = 0
-    keys, data_entries, subnodes = node
-    while index < len(keys):
-        current_key = keys[index]
-        if key < current_key:
-            compare_result = -1
-        elif key > current_key:
-            compare_result = 1
-        else:
-            compare_result = 0
-            break
-        if compare_result <= 0:
-            break
-        index += 1
-
-    if compare_result == 0:
-        return data_entries[index]
-
-    child_address = subnodes[index]
-    if child_address == 0:
-        return None
-
-    if all(address == 0 for address in subnodes):
-        return None
-
-    next_node = get_node_at_address(child_address, version)
-    if next_node is None:
-        return None
-    return binary_search(key, next_node, version)
 
 
 async def async_binary_search(
@@ -251,3 +299,39 @@ async def async_binary_search(
     if next_node is None:
         return None
     return await async_binary_search(key, next_node, version)
+
+
+def binary_search(key: bytes, node: Node, version: str) -> Optional[tuple[int, int]]:
+    if not node[0]:
+        return None
+
+    compare_result = -1
+    index = 0
+    keys, data_entries, subnodes = node
+    while index < len(keys):
+        current_key = keys[index]
+        if key < current_key:
+            compare_result = -1
+        elif key > current_key:
+            compare_result = 1
+        else:
+            compare_result = 0
+            break
+        if compare_result <= 0:
+            break
+        index += 1
+
+    if compare_result == 0:
+        return data_entries[index]
+
+    child_address = subnodes[index]
+    if child_address == 0:
+        return None
+
+    if all(address == 0 for address in subnodes):
+        return None
+
+    next_node = get_node_at_address(child_address, version)
+    if next_node is None:
+        return None
+    return binary_search(key, next_node, version)

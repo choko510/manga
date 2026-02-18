@@ -1980,8 +1980,103 @@
         }
 
         // 遅延ロード用設定
-        const INITIAL_PAGE_LOAD_COUNT = 10;
-        const PRELOAD_AHEAD_COUNT = 5;
+        const INITIAL_PAGE_LOAD_COUNT = 15;
+        const PRELOAD_AHEAD_COUNT = 10;
+        const BACKGROUND_PREFETCH_COUNT = 30;  // バックグラウンド先読み（ブラウザキャッシュ投入）
+
+        // バッチURL解決キャッシュ: hash → 解決済みプロキシURL
+        const resolvedUrlCache = new Map();
+
+        /**
+         * ハッシュ配列を一括でURL解決し、resolvedUrlCacheに保存する
+         * 同時実行中は前回完了を待ってから送信する
+         */
+        let _resolveUrlsPromise = Promise.resolve();
+        async function batchResolveUrls(hashes) {
+            if (!hashes || hashes.length === 0) return;
+
+            // まだ解決されていないハッシュだけをフィルタ
+            const unresolvedHashes = hashes.filter(h => h && !resolvedUrlCache.has(h) && !h.startsWith('/proxy/') && !h.startsWith('http'));
+            if (unresolvedHashes.length === 0) return;
+
+            // 前回のリクエスト完了を待ってから送信（キュー方式）
+            _resolveUrlsPromise = _resolveUrlsPromise.then(async () => {
+                // 再度フィルタ（前回のリクエストで解決された可能性がある）
+                const stillUnresolved = unresolvedHashes.filter(h => !resolvedUrlCache.has(h));
+                if (stillUnresolved.length === 0) return;
+
+                try {
+                    const response = await fetch('/api/resolve-urls', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ hashes: stillUnresolved }),
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.urls) {
+                            for (const [hash, url] of Object.entries(data.urls)) {
+                                resolvedUrlCache.set(hash, url);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn('バッチURL解決失敗:', e);
+                }
+            });
+
+            return _resolveUrlsPromise;
+        }
+
+        // バックグラウンドプリフェッチ管理
+        const prefetchedSet = new Set();  // 既にプリフェッチ済みのURL
+        let prefetchQueue = [];           // プリフェッチキュー
+        let prefetchRunning = false;
+
+        /**
+         * バックグラウンドでブラウザキャッシュに画像を先読みする
+         * DOM生成を待たずに読み込みが始まる
+         */
+        function schedulePrefetch(urls) {
+            for (const url of urls) {
+                if (url && !prefetchedSet.has(url)) {
+                    prefetchQueue.push(url);
+                }
+            }
+            if (!prefetchRunning) {
+                processPrefetchQueue();
+            }
+        }
+
+        function processPrefetchQueue() {
+            if (prefetchQueue.length === 0) {
+                prefetchRunning = false;
+                return;
+            }
+            prefetchRunning = true;
+
+            // 同時に最大6つずつプリフェッチ
+            const batch = prefetchQueue.splice(0, 6);
+            let completed = 0;
+            const onDone = () => {
+                completed++;
+                if (completed >= batch.length) {
+                    // 少し待ってから次のバッチ（ネットワーク圧迫防止）
+                    setTimeout(processPrefetchQueue, 30);
+                }
+            };
+
+            batch.forEach(url => {
+                if (prefetchedSet.has(url)) {
+                    onDone();
+                    return;
+                }
+                prefetchedSet.add(url);
+                const img = new Image();
+                img.onload = onDone;
+                img.onerror = onDone;
+                img.src = url;
+            });
+        }
 
         async function loadGalleryData(galleryId) {
             try {
@@ -2074,6 +2169,19 @@
                     renderPagesByMode();
                 }
 
+                // 全ハッシュを即座にバッチ解決（初期ページ含む）
+                // 初期ページの描画と並行してURL解決を開始
+                const resolvePromise = batchResolveUrls(imageUrls);
+
+                // バッチ解決完了後にバックグラウンドプリフェッチ
+                resolvePromise.then(() => {
+                    // 初期描画範囲の次からプリフェッチ
+                    const prefetchUrls = imageUrls
+                        .slice(INITIAL_PAGE_LOAD_COUNT, INITIAL_PAGE_LOAD_COUNT + BACKGROUND_PREFETCH_COUNT)
+                        .map(u => getImageSrc(u));
+                    schedulePrefetch(prefetchUrls);
+                });
+
                 // 保存済み位置があれば反映（存在しない場合は0）
                 currentPageIndex = Math.max(0, Math.min(savedPageIndex, imageUrls.length - 1));
                 if ((currentReadingMode === 'vertical' || currentReadingMode === 'horizontal') && currentPageIndex > 0) {
@@ -2145,7 +2253,11 @@
             const existingCount = pages.length;
             const targetCount = Math.min(imageUrls.length, currentIndex + 1 + PRELOAD_AHEAD_COUNT);
 
-            if (targetCount <= existingCount) return;
+            if (targetCount <= existingCount) {
+                // DOM追加不要でも、バックグラウンドプリフェッチは実行
+                triggerBackgroundPrefetch(currentIndex);
+                return;
+            }
 
             for (let i = existingCount; i < targetCount; i++) {
                 const pageEl = createPageElement(imageUrls[i], i);
@@ -2159,14 +2271,36 @@
             updatePageIndicator();
             // 画像サイズを更新
             updateImageSize();
+
+            // さらに先のページをバックグラウンドプリフェッチ
+            triggerBackgroundPrefetch(currentIndex);
+        }
+
+        /**
+         * 現在位置からBACKGROUND_PREFETCH_COUNT先までの画像をバックグラウンドでブラウザキャッシュに投入
+         */
+        function triggerBackgroundPrefetch(currentIndex) {
+            const start = currentIndex + 1 + PRELOAD_AHEAD_COUNT;
+            const end = Math.min(imageUrls.length, currentIndex + 1 + BACKGROUND_PREFETCH_COUNT);
+            if (start >= end) return;
+
+            const prefetchUrls = imageUrls.slice(start, end).map(u => getImageSrc(u));
+            schedulePrefetch(prefetchUrls);
         }
 
         // スクロールやナビゲーションでの移動時に先読みを仕込む
         function setupPreloadOnNavigation() {
             if (typeof window !== 'undefined') {
+                // throttle: 100ms間隔で先読みチェック
+                let scrollTimer = null;
                 window.addEventListener('scroll', () => {
                     if (currentReadingMode === 'vertical' || currentReadingMode === 'horizontal') {
-                        preloadMorePagesIfNeeded(currentPageIndex);
+                        if (!scrollTimer) {
+                            scrollTimer = setTimeout(() => {
+                                scrollTimer = null;
+                                preloadMorePagesIfNeeded(currentPageIndex);
+                            }, 100);
+                        }
                     }
                 }, { passive: true });
             }
@@ -2354,75 +2488,45 @@
             if (!imageUrl || imageUrl.trim() === '') {
                 return ERROR_IMAGE_SRC;
             }
+            // バッチ解決済みURLがあればそちらを使用
+            if (resolvedUrlCache.has(imageUrl)) {
+                return resolvedUrlCache.get(imageUrl);
+            }
             return imageUrl.startsWith('/proxy/') ? imageUrl : `/proxy/${imageUrl}`;
         }
 
-        // 503エラー時にリトライする画像読み込み関数
-        async function loadImageWithRetry(img, url) {
-            const RETRY_DELAY = 1000;
-            const controller = new AbortController();
-            img._abortController = controller; // キャンセル用にコントローラーを保持
+        /**
+         * 軽量な画像読み込み: img.src直接設定 + onerrorリトライ
+         * fetch+blob方式より軽量で、ブラウザの画像キャッシュを活用できる
+         */
+        function loadImageWithRetry(img, url, attempt = 0) {
+            const MAX_RETRIES = 5;
+            const BASE_DELAY = 500;  // 500ms → 1s → 2s → 4s → 8s
 
-            const fetchImage = async () => {
-                if (controller.signal.aborted) return;
-
-                try {
-                    // data: URLなどの場合はそのまま設定
-                    if (url.startsWith('data:')) {
-                        img.src = url;
-                        return;
-                    }
-
-                    const response = await fetch(url, { signal: controller.signal });
-                    if (response.status === 503) {
-                        if (controller.signal.aborted) return;
-                        console.warn(`503 Service Unavailable: ${url}. Retrying in ${RETRY_DELAY}ms...`);
-                        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-                        return fetchImage();
-                    }
-
-                    if (!response.ok) {
-                        console.error(`Failed to load image: ${url}, status: ${response.status}`);
-                        img.src = ERROR_IMAGE_SRC;
-                        return;
-                    }
-
-                    const blob = await response.blob();
-                    if (controller.signal.aborted) return;
-
-                    const objectUrl = URL.createObjectURL(blob);
-
-                    // 既存のBlob URLがあれば解放
-                    if (img.src && img.src.startsWith('blob:')) {
-                        URL.revokeObjectURL(img.src);
-                    }
-
-                    img.src = objectUrl;
-                    img.dataset.blobUrl = "true";
-
-                } catch (error) {
-                    if (error.name === 'AbortError') return;
-                    console.error(`Error loading image ${url}:`, error);
+            // 画像ソースを設定する前にエラーハンドラを設定
+            img.onerror = () => {
+                if (attempt < MAX_RETRIES) {
+                    const delay = BASE_DELAY * Math.pow(2, attempt);
+                    console.warn(`画像読込失敗 (試行${attempt + 1}/${MAX_RETRIES}): ${url}, ${delay}ms後にリトライ`);
+                    setTimeout(() => {
+                        // キャッシュ回避用のタイムスタンプ付加
+                        const retryUrl = url.includes('?')
+                            ? `${url}&_r=${Date.now()}`
+                            : `${url}?_r=${Date.now()}`;
+                        loadImageWithRetry(img, retryUrl, attempt + 1);
+                    }, delay);
+                } else {
+                    console.error(`画像読込失敗 (全リトライ失敗): ${url}`);
+                    img.onerror = null;
                     img.src = ERROR_IMAGE_SRC;
                 }
             };
 
-            fetchImage();
+            img.src = url;
         }
 
         function clearMangaPagesContainer() {
             if (!mangaPagesContainer) return;
-            const images = mangaPagesContainer.querySelectorAll('img');
-            images.forEach(img => {
-                // 読み込み中のリクエストをキャンセル
-                if (img._abortController) {
-                    img._abortController.abort();
-                }
-                // Blob URLの解放
-                if (img.src && img.src.startsWith('blob:')) {
-                    URL.revokeObjectURL(img.src);
-                }
-            });
             mangaPagesContainer.innerHTML = '';
         }
 
@@ -2432,21 +2536,14 @@
             pageDiv.dataset.index = index;
 
             const img = document.createElement('img');
-            // img.src = getImageSrc(imageUrl); // 503リトライ対応のため廃止
             img.alt = `漫画ページ ${index + 1}`;
-            img.addEventListener('error', () => {
-                // Fetchでのエラーハンドリングが基本だが、もし設定されたURLがエラーになった場合のフォールバック
-                if (!img.src.startsWith('blob:')) {
-                    img.src = ERROR_IMAGE_SRC;
-                }
-            });
 
             // 現在の画像サイズ設定を適用
             applyImageSizeClass(img);
 
             pageDiv.appendChild(img);
 
-            // 画像読み込み開始
+            // 軽量画像読み込み開始
             loadImageWithRetry(img, getImageSrc(imageUrl));
 
             return pageDiv;

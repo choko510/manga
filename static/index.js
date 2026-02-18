@@ -2,13 +2,13 @@
     const LIMIT = 30;
     const SEARCH_CACHE_MAX_SIZE = 60;
     const PAGINATION_MAX_BUTTONS = 5;
-    const PRIORITY_IMAGE_COUNT = 4;
+    const PRIORITY_IMAGE_COUNT = 6;
     const VISIBLE_TAGS_COUNT = 5;
     const HISTORY_DISPLAY_COUNT = 8;
     const RECOMMENDATION_LIMIT = 20;
     const DEBOUNCE_DELAY_MS = 400;
     const TRACKING_MAX_TAGS = 50;
-    const OBSERVER_ROOT_MARGIN = '200px 0px';
+    const OBSERVER_ROOT_MARGIN = '600px 0px';
     let currentPage = 1;
     let currentQuery = '';
     let currentResolvedQuery = '';
@@ -541,11 +541,10 @@
                 const endItem = Math.min(currentPage * LIMIT, totalCount);
                 elements.resultMeta.textContent = `${startItem}-${endItem} 件を表示中 / 合計 ${totalCount} 件${hiddenTags.length ? '（除外タグ反映）' : ''}`;
 
-                // 次のページのサムネイルを先読み
+                // 次のページのサムネイルを先読み（即座に開始 + 全画像ロード後にも）
                 if (currentPage < totalPages) {
-                    waitForAllImagesLoaded(elements.cardGrid).then(() => {
-                        prefetchNextPageThumbnails(currentPage + 1, sortBy, currentUnifiedQuery);
-                    });
+                    // 即座に先読み開始（全画像ロードを待たない）
+                    prefetchNextPageThumbnails(currentPage + 1, sortBy, currentUnifiedQuery);
                 }
             }
         } catch (error) {

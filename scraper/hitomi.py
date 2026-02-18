@@ -1,5 +1,4 @@
 from __future__ import annotations
-import aiohttp
 import mmap
 import os
 import struct
@@ -329,7 +328,7 @@ class NozomiReader:
             total_items = total_bytes // 4 if total_bytes is not None else None
             return NozomiFileInfo(self.source, total_items, total_bytes)
 
-def load_existing_galleries(galleries_file: str = "galleries.txt") -> Set[int]:
+def load_existing_galleries(galleries_file: str = "cache/galleries.txt") -> Set[int]:
     """
     既存のギャラリーIDをgalleries.txtから読み込む
     ファイルが存在しない場合はread_galleries.pyで生成する

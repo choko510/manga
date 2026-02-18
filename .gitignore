@@ -5,5 +5,8 @@
 *.md
 chores
 *.txt
+!requirements.txt
 data
 cache
+__pycache__ 
+tag-translations.json

@@ -38,6 +38,11 @@ def get_nozomi_uri(options: Optional[dict] = None) -> str:
     return f"{RESOURCE_DOMAIN}/{prefix}/{path}-{language}.nozomi"
 
 
+async def async_get_nozomi_uri(options: Optional[dict] = None) -> str:
+    """Async version of get_nozomi_uri (currently synchronous operation)."""
+    return get_nozomi_uri(options)
+
+
 def get_tag_uri(tag_type: str, starts_with: Optional[StartingCharacter] = None) -> str:
     is_language = tag_type == "language"
     has_starts_with = starts_with is not None
@@ -61,6 +66,11 @@ def get_tag_uri(tag_type: str, starts_with: Optional[StartingCharacter] = None) 
             path += f"-{suffix}.html"
         return f"{subdomain}{BASE_DOMAIN}/{path}"
     raise HitomiError(ErrorCode.INVALID_VALUE, "startsWith", "not be used with language")
+
+
+async def async_get_tag_uri(tag_type: str, starts_with: Optional[StartingCharacter] = None) -> str:
+    """Async version of get_tag_uri (currently synchronous operation)."""
+    return get_tag_uri(tag_type, starts_with)
 
 
 def get_video_uri(gallery: Gallery) -> str:

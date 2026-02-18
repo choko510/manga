@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 
-import aiohttp
+import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -42,7 +42,7 @@ from lib import ImageUriResolver
 class GlobalState:
     """グローバル変数を管理するクラス"""
     def __init__(self):
-        self.global_session: Optional[aiohttp.ClientSession] = None
+        self.global_session: Optional[httpx.AsyncClient] = None
         self.scheduler_task: Optional[asyncio.Task] = None
         self.ranking_scheduler_task: Optional[asyncio.Task] = None
         self.personalization_enabled: bool = True
@@ -64,7 +64,7 @@ class GlobalState:
                 print("ランキング更新スケジューラ停止")
         
         if self.global_session:
-            await self.global_session.close()
+            await self.global_session.aclose()
             print("Global session closed")
 
 # グローバル状態のインスタンス
@@ -151,7 +151,7 @@ class ThumbnailCache:
 thumbnail_cache = ThumbnailCache()
 
 # グローバル変数（後方互換性）
-global_session: Optional[aiohttp.ClientSession] = None
+global_session: Optional[httpx.AsyncClient] = None
 
 # =========================
 # データベース設定
@@ -288,6 +288,21 @@ class SearchHistory(TrackingBase):
         Index('ix_search_history_user_tag', 'user_id', 'tag', unique=True),
     )
 
+class TrackingMangaView(TrackingBase):
+    """
+    セッションベースの漫画閲覧詳細ログ。
+    build_session_tag_profile() で使用される。
+    """
+    __tablename__ = "tracking_manga_views"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, index=True)
+    page_url = Column(String)
+    time_on_page = Column(Integer, nullable=True)
+    view_start = Column(String, nullable=True)
+    view_end = Column(String, nullable=True)
+    manga_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
 class UserSnapshot(TrackingBase):
     __tablename__ = 'user_snapshots'
 
@@ -323,12 +338,14 @@ DEFAULT_CLIENT_HEADERS: Dict[str, str] = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "Chrome/133.0.0.0 Safari/537.36"
     ),
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
     "Referer": "https://hitomi.la/",
+    "Origin": "https://hitomi.la",
 }
 
 def _build_headers(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -938,6 +955,10 @@ def _serve_cached_html(path: str) -> HTMLResponse:
 async def _read_json_file(path: Path, default: Any) -> Any:
     def _load() -> Any:
         if not path.exists():
+            # tag-translations.json が存在しない場合は空のオブジェクトで作成
+            if path == TAG_TRANSLATIONS_FILE:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}", encoding="utf-8")
             return default
         content = path.read_text(encoding="utf-8")
         if not content.strip():
@@ -967,16 +988,16 @@ class MultipartDownloadError(Exception):
 # =========================
 class ImageProxyCache:
     """
-    LRUベースのインメモリ画像キャッシュ
+    LRUベースのインメモリ画像キャッシュ（OrderedDict版・O(1)操作）
     - 小さい画像（サムネイル等）を高速に返すためのキャッシュ
     - サイズ制限と有効期限でメモリ使用量を制御
+    - OrderedDictでLRU追跡をO(1)で実行
     """
-    def __init__(self, max_size_bytes: int = 150 * 1024 * 1024, max_item_size: int = 512 * 1024, ttl_seconds: int = 600):
-        self._cache: Dict[str, Tuple[bytes, str, float]] = {}  # {key: (data, content_type, timestamp)}
-        self._access_order: List[str] = []  # LRU tracking
+    def __init__(self, max_size_bytes: int = 200 * 1024 * 1024, max_item_size: int = 1024 * 1024, ttl_seconds: int = 600):
+        self._cache: OrderedDict[str, Tuple[bytes, str, float]] = OrderedDict()
         self._current_size: int = 0
         self._max_size = max_size_bytes
-        self._max_item_size = max_item_size  # 個別アイテムの最大サイズ（これ以上はキャッシュしない）
+        self._max_item_size = max_item_size
         self._ttl = ttl_seconds
         self._lock = asyncio.Lock()
         self._hits = 0
@@ -994,14 +1015,11 @@ class ImageProxyCache:
                 data, content_type, ts = self._cache[key]
                 # TTLチェック
                 if time.time() - ts > self._ttl:
-                    # 期限切れ
                     self._evict_key(key)
                     self._misses += 1
                     return None
-                # LRU更新
-                if key in self._access_order:
-                    self._access_order.remove(key)
-                self._access_order.append(key)
+                # LRU更新: O(1) — move_to_end
+                self._cache.move_to_end(key)
                 self._hits += 1
                 return data, content_type
             self._misses += 1
@@ -1010,7 +1028,7 @@ class ImageProxyCache:
     async def set(self, url: str, data: bytes, content_type: str) -> None:
         """キャッシュに保存（サイズ制限を超えるアイテムはスキップ）"""
         if len(data) > self._max_item_size:
-            return  # 大きすぎるアイテムはキャッシュしない
+            return
         
         key = self._make_key(url)
         async with self._lock:
@@ -1018,23 +1036,25 @@ class ImageProxyCache:
             if key in self._cache:
                 self._evict_key(key)
             
-            # スペースを確保
-            while self._current_size + len(data) > self._max_size and self._access_order:
-                oldest_key = self._access_order[0]
-                self._evict_key(oldest_key)
+            # スペースを確保: O(1) — popitem(last=False)
+            while self._current_size + len(data) > self._max_size and self._cache:
+                self._evict_oldest()
             
-            # 追加
+            # 追加（末尾 = 最新）
             self._cache[key] = (data, content_type, time.time())
-            self._access_order.append(key)
             self._current_size += len(data)
     
     def _evict_key(self, key: str) -> None:
-        """キーを削除（ロック保持前提）"""
+        """特定キーを削除（ロック保持前提）"""
         if key in self._cache:
             data, _, _ = self._cache.pop(key)
             self._current_size -= len(data)
-        if key in self._access_order:
-            self._access_order.remove(key)
+    
+    def _evict_oldest(self) -> None:
+        """最も古いエントリを削除（ロック保持前提）— O(1)"""
+        if self._cache:
+            _, (data, _, _) = self._cache.popitem(last=False)
+            self._current_size -= len(data)
     
     def stats(self) -> Dict[str, Any]:
         """統計情報を取得"""
@@ -2902,6 +2922,62 @@ async def search_galleries_get(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"検索エラー: {str(e)}")
 
+
+class ResolveUrlsRequest(BaseModel):
+    """バッチURL解決リクエスト"""
+    hashes: List[str]
+    thumbnail: bool = False
+    small: bool = False
+
+
+@app.post("/api/resolve-urls")
+async def resolve_urls_batch(request: ResolveUrlsRequest):
+    """
+    ハッシュ配列を一括でCDN URLに解決するバッチAPI。
+    フロントエンドの先読み・並列ダウンロードを高速化するためのエンドポイント。
+    
+    リクエスト:
+      hashes: ハッシュ文字列の配列
+      thumbnail: サムネイル画像の場合true
+      small: 小さいサムネイルの場合true
+    
+    レスポンス:
+      urls: {hash: proxy_url} のマッピング
+    """
+    resolver_ready = await _ensure_image_resolver_ready()
+    if not resolver_ready:
+        raise HTTPException(status_code=503, detail="ImageUriResolver is not ready")
+    
+    results: Dict[str, str] = {}
+    for h in request.hashes:
+        h_lower = h.lower().strip()
+        if not h_lower:
+            continue
+        try:
+            image = SimpleNamespace(
+                hash=h_lower,
+                has_avif=True,
+                has_webp=True,
+                has_jxl=False,
+            )
+            resolved = ImageUriResolver.get_image_uri(
+                image,
+                "avif",
+                is_thumbnail=request.thumbnail,
+                is_small=request.small,
+            )
+            # /proxy/ 経由のURLを生成（Referer/Origin付きプロキシが必要なため）
+            results[h] = f"/proxy/{resolved}"
+        except Exception:
+            # 解決失敗したhashはスキップ
+            results[h] = f"/proxy/{h_lower}"
+    
+    return JSONResponse(
+        content={"urls": results},
+        headers={"Cache-Control": "public, max-age=120"},  # 2分間ブラウザキャッシュ
+    )
+
+
 @app.get("/proxy/{hash_or_path:path}")
 async def proxy_request(
     hash_or_path: str,
@@ -2982,11 +3058,11 @@ async def proxy_request(
     session = global_session
     created_local = False
     if session is None:
-        connector = aiohttp.TCPConnector(limit=50, limit_per_host=20, ttl_dns_cache=300)
-        session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=60, connect=10, sock_read=30),
+        session = httpx.AsyncClient(
+            http2=True,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+            timeout=httpx.Timeout(timeout=60.0, connect=10.0, read=30.0),
             headers=headers,
-            connector=connector,
         )
         created_local = True
     
@@ -2994,26 +3070,26 @@ async def proxy_request(
     retry_delay = 0.5
     
     # 定数（ループ外で定義してパフォーマンス向上）
-    PARALLEL_THRESHOLD = 256 * 1024  # 256KB以上で並列化
-    CHUNK_SIZE = 128 * 1024  # 128KBチャンク
-    MAX_PARALLEL_CONNECTIONS = 6
-    STREAMING_THRESHOLD = 512 * 1024  # 512KB以下はバッファ
+    PARALLEL_THRESHOLD = 128 * 1024  # 128KB以上で並列化（閾値を下げてより多くの画像で並列化）
+    CHUNK_SIZE = 256 * 1024  # 256KBチャンク（大きめのチャンクで往復回数削減）
+    MAX_PARALLEL_CONNECTIONS = 8  # 並列接続数を増加
+    STREAMING_THRESHOLD = 1024 * 1024  # 1MB以下はバッファ（キャッシュ対象を拡大）
     
     try:
         for attempt in range(max_retries + 1):
             try:
-                # === GETリクエスト開始（HEADリクエスト省略で1往復節約）===
-                async with session.get(url, headers=headers) as resp:
-                    if resp.status >= 500:
+                # === GETリクエスト開始（ストリーミングモードでヘッダを先に取得）===
+                async with session.stream("GET", url, headers=headers) as resp:
+                    if resp.status_code >= 500:
                         if attempt < max_retries:
                             await asyncio.sleep(retry_delay * (2 ** attempt))
                             continue
-                        raise HTTPException(status_code=resp.status, detail=f"Upstream 5xx: {resp.status}")
+                        raise HTTPException(status_code=resp.status_code, detail=f"Upstream 5xx: {resp.status_code}")
                     
-                    if resp.status >= 400:
-                        raise HTTPException(status_code=resp.status, detail=f"Upstream error: {resp.status}")
+                    if resp.status_code >= 400:
+                        raise HTTPException(status_code=resp.status_code, detail=f"Upstream error: {resp.status_code}")
                     
-                    content_type = resp.content_type or "application/octet-stream"
+                    content_type = resp.headers.get("content-type", "application/octet-stream")
                     resp_length = resp.headers.get("Content-Length")
                     total_length = int(resp_length) if resp_length and resp_length.isdigit() else None
                     accept_ranges = resp.headers.get("Accept-Ranges", "")
@@ -3021,15 +3097,14 @@ async def proxy_request(
                     
                     # === 大きいファイル + Range対応 → 並列ダウンロードに切り替え ===
                     if content_type.startswith("image/") and supports_range and total_length and total_length > PARALLEL_THRESHOLD:
-                        # 最初のチャンクを読み込み済みの場合があるので、respを閉じて並列ダウンロードに切り替え
-                        # ここではrespはまだデータを読んでいないので、単に並列ダウンロードに移行
+                        # ストリームを閉じて並列ダウンロードに移行
                         pass  # async withを抜けた後に並列ダウンロードを実行
                     else:
-                        # === 通常ダウンロード（ストリーミング対応）===
+                        # === 通常ダウンロード ===
                         if content_type.startswith("image/"):
                             # 小さいファイル: 一括読み込み + キャッシュ
                             if total_length and total_length <= STREAMING_THRESHOLD:
-                                data = await resp.read()
+                                data = await resp.aread()
                                 await _image_proxy_cache.set(url, data, content_type)
                                 if use_cache:
                                     thumbnail_cache.put(cache_key, data, content_type)
@@ -3045,10 +3120,8 @@ async def proxy_request(
                                 )
                             
                             # 中〜大ファイル（Range非対応）: ストリーミングレスポンス
-                            async def stream_content():
-                                async for chunk in resp.content.iter_chunked(64 * 1024):
-                                    yield chunk
-                            
+                            # httpx streamの場合、データを取得してからStreamingResponseを返す
+                            data = await resp.aread()
                             response_headers = {
                                 'Cache-Control': 'public, max-age=86400',
                                 'Access-Control-Allow-Origin': '*',
@@ -3058,14 +3131,14 @@ async def proxy_request(
                             if total_length:
                                 response_headers['Content-Length'] = str(total_length)
                             
-                            return StreamingResponse(
-                                stream_content(),
+                            return Response(
+                                content=data,
                                 media_type=content_type,
                                 headers=response_headers,
                             )
                         else:
                             # 非画像コンテンツ
-                            content = await resp.text()
+                            content = (await resp.aread()).decode("utf-8", errors="replace")
                             return HTMLResponse(content=content)
                 
                 # === 並列ダウンロード（async with外で実行）===
@@ -3096,12 +3169,20 @@ async def proxy_request(
                         },
                     )
                 except MultipartDownloadError:
-                    # 並列ダウンロード失敗 → 通常のGETで再取得
-                    async with session.get(url, headers=headers) as fallback_resp:
-                        if fallback_resp.status >= 400:
-                            raise HTTPException(status_code=fallback_resp.status, detail=f"Upstream error: {fallback_resp.status}")
-                        data = await fallback_resp.read()
-                        ct = fallback_resp.content_type or "image/avif"
+                    # 並列ダウンロード失敗 → 通常のGETで再取得（リトライ付き）
+                    fallback_last_status = 0
+                    for fb_attempt in range(max_retries + 1):
+                        fallback_resp = await session.get(url, headers=headers)
+                        fallback_last_status = fallback_resp.status_code
+                        if fallback_resp.status_code >= 500:
+                            if fb_attempt < max_retries:
+                                await asyncio.sleep(retry_delay * (2 ** fb_attempt))
+                                continue
+                            raise HTTPException(status_code=fallback_resp.status_code, detail=f"Upstream 5xx (fallback): {fallback_resp.status_code}")
+                        if fallback_resp.status_code >= 400:
+                            raise HTTPException(status_code=fallback_resp.status_code, detail=f"Upstream error (fallback): {fallback_resp.status_code}")
+                        data = fallback_resp.content
+                        ct = fallback_resp.headers.get("content-type", "image/avif")
                         await _image_proxy_cache.set(url, data, ct)
                         if use_cache:
                             thumbnail_cache.put(cache_key, data, ct)
@@ -3115,15 +3196,16 @@ async def proxy_request(
                                 'X-Download-Mode': 'fallback',
                             },
                         )
+                    raise HTTPException(status_code=fallback_last_status or 503, detail=f"Upstream 5xx (fallback exhausted): {fallback_last_status}")
                         
-            except aiohttp.ClientError as e:
+            except httpx.HTTPError as e:
                 if attempt < max_retries:
                     await asyncio.sleep(retry_delay * (2 ** attempt))
                     continue
                 raise HTTPException(status_code=500, detail=f"Proxy client error: {str(e)}")
     finally:
         if created_local:
-            await session.close()
+            await session.aclose()
 
 
 # キャッシュ統計API
@@ -3133,16 +3215,15 @@ async def get_proxy_cache_stats():
     return _image_proxy_cache.stats()
 
 
-async def _download_entire(session: aiohttp.ClientSession, url: str, headers: Dict[str, str]) -> Tuple[bytes, Optional[str]]:
-    async with session.get(url, headers=headers) as resp:
-        if resp.status >= 400:
-            raise HTTPException(status_code=resp.status, detail=f"upstream responded with status {resp.status}")
-        content_type = resp.headers.get("Content-Type")
-        data = await resp.read()
-        return data, content_type
+async def _download_entire(client: httpx.AsyncClient, url: str, headers: Dict[str, str]) -> Tuple[bytes, Optional[str]]:
+    resp = await client.get(url, headers=headers)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=f"upstream responded with status {resp.status_code}")
+    content_type = resp.headers.get("content-type")
+    return resp.content, content_type
 
 async def _download_with_ranges(
-    session: aiohttp.ClientSession,
+    client: httpx.AsyncClient,
     url: str,
     headers: Dict[str, str],
     chunk_size: int,
@@ -3157,18 +3238,17 @@ async def _download_with_ranges(
     range_headers = headers.copy()
     range_headers["Range"] = f"bytes=0-{first_end}"
 
-    async with session.get(url, headers=range_headers) as resp:
-        if resp.status == 206:
-            content_type = content_type or resp.headers.get("Content-Type")
-            first_chunk = await resp.read()
-            if len(first_chunk) != first_end + 1:
-                raise MultipartDownloadError("First chunk size mismatch")
-        elif resp.status == 200:
-            data = await resp.read()
-            content_type = content_type or resp.headers.get("Content-Type")
-            return data, content_type
-        else:
-            raise MultipartDownloadError(f"Range request failed: status={resp.status}")
+    resp = await client.get(url, headers=range_headers)
+    if resp.status_code == 206:
+        content_type = content_type or resp.headers.get("content-type")
+        first_chunk = resp.content
+        if len(first_chunk) != first_end + 1:
+            raise MultipartDownloadError("First chunk size mismatch")
+    elif resp.status_code == 200:
+        content_type = content_type or resp.headers.get("content-type")
+        return resp.content, content_type
+    else:
+        raise MultipartDownloadError(f"Range request failed: status={resp.status_code}")
 
     ranges: List[Tuple[int, int]] = []
     offset = first_end + 1
@@ -3183,14 +3263,14 @@ async def _download_with_ranges(
         chunk_headers = headers.copy()
         chunk_headers["Range"] = f"bytes={start}-{end}"
         async with sem:
-            async with session.get(url, headers=chunk_headers) as resp:
-                if resp.status != 206:
-                    raise MultipartDownloadError(f"Range request failed: status={resp.status}")
-                data = await resp.read()
-                expected = end - start + 1
-                if len(data) != expected:
-                    raise MultipartDownloadError("Chunk size mismatch")
-                return start, data
+            resp = await client.get(url, headers=chunk_headers)
+            if resp.status_code != 206:
+                raise MultipartDownloadError(f"Range request failed: status={resp.status_code}")
+            data = resp.content
+            expected = end - start + 1
+            if len(data) != expected:
+                raise MultipartDownloadError("Chunk size mismatch")
+            return start, data
 
     tasks = [asyncio.create_task(fetch_range(start, end)) for start, end in ranges]
     try:
@@ -3202,33 +3282,36 @@ async def _download_with_ranges(
             task.cancel()
         raise
 
-    parts = [(0, first_chunk)]
-    parts.extend(other_chunks)
-    parts.sort(key=lambda item: item[0])
+    # bytearrayで事前アロケート（b"".joinよりメモリ効率が良い）
+    combined = bytearray(total_length)
+    combined[0:len(first_chunk)] = first_chunk
+    for offset, chunk_data in other_chunks:
+        combined[offset:offset + len(chunk_data)] = chunk_data
+    return bytes(combined), content_type
 
-    combined = b"".join(part for _, part in parts)
-    return combined, content_type
-
-async def _warmup_connections(session: aiohttp.ClientSession):
+async def _warmup_connections(client: httpx.AsyncClient):
     """
     事前接続ウォームアップ
-    - 複数ドメインに並列で接続してTCP/TLSハンドシェイクを事前完了
+    - 画像配信で使われる全サブドメインに並列で接続してTCP/TLSハンドシェイクを事前完了
+    - HTTP/2の場合、ALPN経由でプロトコルネゴシエーションも事前完了
     - 接続プールを温めて初回リクエストを高速化
     """
     domains = [
+        # 画像配信サブドメイン
         "a1.gold-usergeneratedcontent.net",
         "a2.gold-usergeneratedcontent.net",
-        "a3.gold-usergeneratedcontent.net",
-        "b.gold-usergeneratedcontent.net",
+        "w1.gold-usergeneratedcontent.net",
+        "w2.gold-usergeneratedcontent.net",
+        # サムネイル配信
+        "tn.gold-usergeneratedcontent.net",
     ]
     
     async def warmup_single(domain: str) -> None:
         url = f"https://{domain}"
         try:
-            async with session.head(url) as resp:
-                print(f"事前接続成功: {domain} (Status: {resp.status})")
-        except Exception as e:
-            print(f"事前接続失敗: {domain} (Error: {str(e)[:50]})")
+            await client.head(url, follow_redirects=False)
+        except Exception:
+            pass  # ウォームアップ失敗は無視（起動を遅延させない）
     
     # 並列でウォームアップ
     tasks = [warmup_single(domain) for domain in domains]
@@ -3236,11 +3319,10 @@ async def _warmup_connections(session: aiohttp.ClientSession):
     print(f"接続ウォームアップ完了 ({len(domains)}ドメイン)")
 
 
-async def _download_single_url(session: aiohttp.ClientSession, url: str, headers: Dict[str, str]) -> Dict[str, str]:
+async def _download_single_url(client: httpx.AsyncClient, url: str, headers: Dict[str, str]) -> Dict[str, str]:
     try:
-        async with session.get(url, headers=headers) as resp:
-            content = await resp.text()
-            return {"url": url, "status": "success", "content": content, "status_code": str(resp.status)}
+        resp = await client.get(url, headers=headers)
+        return {"url": url, "status": "success", "content": resp.text, "status_code": str(resp.status_code)}
     except Exception as exc:
         return {"url": url, "status": "error", "content": str(exc), "status_code": "500"}
 
@@ -3253,7 +3335,11 @@ async def download_multiple(request: DownloadRequest):
     
     # global_sessionがNoneの場合はローカルセッションを作成
     if global_session is None:
-        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), headers=headers)
+        session = httpx.AsyncClient(
+            http2=True,
+            timeout=httpx.Timeout(timeout=30.0),
+            headers=headers,
+        )
         created_local = True
     else:
         session = global_session
@@ -3272,7 +3358,7 @@ async def download_multiple(request: DownloadRequest):
         return DownloadResponse(results=results)
     finally:
         if created_local:
-            await session.close()
+            await session.aclose()
 
 @app.post("/download-multipart")
 async def download_multipart(request: MultipartDownloadRequest):
@@ -3287,25 +3373,24 @@ async def download_multipart(request: MultipartDownloadRequest):
         request.max_connections = 16
 
     headers = _build_headers(request.headers)
-    timeout = aiohttp.ClientTimeout(total=None)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with httpx.AsyncClient(http2=True, timeout=httpx.Timeout(timeout=300.0)) as client:
         total_length: Optional[int] = None
         content_type: Optional[str] = None
         try:
-            async with session.head(request.url, headers=headers) as head_resp:
-                if head_resp.status < 400:
-                    content_type = head_resp.headers.get("Content-Type")
-                    length_header = head_resp.headers.get("Content-Length")
-                    if length_header and length_header.isdigit():
-                        total_length = int(length_header)
-        except aiohttp.ClientError:
+            head_resp = await client.head(request.url, headers=headers)
+            if head_resp.status_code < 400:
+                content_type = head_resp.headers.get("content-type")
+                length_header = head_resp.headers.get("content-length")
+                if length_header and length_header.isdigit():
+                    total_length = int(length_header)
+        except httpx.HTTPError:
             pass
 
         use_multipart = total_length is not None and total_length > request.chunk_size
         if use_multipart:
             try:
                 data, final_type = await _download_with_ranges(
-                    session,
+                    client,
                     request.url,
                     headers,
                     request.chunk_size,
@@ -3314,9 +3399,9 @@ async def download_multipart(request: MultipartDownloadRequest):
                     content_type,
                 )
             except MultipartDownloadError:
-                data, final_type = await _download_entire(session, request.url, headers)
+                data, final_type = await _download_entire(client, request.url, headers)
         else:
-            data, final_type = await _download_entire(session, request.url, headers)
+            data, final_type = await _download_entire(client, request.url, headers)
 
     response_headers: Dict[str, str] = {}
     if request.as_attachment:
@@ -3343,17 +3428,22 @@ async def get_gallery(gallery_id: int):
                 print(f"files 解析エラー: {e}, gallery_id: {gallery.gallery_id}")
                 image_urls = []
                 files_list = []
-            return {
-                "gallery_id": gallery.gallery_id,
-                "japanese_title": gallery.japanese_title,
-                "artists": gallery.artists,
-                "tags": gallery.tags,
-                "characters": gallery.characters,
-                "image_urls": image_urls,
-                "manga_type": gallery.manga_type,
-                "created_at": gallery.created_at,
-                "page_count": gallery.page_count if isinstance(gallery.page_count, int) and gallery.page_count >= 0 else len(files_list),
-            }
+            return JSONResponse(
+                content={
+                    "gallery_id": gallery.gallery_id,
+                    "japanese_title": gallery.japanese_title,
+                    "artists": gallery.artists,
+                    "tags": gallery.tags,
+                    "characters": gallery.characters,
+                    "image_urls": image_urls,
+                    "manga_type": gallery.manga_type,
+                    "created_at": gallery.created_at,
+                    "page_count": gallery.page_count if isinstance(gallery.page_count, int) and gallery.page_count >= 0 else len(files_list),
+                },
+                headers={
+                    "Cache-Control": "public, max-age=300",  # 5分間ブラウザキャッシュ
+                },
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -4960,17 +5050,11 @@ async def get_rankings(
 async def hourly_sync_task():
     while True:
         try:
-            current_time = datetime.now()
-            next_hour = (current_time + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-            wait_seconds = (next_hour - current_time).total_seconds()
-            print(f"次回の ImageUriResolver 同期は {next_hour.strftime('%Y-%m-%d %H:%M:%S')} に実行")
-            await asyncio.sleep(wait_seconds)
-            print("ImageUriResolver.async_synchronize() 実行")
+            await asyncio.sleep(30)
             await ImageUriResolver.async_synchronize()
-            print("ImageUriResolver 同期完了")
         except Exception as e:
             print(f"同期中にエラー: {str(e)}")
-            await asyncio.sleep(3600)
+            await asyncio.sleep(30)
 
 async def daily_ranking_update_task():
     """日次ランキング更新タスク（*_ids.txtファイルを定期的に更新）"""
@@ -5099,24 +5183,19 @@ async def startup_event():
     except Exception as e:
         print(f"ImageUriResolver 初期化エラー: {str(e)}")
 
-    # HTTP セッション（高速化最適化済み）
-    connector = aiohttp.TCPConnector(
-        limit=200,                    # 全体接続数を増加
-        limit_per_host=50,            # 同一ホストへの同時接続数を増加
-        ttl_dns_cache=600,            # DNSキャッシュを10分に延長
-        use_dns_cache=True,
-        keepalive_timeout=120,        # Keep-alive延長（接続再利用を促進）
-        force_close=False,
-        enable_cleanup_closed=True,   # 閉じた接続のクリーンアップ
-    )
-    global_session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(
-            total=60,       # 全体タイムアウト
-            connect=10,     # 接続タイムアウト
-            sock_read=30,   # 読み取りタイムアウト
+    # HTTP セッション（httpx + HTTP/2 最適化済み）
+    global_session = httpx.AsyncClient(
+        http2=True,                    # HTTP/2有効（多重化で高速化）
+        limits=httpx.Limits(
+            max_connections=200,           # 全体接続数
+            max_keepalive_connections=100,  # Keep-alive接続数
+        ),
+        timeout=httpx.Timeout(
+            timeout=60.0,      # 全体タイムアウト
+            connect=10.0,      # 接続タイムアウト
+            read=30.0,         # 読み取りタイムアウト
         ),
         headers=_build_headers(),
-        connector=connector,
     )
     global_state.global_session = global_session
 
