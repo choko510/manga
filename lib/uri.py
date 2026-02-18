@@ -109,6 +109,7 @@ class ImageUriResolver:
     _refresh_interval: float = 3600.0  # 1時間（gg.jsの更新頻度に合わせる）
     _background_refresh_in_progress: bool = False
     _cache_file: Path = Path(__file__).parent.parent / "cache" / "gg_cache.json"
+    gg_hash: str = ""
 
     @classmethod
     def _save_to_cache(cls, path_code: str, starts_with_a: bool, subdomain_codes: set[int]) -> None:

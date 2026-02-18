@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from urllib.parse import urlsplit
 
 import httpx
+import time
 
 from .constants import BASE_DOMAIN, ErrorCode, RESOURCE_DOMAIN
 from .types import IdSet, Node
@@ -178,7 +179,6 @@ def fetch(
         except Exception as e:
             last_error = e
             if attempt < max_retries - 1:
-                import time
                 time.sleep(retry_delay * (2**attempt))
 
     raise last_error or HitomiError(ErrorCode.REQUEST_REJECTED, f"https://{uri}")

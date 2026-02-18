@@ -9,6 +9,7 @@ import shlex
 import shutil
 import string
 import time
+import hashlib
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -5047,11 +5048,17 @@ async def get_rankings(
 # =========================
 # 定期同期タスク
 # =========================
-async def hourly_sync_task():
+async def sync_task():
     while True:
         try:
             await asyncio.sleep(30)
-            await ImageUriResolver.async_synchronize()
+            if global_state.global_session:
+                resp = await global_state.global_session.get("https://ltn.gold-usergeneratedcontent.net/gg.js")
+                gg_content = resp.text  
+                gg_hash = hashlib.md5(gg_content.encode("utf-8")).hexdigest()
+                if gg_hash != ImageUriResolver.gg_hash:
+                    ImageUriResolver.gg_hash = gg_hash
+                    await ImageUriResolver.async_synchronize()
         except Exception as e:
             print(f"同期中にエラー: {str(e)}")
             await asyncio.sleep(30)
@@ -5206,7 +5213,7 @@ async def startup_event():
         print(f"事前接続エラー: {str(e)}")
 
     # 同期スケジューラ開始
-    global_state.scheduler_task = asyncio.create_task(hourly_sync_task())
+    global_state.scheduler_task = asyncio.create_task(sync_task())
     print("同期スケジューラ開始")
     
     # ランキング更新スケジューラ開始
