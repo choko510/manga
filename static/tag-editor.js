@@ -215,7 +215,16 @@
     function renderTranslations(translations) {
         if (!translationsTableBody) return;
         translationsTableBody.innerHTML = '';
-        const sorted = [...translations].sort((a, b) => a.tag.localeCompare(b.tag));
+        const sorted = [...translations].sort((a, b) => {
+            const aUntranslated = !(a.translation || '').toString().trim();
+            const bUntranslated = !(b.translation || '').toString().trim();
+
+            if (aUntranslated !== bUntranslated) {
+                return aUntranslated ? -1 : 1;
+            }
+
+            return a.tag.localeCompare(b.tag);
+        });
         sorted.forEach((entry) => {
             const row = createTranslationRow(entry);
             translationsTableBody.appendChild(row);
