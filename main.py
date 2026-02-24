@@ -24,7 +24,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, Index, Integer, String, Text, func, select, text
+from sqlalchemy import Column, DateTime, Index, Integer, String, Text, func, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -953,18 +953,36 @@ def _serve_cached_html(path: str) -> HTMLResponse:
     return HTMLResponse(content=content)
 
 
+_JSON_CACHE: Dict[Path, Tuple[float, Any]] = {}
+
 async def _read_json_file(path: Path, default: Any) -> Any:
     def _load() -> Any:
-        if not path.exists():
+        try:
+            mtime = path.stat().st_mtime
+        except FileNotFoundError:
             # tag-translations.json が存在しない場合は空のオブジェクトで作成
             if path == TAG_TRANSLATIONS_FILE:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("{}", encoding="utf-8")
+                _JSON_CACHE[path] = (time.time(), {})
             return default
+
+        if path in _JSON_CACHE:
+            cached_mtime, cached_data = _JSON_CACHE[path]
+            if mtime == cached_mtime:
+                # 参照渡しによる意図しない不具合を防ぐためにディープコピーを返す
+                import copy
+                return copy.deepcopy(cached_data)
+
         content = path.read_text(encoding="utf-8")
         if not content.strip():
-            return default
-        return json.loads(content)
+            result = default
+        else:
+            result = json.loads(content)
+            
+        _JSON_CACHE[path] = (mtime, result)
+        import copy
+        return copy.deepcopy(result)
 
     try:
         return await asyncio.to_thread(_load)
@@ -2133,107 +2151,33 @@ async def build_session_tag_profile(
 
     try:
         async with get_tracking_db_session() as tracking_db:
-            stmt = (
-                select(TrackingMangaView)
-                .where(TrackingMangaView.session_id == session_id)
-                .order_by(TrackingMangaView.id.desc())
-                .limit(max_page_views)
-            )
+            stmt = select(TagPreference.tag, TagPreference.click_count, TagPreference.total_view_time).where(
+                TagPreference.user_id == session_id
+            ).limit(max_page_views)
             result = await tracking_db.execute(stmt)
-            page_views = result.scalars().all()
+            preferences = result.all()
+            
+            if not preferences:
+                return {}
+                
+            tag_weights: Dict[str, float] = {}
+            for row in preferences:
+                tag = row.tag
+                click_count = row.click_count or 0
+                total_view_time = row.total_view_time or 0
+                
+                # 計算ロジック: クリック数と閲覧時間でスコアリング
+                weight = float(click_count) + (float(total_view_time) / 120.0)
+                if weight > 0:
+                    normalized = _normalize_tag_value(tag)
+                    if normalized:
+                        tag_weights[normalized] = weight
+                        
+            return tag_weights
+            
     except Exception as exc:
         print(f"セッションプロファイル取得エラー: {exc}")
         return {}
-
-    if not page_views:
-        return {}
-
-    now = datetime.now(timezone.utc)
-    gallery_scores: Dict[int, float] = {}
-    lookback_seconds = max(lookback_days, 1) * 86400
-
-    for view in page_views:
-        gallery_id = _extract_gallery_id_from_page_url(getattr(view, "page_url", None))
-        if not gallery_id:
-            continue
-
-        duration_seconds: Optional[float] = None
-        if isinstance(view.time_on_page, (int, float)):
-            duration_seconds = max(float(view.time_on_page), 0.0)
-        elif getattr(view, "view_start", None) and getattr(view, "view_end", None):
-            try:
-                start = datetime.fromisoformat(view.view_start)
-                end = datetime.fromisoformat(view.view_end)
-                # タイムゾーン情報がない場合はUTCと仮定
-                if start.tzinfo is None:
-                    start = start.replace(tzinfo=timezone.utc)
-                if end.tzinfo is None:
-                    end = end.replace(tzinfo=timezone.utc)
-                duration_seconds = max((end - start).total_seconds(), 0.0)
-            except ValueError:
-                duration_seconds = None
-
-        duration_weight = 1.0
-        if duration_seconds and duration_seconds > 0:
-            duration_weight += min(duration_seconds / 120.0, 3.0)
-
-        recency_weight = 1.0
-        if getattr(view, "view_start", None):
-            try:
-                view_time = datetime.fromisoformat(view.view_start)
-                # タイムゾーン情報がない場合はUTCと仮定
-                if view_time.tzinfo is None:
-                    view_time = view_time.replace(tzinfo=timezone.utc)
-                age_seconds = max((now - view_time).total_seconds(), 0.0)
-                if lookback_seconds > 0:
-                    recency_weight = 1.0 - min(age_seconds / lookback_seconds, 1.0)
-                    recency_weight = max(recency_weight, SESSION_TAG_MIN_RECENCY_WEIGHT)
-            except ValueError:
-                recency_weight = 1.0
-
-        weight = duration_weight * recency_weight
-        gallery_scores[gallery_id] = gallery_scores.get(gallery_id, 0.0) + weight
-
-    if not gallery_scores:
-        return {}
-
-    gallery_ids = list(gallery_scores.keys())
-    try:
-        stmt = select(Gallery.gallery_id, Gallery.tags).where(Gallery.gallery_id.in_(gallery_ids))
-        result = await db_session.execute(stmt)
-        gallery_rows = result.all()
-    except Exception as exc:
-        print(f"ギャラリータグ取得エラー: {exc}")
-        return {}
-
-    tag_weights: Dict[str, float] = {}
-    for row in gallery_rows:
-        raw_tags = row.tags if hasattr(row, 'tags') else row[1]
-        try:
-            tags_data = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
-        except (TypeError, json.JSONDecodeError):
-            tags_data = []
-
-        if not isinstance(tags_data, list):
-            continue
-
-        gallery_weight = gallery_scores.get(row[0] if isinstance(row, tuple) else row.gallery_id, 0.0)
-        if gallery_weight <= 0:
-            continue
-
-        for tag_value in tags_data:
-            normalized = _normalize_tag_value(tag_value)
-            if not normalized:
-                continue
-            tag_weights[normalized] = tag_weights.get(normalized, 0.0) + gallery_weight
-
-    if not tag_weights:
-        return {}
-
-    max_weight = max(tag_weights.values())
-    if max_weight <= 0:
-        return {}
-    return {tag: weight / max_weight for tag, weight in tag_weights.items() if weight > 0}
 
 RECOMMENDATION_CANDIDATE_MULTIPLIER = 10
 RECOMMENDATION_CANDIDATE_MAX = 200
@@ -2669,8 +2613,8 @@ async def search_galleries_get(
         limit = MAX_LIMIT
 
     try:
-        # q にカンマが含まれている場合はタグ検索として扱う
-        if q and "," in q:
+        # q にカンマが含まれている場合または全てローマ字だった場合はタグ判定はタグ検索として扱う
+        if (q and "," in q) or (q and all(c.isalpha() or c.isspace() for c in q)):
             if tag:
                 tag = f"{tag},{q}"
             else:
@@ -2682,6 +2626,16 @@ async def search_galleries_get(
             extracted_code = _extract_dlsite_product_code(q)
             if extracted_code:
                 q = extracted_code
+        
+        # RJやBJを含む場合はタイトルに変換を行う
+        if q and ("RJ" in q or "BJ" in q):
+            try:
+                async with DlsiteAPI() as api:
+                    work = await api.get_work(q)
+                    if work:
+                        q = work.work_name 
+            except Exception as e:
+                print(f"RJ/BJ変換エラー: {e}")
 
         # page パラメータが指定されている場合は offset を上書き
         if page > 1:
@@ -3517,6 +3471,52 @@ async def get_artist_works(
         raise HTTPException(status_code=500, detail=f"アーティスト作品の取得エラー: {str(e)}")
 
 
+_REVERSE_MAP_CACHE: Tuple[float, Dict[str, str]] = (0.0, {})
+
+async def _get_cached_reverse_map() -> Dict[str, str]:
+    global _REVERSE_MAP_CACHE
+    try:
+        mtime = TAG_TRANSLATIONS_FILE.stat().st_mtime
+    except FileNotFoundError:
+        return {}
+
+    cached_mtime, cached_map = _REVERSE_MAP_CACHE
+    if mtime == cached_mtime:
+        return cached_map
+
+    try:
+        translations_data = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
+    except Exception:
+        translations_data = {}
+
+    reverse_map: Dict[str, str] = {}
+    if isinstance(translations_data, Mapping):
+        for eng_tag, entry in translations_data.items():
+            if not eng_tag:
+                continue
+            eng_tag_str = str(eng_tag).strip()
+            if not eng_tag_str:
+                continue
+
+            if isinstance(entry, Mapping):
+                t = str(entry.get("translation") or "").strip().lower()
+                if t and t not in reverse_map:
+                    reverse_map[t] = eng_tag_str
+
+                aliases = entry.get("aliases")
+                if isinstance(aliases, list):
+                    for alias in aliases:
+                        a = str(alias or "").strip().lower()
+                        if a and a not in reverse_map:
+                            reverse_map[a] = eng_tag_str
+            else:
+                t = str(entry or "").strip().lower()
+                if t and t not in reverse_map:
+                    reverse_map[t] = eng_tag_str
+                    
+    _REVERSE_MAP_CACHE = (mtime, reverse_map)
+    return reverse_map
+
 # -------------------------
 # タグ API（tag_stats 使用で高速化）
 # -------------------------
@@ -3547,41 +3547,7 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
             if search:
                 raw = search.strip()
                 if raw:
-                    # tag-translations.json を読み込み、日本語訳・エイリアス -> 英語タグ の逆引きマップを構築
-                    try:
-                        translations_data = await _read_json_file(TAG_TRANSLATIONS_FILE, {})
-                    except Exception:
-                        translations_data = {}
-
-                    reverse_map: Dict[str, str] = {}
-
-                    if isinstance(translations_data, Mapping):
-                        for eng_tag, entry in translations_data.items():
-                            if not eng_tag:
-                                continue
-                            eng_tag_str = str(eng_tag).strip()
-                            if not eng_tag_str:
-                                continue
-
-                            # entry は string or {translation, aliases, ...}
-                            if isinstance(entry, Mapping):
-                                # translation
-                                t = str(entry.get("translation") or "").strip().lower()
-                                if t and t not in reverse_map:
-                                    reverse_map[t] = eng_tag_str
-
-                                # aliases
-                                aliases = entry.get("aliases")
-                                if isinstance(aliases, list):
-                                    for alias in aliases:
-                                        a = str(alias or "").strip().lower()
-                                        if a and a not in reverse_map:
-                                            reverse_map[a] = eng_tag_str
-                            else:
-                                # 素の文字列の場合も一応対応
-                                t = str(entry or "").strip().lower()
-                                if t and t not in reverse_map:
-                                    reverse_map[t] = eng_tag_str
+                    reverse_map = await _get_cached_reverse_map()
 
                     # 入力値を正規化してマッピング
                     key = raw.lower()
@@ -3594,7 +3560,7 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
                         # 一致しない場合は従来通り、入力値自体で部分一致 (英語タグ直接入力など)
                         search_param = f"%{raw.lower()}%"
 
-                    where_clauses.append("LOWER(tag) LIKE :search")
+                    where_clauses.append("LOWER(ts.tag) LIKE :search")
                     params["search"] = search_param
 
             base_query = """
@@ -4794,9 +4760,12 @@ async def api_recommendations_personal(
             
             # 候補漫画を取得（最近の作品 + ランキング上位から）
             candidate_limit = limit * 10
+            # created_at_unixはインデックスがないためフルスキャンになる。
+            # sqliteの created_at (ISO8601文字列) は辞書順ソートで時間順になるため、
+            # インデックスが存在する created_at DESC, gallery_id DESC を使用して高速化
             stmt = select(Gallery).where(
                 Gallery.manga_type.in_(["doujinshi", "manga"])
-            ).order_by(Gallery.created_at_unix.desc()).limit(candidate_limit)
+            ).order_by(Gallery.created_at.desc(), Gallery.gallery_id.desc()).limit(candidate_limit)
             result = await db.execute(stmt)
             candidates = list(result.scalars())
             
@@ -5051,7 +5020,7 @@ async def get_rankings(
 async def sync_task():
     while True:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(120)
             if global_state.global_session:
                 resp = await global_state.global_session.get("https://ltn.gold-usergeneratedcontent.net/gg.js")
                 gg_content = resp.text  
@@ -5059,9 +5028,10 @@ async def sync_task():
                 if gg_hash != ImageUriResolver.gg_hash:
                     ImageUriResolver.gg_hash = gg_hash
                     await ImageUriResolver.async_synchronize()
+                    print("同期完了")
         except Exception as e:
             print(f"同期中にエラー: {str(e)}")
-            await asyncio.sleep(30)
+            await asyncio.sleep(120)
 
 async def daily_ranking_update_task():
     """日次ランキング更新タスク（*_ids.txtファイルを定期的に更新）"""
