@@ -385,7 +385,7 @@
         if (!raw) {
             return '';
         }
-        const baseUrl = (raw.startsWith(\'/proxy/\') || raw.startsWith(\'http\')) ? raw : `/proxy/${raw}`;
+        const baseUrl = (raw.startsWith('/proxy/') || raw.startsWith('http')) ? raw : `/proxy/${raw}`;
         // モバイルの場合のみサムネイルを使用
         return isMobile() ? `${baseUrl}?thumbnail=true&small=true` : baseUrl;
     }

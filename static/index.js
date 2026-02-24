@@ -650,7 +650,7 @@
         const firstImage = resolveFirstImageUrl(gallery);
 
         if (firstImage) {
-            const baseUrl = (firstImage.startsWith(\'/proxy/\') || firstImage.startsWith(\'http\')) ? firstImage : `/proxy/${firstImage}`;
+            const baseUrl = (firstImage.startsWith('/proxy/') || firstImage.startsWith('http')) ? firstImage : `/proxy/${firstImage}`;
             const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
             const fullUrl = baseUrl;
 
@@ -793,7 +793,7 @@
                 if (element.dataset.galleryId !== String(galleryId)) {
                     return;
                 }
-                const baseUrl = (fetchedUrl.startsWith(\'/proxy/\') || fetchedUrl.startsWith(\'http\')) ? fetchedUrl : `/proxy/${fetchedUrl}`;
+                const baseUrl = (fetchedUrl.startsWith('/proxy/') || fetchedUrl.startsWith('http')) ? fetchedUrl : `/proxy/${fetchedUrl}`;
                 const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
 
                 if (MangaApp.isMobile()) {
@@ -964,7 +964,7 @@
         const firstImage = resolveFirstImageUrl(gallery);
 
         if (firstImage) {
-            const baseUrl = (firstImage.startsWith(\'/proxy/\') || firstImage.startsWith(\'http\')) ? firstImage : `/proxy/${firstImage}`;
+            const baseUrl = (firstImage.startsWith('/proxy/') || firstImage.startsWith('http')) ? firstImage : `/proxy/${firstImage}`;
             const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
             const fullUrl = baseUrl;
 
@@ -1277,7 +1277,7 @@
                 }
 
                 if (imageUrl) {
-                    const baseUrl = (imageUrl.startsWith(\'/proxy/\') || imageUrl.startsWith(\'http\')) ? imageUrl : `/proxy/${imageUrl}`;
+                    const baseUrl = (imageUrl.startsWith('/proxy/') || imageUrl.startsWith('http')) ? imageUrl : `/proxy/${imageUrl}`;
                     const resolved = MangaApp.isMobile() ? `${baseUrl}?thumbnail=true&small=true` : baseUrl;
                     thumbnailUrls.push(resolved);
                 }
