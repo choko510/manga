@@ -1194,35 +1194,62 @@ async def _process_results_with_image_urls(results: List[Dict[str, Any]]) -> Non
     """
     検索結果にimage_urlsを追加し、filesキーを削除する共通処理。
     results引数はin-placeで変更される。
+    
+    最適化: S2ImageCacheヒット時はasync/スレッドプールを一切使わず同期ループで処理。
     """
     if not results:
         return
     
-    # 1. JSONパースをスレッドプールで実行
-    files_data_cache = await asyncio.to_thread(_batch_parse_files_json, results)
+    # 高速パス: S2ImageCacheが利用可能な場合、同期ループで一括処理
+    s2_loaded = _s2_image_cache._loaded
+    fallback_needed = []  # (index, result) のリスト
     
-    # 2. geturl タスクを作成して並列実行
-    geturl_tasks = [
-        geturl({"gallery_id": r["gallery_id"], "files": files_data_cache[i]})
-        for i, r in enumerate(results)
-    ]
-    image_urls_results = await asyncio.gather(*geturl_tasks, return_exceptions=True)
-    
-    # 3. 結果をマージ
     for i, r in enumerate(results):
-        image_urls = image_urls_results[i]
-        if isinstance(image_urls, Exception):
-            r["image_urls"] = []
-        else:
-            r["image_urls"] = image_urls
+        gallery_id = r.get("gallery_id")
         
-        files_list = files_data_cache[i]
-        stored_pages = r.get("page_count")
-        if not isinstance(stored_pages, int) or stored_pages < 0:
-            r["page_count"] = len(files_list)
+        if s2_loaded and gallery_id:
+            images = _s2_image_cache.get_images(gallery_id)
+            if images:
+                r["image_urls"] = images
+                # page_countの補完（filesパース不要）
+                stored_pages = r.get("page_count")
+                if not isinstance(stored_pages, int) or stored_pages < 0:
+                    r["page_count"] = len(images)
+                if "files" in r:
+                    del r["files"]
+                continue
         
-        if "files" in r:
-            del r["files"]
+        # s2キャッシュミス: フォールバックリストに追加
+        fallback_needed.append((i, r))
+    
+    # フォールバック: s2キャッシュにない結果のみJSONパース+hash取得
+    if fallback_needed:
+        for idx, r in fallback_needed:
+            try:
+                files_str = r.get("files")
+                if isinstance(files_str, str):
+                    files_data = json.loads(files_str)
+                    files_list = files_data if isinstance(files_data, list) else []
+                elif isinstance(files_str, list):
+                    files_list = files_str
+                else:
+                    files_list = []
+            except (json.JSONDecodeError, TypeError):
+                files_list = []
+            
+            # hashリスト生成
+            hashes: List[str] = []
+            for f in files_list:
+                h = (f.get("hash") or "").lower()
+                if h:
+                    hashes.append(h)
+            
+            r["image_urls"] = hashes
+            stored_pages = r.get("page_count")
+            if not isinstance(stored_pages, int) or stored_pages < 0:
+                r["page_count"] = len(files_list)
+            if "files" in r:
+                del r["files"]
 
 
 async def _backfill_database_data():
@@ -2024,7 +2051,14 @@ async def search_galleries_fast(
         sql_segments: List[str] = []
         if cte_segment:
             sql_segments.append(cte_segment)
-        sql_segments.append("SELECT g.*")
+        # s2キャッシュロード済みなら巨大なfilesカラムを省略してDB I/O削減
+        if _s2_image_cache._loaded:
+            sql_segments.append(
+                "SELECT g.gallery_id, g.japanese_title, g.tags, g.characters, "
+                "g.manga_type, g.created_at, g.page_count, g.created_at_unix"
+            )
+        else:
+            sql_segments.append("SELECT g.*")
         sql_segments.append("FROM galleries AS g")
         if joins:
             sql_segments.extend(joins)
@@ -2067,17 +2101,30 @@ async def search_galleries(
     offset: int = None,
     exclude_tag: str = None,
 ) -> List[Dict[str, Any]]:
-    stmt = select(
-        Gallery.gallery_id,
-        Gallery.japanese_title,
-        Gallery.tags,
-        Gallery.characters,
-        Gallery.files,
-        Gallery.manga_type,
-        Gallery.created_at,
-        Gallery.page_count,
-        Gallery.created_at_unix,
-    ).where(Gallery.manga_type.in_(['doujinshi', 'manga']))
+    # s2キャッシュロード済みならfilesカラムを省略
+    if _s2_image_cache._loaded:
+        stmt = select(
+            Gallery.gallery_id,
+            Gallery.japanese_title,
+            Gallery.tags,
+            Gallery.characters,
+            Gallery.manga_type,
+            Gallery.created_at,
+            Gallery.page_count,
+            Gallery.created_at_unix,
+        ).where(Gallery.manga_type.in_(['doujinshi', 'manga']))
+    else:
+        stmt = select(
+            Gallery.gallery_id,
+            Gallery.japanese_title,
+            Gallery.tags,
+            Gallery.characters,
+            Gallery.files,
+            Gallery.manga_type,
+            Gallery.created_at,
+            Gallery.page_count,
+            Gallery.created_at_unix,
+        ).where(Gallery.manga_type.in_(['doujinshi', 'manga']))
 
     if title:
         stmt = stmt.where(Gallery.japanese_title.like(f"%{title}%"))
@@ -2394,8 +2441,146 @@ async def _ensure_image_resolver_ready() -> bool:
         return False
 
 
+# =========================
+# s2.db 画像URL高速キャッシュ
+# =========================
+class S2ImageCache:
+    """
+    s2.dbの画像URLをインメモリキャッシュとして保持するクラス。
+    起動時に一括ロードし、geturl()からはメモリルックアップのみで高速に画像URLを取得する。
+    """
+    def __init__(self):
+        # s2のgallery_id -> images (List[str])
+        self._s2_images: Dict[int, List[str]] = {}
+        # sa_id -> s2_id の変換キャッシュ (NOT_FOUND = -1)
+        self._sa_to_s2_cache: Dict[int, int] = {}
+        # s2の gallery_id -> (title, artists)
+        self._s2_meta: Dict[int, Tuple[str, str]] = {}
+        # sa の gallery_id -> (title, artists)
+        self._sa_meta: Dict[int, Tuple[str, str]] = {}
+        # s2の title -> List[gallery_id] の逆引き
+        self._s2_title_index: Dict[str, List[int]] = {}
+        self._loaded = False
+    
+    def load(self):
+        """起動時にs2.dbとsa.dbのメタデータを一括ロードする"""
+        import sqlite3 as _sqlite3
+        
+        t0 = time.time()
+        
+        # s2.db から画像URLとメタデータをロード
+        try:
+            with _sqlite3.connect("db/s2.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT gallery_id, images, japanese_title, artists FROM momonga_galleries")
+                for row in cursor.fetchall():
+                    gid, images_str, title, artists = row
+                    if images_str:
+                        try:
+                            images = json.loads(images_str)
+                            if isinstance(images, list) and images:
+                                self._s2_images[gid] = images
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    title_str = title or ""
+                    artists_str = artists or ""
+                    self._s2_meta[gid] = (title_str, artists_str)
+                    if title_str:
+                        self._s2_title_index.setdefault(title_str, []).append(gid)
+        except Exception as e:
+            print(f"[S2ImageCache] s2.db ロードエラー: {e}")
+        
+        # sa.db からメタデータをロード（ID変換用）
+        try:
+            with _sqlite3.connect("db/sa.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT gallery_id, japanese_title, artists FROM galleries")
+                for row in cursor.fetchall():
+                    gid, title, artists = row
+                    self._sa_meta[gid] = (title or "", artists or "")
+        except Exception as e:
+            print(f"[S2ImageCache] sa.db ロードエラー: {e}")
+        
+        self._loaded = True
+        elapsed = time.time() - t0
+        print(f"[S2ImageCache] ロード完了: s2画像={len(self._s2_images)}件, sa_meta={len(self._sa_meta)}件 ({elapsed:.2f}秒)")
+    
+    def _resolve_sa_to_s2(self, sa_id: int) -> Optional[int]:
+        """sa.dbのgallery_idからs2.dbのgallery_idを高速解決する"""
+        # キャッシュチェック
+        if sa_id in self._sa_to_s2_cache:
+            cached = self._sa_to_s2_cache[sa_id]
+            return cached if cached != -1 else None
+        
+        # 1. 同じIDでタイトルが一致するか
+        sa_meta = self._sa_meta.get(sa_id)
+        if not sa_meta:
+            self._sa_to_s2_cache[sa_id] = -1
+            return None
+        
+        sa_title, sa_artists = sa_meta
+        
+        s2_meta = self._s2_meta.get(sa_id)
+        if s2_meta and s2_meta[0] == sa_title and sa_title:
+            self._sa_to_s2_cache[sa_id] = sa_id
+            return sa_id
+        
+        # 2. タイトルで検索
+        if not sa_title:
+            # タイトルなしの場合、同じIDがs2に存在すればそれを使う
+            if sa_id in self._s2_meta:
+                self._sa_to_s2_cache[sa_id] = sa_id
+                return sa_id
+            self._sa_to_s2_cache[sa_id] = -1
+            return None
+        
+        candidates = self._s2_title_index.get(sa_title, [])
+        if not candidates:
+            self._sa_to_s2_cache[sa_id] = -1
+            return None
+        
+        if len(candidates) == 1:
+            self._sa_to_s2_cache[sa_id] = candidates[0]
+            return candidates[0]
+        
+        # 3. artistsで絞り込み
+        if sa_artists and sa_artists.strip() not in ("[]", "null", ""):
+            for cid in candidates:
+                c_meta = self._s2_meta.get(cid)
+                if c_meta and c_meta[1] == sa_artists:
+                    self._sa_to_s2_cache[sa_id] = cid
+                    return cid
+        
+        # 最初の候補を返す
+        self._sa_to_s2_cache[sa_id] = candidates[0]
+        return candidates[0]
+    
+    def get_images(self, sa_gallery_id: int) -> Optional[List[str]]:
+        """sa.dbのgallery_idから、s2.dbの画像URLリストを取得する。見つからなければNone"""
+        if not self._loaded:
+            return None
+        
+        s2_id = self._resolve_sa_to_s2(sa_gallery_id)
+        if s2_id is None:
+            return None
+        
+        return self._s2_images.get(s2_id)
+
+# グローバルキャッシュインスタンス
+_s2_image_cache = S2ImageCache()
+
+
 async def geturl(gi: Dict[str, Any]) -> List[str]:
     """filesからhashのリストを返す（ImageUriResolverは/proxy/で適用）"""
+    gallery_id = gi.get("gallery_id")
+    
+    # 1. インメモリキャッシュからs2.dbの画像URLを高速取得
+    if gallery_id and _s2_image_cache._loaded:
+        images = _s2_image_cache.get_images(gallery_id)
+        if images:
+            return images
+
+    # 2. フォールバック: 従来のhashベース処理
     files = gi.get("files", []) or []
     if not files:
         return []
@@ -2766,17 +2951,16 @@ async def search_galleries_get(
                         order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
                         order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
     
+                        # s2キャッシュロード済みならfilesカラムを省略
+                        if _s2_image_cache._loaded:
+                            select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
+                                g.manga_type, g.created_at, g.page_count, g.created_at_unix"""
+                        else:
+                            select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
+                                g.files, g.manga_type, g.created_at, g.page_count, g.created_at_unix"""
                         query = f"""
                             SELECT
-                                g.gallery_id,
-                                g.japanese_title,
-                                g.tags,
-                                g.characters,
-                                g.files,
-                                g.manga_type,
-                                g.created_at,
-                                g.page_count,
-                                g.created_at_unix
+                                {select_cols}
                             FROM galleries AS g
                             WHERE g.gallery_id IN ({placeholders})
                             ORDER BY {order_case}
@@ -2952,7 +3136,7 @@ async def proxy_request(
     - small: 小さいサムネイルを取得する場合はtrue（thumbnailがtrueの時のみ有効）
     """
     # URLかhashかを判定
-    if hash_or_path.startswith(("http://", "https://")) or "gold-usergeneratedcontent.net" in hash_or_path:
+    if hash_or_path.startswith(("http://", "https://")) or "gold-usergeneratedcontent.net" in hash_or_path or "momon-ga.com" in hash_or_path:
         url = hash_or_path if hash_or_path.startswith(("http://", "https://")) else f"https://{hash_or_path}"
     else:
         resolver_ready = await _ensure_image_resolver_ready()
@@ -2976,7 +3160,7 @@ async def proxy_request(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"URL resolution failed: {str(e)}")
     
-    if "gold-usergeneratedcontent.net" not in url:
+    if "gold-usergeneratedcontent.net" not in url and "momon-ga.com" not in url:
         raise HTTPException(status_code=400, detail="Invalid URL")
 
     # キャッシュキーの生成（URLをベースにする）
@@ -3007,7 +3191,11 @@ async def proxy_request(
             },
         )
     
-    headers = _build_headers()
+    # momon-ga.comの場合はhitomi.laのReferer/Originを除去
+    if "momon-ga.com" in url:
+        headers = {k: v for k, v in _build_headers().items() if k not in ("Referer", "Origin")}
+    else:
+        headers = _build_headers()
     
     # セッション取得（グローバル優先）
     session = global_session
@@ -3421,9 +3609,12 @@ async def get_artist_works(
             artist_tag = f"artist:{artist_name}"
             
             # gallery_tagsテーブルを使ってアーティストの作品を検索
-            query = """
-                SELECT g.gallery_id, g.japanese_title, g.tags, g.characters, 
-                       g.manga_type, g.created_at, g.page_count, g.files
+            if _s2_image_cache._loaded:
+                select_cols = "g.gallery_id, g.japanese_title, g.tags, g.characters, g.manga_type, g.created_at, g.page_count"
+            else:
+                select_cols = "g.gallery_id, g.japanese_title, g.tags, g.characters, g.manga_type, g.created_at, g.page_count, g.files"
+            query = f"""
+                SELECT {select_cols}
                 FROM galleries g
                 INNER JOIN gallery_tags gt ON g.gallery_id = gt.gallery_id
                 WHERE gt.tag = :artist_tag
@@ -3455,8 +3646,9 @@ async def get_artist_works(
                     "manga_type": row.manga_type,
                     "created_at": row.created_at,
                     "page_count": row.page_count,
-                    "files": row.files,
                 }
+                if hasattr(row, "files"):
+                    gallery_dict["files"] = row.files
                 results.append(gallery_dict)
             
             # 画像URLを追加
@@ -4947,16 +5139,16 @@ async def get_rankings(
                 order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
                 order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
                 
+                # s2キャッシュロード済みならfilesカラムを省略
+                if _s2_image_cache._loaded:
+                    select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
+                        g.page_count, g.created_at, g.created_at_unix"""
+                else:
+                    select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
+                        g.files, g.page_count, g.created_at, g.created_at_unix"""
                 query = f"""
                     SELECT
-                        g.gallery_id,
-                        g.japanese_title,
-                        g.tags,
-                        g.characters,
-                        g.files,
-                        g.page_count,
-                        g.created_at,
-                        g.created_at_unix
+                        {select_cols}
                     FROM galleries AS g
                     WHERE g.gallery_id IN ({placeholders})
                     ORDER BY {order_case}
@@ -4965,26 +5157,30 @@ async def get_rankings(
                 result = await db.execute(text(query), params_db)
                 rows = result.fetchall()
                 
-                # 画像URLを並列で取得（高速化）
+                # 画像URLを取得
                 rankings = []
-                geturl_tasks = []
                 
-                for row in rows:
-                    try:
-                        files_data = json.loads(row.files) if hasattr(row, 'files') and row.files else []
-                        files_list = files_data if isinstance(files_data, list) else []
-                    except (json.JSONDecodeError, TypeError, AttributeError):
-                        files_list = []
-                    gallery_info = {"gallery_id": row.gallery_id, "files": files_list}
-                    geturl_tasks.append(geturl(gallery_info))
-                
-                # asyncio.gatherで全てのgeturlコルーチンを並列実行
-                image_urls_results = await asyncio.gather(*geturl_tasks, return_exceptions=True)
-                
-                # 結果をマージしてレスポンスを構築
-                for rank_position, (row, image_urls) in enumerate(zip(rows, image_urls_results), start=offset + 1):
+                for rank_position, row in enumerate(rows, start=offset + 1):
+                    gallery_id = row.gallery_id
+                    image_urls = []
+                    
+                    # s2キャッシュから高速取得
+                    if _s2_image_cache._loaded:
+                        s2_images = _s2_image_cache.get_images(gallery_id)
+                        if s2_images:
+                            image_urls = s2_images
+                    
+                    # フォールバック: hashベース
+                    if not image_urls:
+                        try:
+                            files_data = json.loads(row.files) if hasattr(row, 'files') and row.files else []
+                            files_list = files_data if isinstance(files_data, list) else []
+                        except (json.JSONDecodeError, TypeError, AttributeError):
+                            files_list = []
+                        image_urls = [(f.get("hash") or "").lower() for f in files_list if (f.get("hash") or "").strip()]
+                    
                     ranking_data = {
-                        "gallery_id": row.gallery_id,
+                        "gallery_id": gallery_id,
                         "ranking_type": ranking_type,
                         "rank": rank_position,
                         "japanese_title": row.japanese_title,
@@ -4993,7 +5189,7 @@ async def get_rankings(
                         "page_count": row.page_count,
                         "created_at": row.created_at,
                         "created_at_unix": row.created_at_unix,
-                        "image_urls": image_urls if not isinstance(image_urls, Exception) else []
+                        "image_urls": image_urls
                     }
                     rankings.append(ranking_data)
                 
@@ -5151,6 +5347,12 @@ async def startup_event():
 
     await init_tracking_database()
     print("トラッキングDB初期化完了")
+
+    # s2.db 画像URLキャッシュをバックグラウンドロード
+    try:
+        await asyncio.to_thread(_s2_image_cache.load)
+    except Exception as e:
+        print(f"S2ImageCache ロードエラー: {e}")
 
     # ImageUriResolver 初期化
     try:
