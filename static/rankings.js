@@ -122,7 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (firstImage) {
             const img = document.createElement('img');
-            const baseUrl = firstImage.startsWith('/proxy/') ? firstImage : `/proxy/${firstImage}`;
+            const baseUrl = (firstImage.startsWith(\'/proxy/\') || firstImage.startsWith(\'http\')) ? firstImage : `/proxy/${firstImage}`;
             const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
 
             if (MangaApp.isMobile()) {

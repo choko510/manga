@@ -3162,6 +3162,11 @@ async def proxy_request(
     
     if "gold-usergeneratedcontent.net" not in url and "momon-ga.com" not in url:
         raise HTTPException(status_code=400, detail="Invalid URL")
+        
+    # momongaのURLの場合はProxyを通さず直接リダイレクトする
+    if "momon-ga.com" in url:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url)
 
     # キャッシュキーの生成（URLをベースにする）
     cache_key = f"{url}"

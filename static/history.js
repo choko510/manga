@@ -70,7 +70,7 @@
                 if (element.dataset.galleryId !== String(galleryId)) {
                     return;
                 }
-                const baseUrl = fetchedUrl.startsWith('/proxy/') ? fetchedUrl : `/proxy/${fetchedUrl}`;
+                const baseUrl = (fetchedUrl.startsWith(\'/proxy/\') || fetchedUrl.startsWith(\'http\')) ? fetchedUrl : `/proxy/${fetchedUrl}`;
                 const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
 
                 if (MangaApp.isMobile()) {
