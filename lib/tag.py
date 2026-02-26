@@ -1,4 +1,4 @@
-"""Tag parsing and fetching helpers."""
+"""タグのパースと取得のヘルパー。"""
 from __future__ import annotations
 
 from typing import List, Optional

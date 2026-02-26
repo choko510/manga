@@ -672,11 +672,10 @@
         const img = document.createElement('img');
         img.alt = gallery.japanese_title || '';
 
-        // 画像の読み込み状態に応じて表示順（order）を変更する
-        card.style.order = '1'; // デフォルトは中間の順番（ロード中）
-        img.addEventListener('load', () => {
-            card.style.order = '0'; // 読み込めたものは上へ
-        });
+        // 画像の初期表示順は '1' (読み込み待ち)
+        // 読み込み完了後に '0' に上げないことで、レイアウトの跳ね上がりを防ぐ
+        card.style.order = '1';
+
         img.addEventListener('error', () => {
             card.style.order = '2'; // エラーになったものは下へ
         });
@@ -707,6 +706,11 @@
                 img.style.display = 'block';
                 const ph = thumbnail.querySelector('.image-placeholder');
                 if (ph) ph.remove();
+
+                // 既にキャッシュにある場合は最上位(order: 0)へ
+                if (img.complete && img.naturalWidth > 0) {
+                    card.style.order = '0';
+                }
 
                 if (index === 0) {
                     img.setAttribute('fetchpriority', 'high');

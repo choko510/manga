@@ -6,16 +6,16 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.pool import StaticPool
 
-# Import main after setting up environment if needed, but here we just import it
-# CAUTION: This imports main.py which executes global code. 
-# Ideally main.py should not have side effects on import, but it does (creating engine).
+# 必要に応じて環境を設定した後に main をインポートします。ここでは単純にインポートします。
+# 注意: これにより global コードを実行する main.py がインポートされます。
+# 本来 main.py はインポート時に副作用（エンジンの作成など）を持つべきではありませんが、現状は持っています。
 from main import app, get_db_session, Base, global_state, init_database
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 @pytest.fixture(scope="session")
 def event_loop():
-    """Create an instance of the default event loop for each test session."""
+    """テストセッションごとにデフォルトのイベントループのインスタンスを作成します。"""
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
@@ -32,9 +32,9 @@ async def test_engine():
 
 @pytest_asyncio.fixture(scope="function")
 async def test_db(test_engine):
-    # Patch main.engine so init_database uses our test engine
+    # init_database がテスト用エンジンを使用するように main.engine をパッチします
     with patch("main.engine", test_engine):
-        # Initialize schema (tables, FTS, triggers)
+        # スキーマ（テーブル、FTS、トリガー）を初期化
         await init_database()
 
     TestingSessionLocal = async_sessionmaker(
@@ -47,7 +47,7 @@ async def test_db(test_engine):
 
 @pytest.fixture(scope="function", autouse=True)
 def mock_background_tasks():
-    """Prevent background tasks and real DB initialization from running during tests."""
+    """テスト中にバックグラウンドタスクや実際のDB初期化が実行されるのを防ぎます。"""
     with patch("main.init_database", new_callable=MagicMock) as mock_init, \
          patch("main.hourly_sync_task", new_callable=MagicMock) as mock_sync, \
          patch("main.daily_ranking_update_task", new_callable=MagicMock) as mock_ranking, \
@@ -61,7 +61,7 @@ async def client(test_engine):
         autocommit=False, autoflush=False, bind=test_engine
     )
 
-    # Patch get_db_session because endpoints call it directly
+    # エンドポイントが直接呼び出すため、get_db_session をパッチします
     with patch("main.get_db_session", side_effect=TestingSessionLocal):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

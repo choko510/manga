@@ -116,13 +116,11 @@
         thumbnail.className = 'card-thumbnail';
         const img = document.createElement('img');
 
-        // 画像の読み込み状態に応じて表示順（order）を変更する
+        // 画像の初期表示順は '1' (読み込み待ち)
+        // 読み込み完了後に '0' に上げないことで、レイアウトの跳ね上がりを防ぐ
         card.style.order = '1';
-        img.addEventListener('load', () => {
-            card.style.order = '0';
-        });
         img.addEventListener('error', () => {
-            card.style.order = '2';
+            card.style.order = '2'; // エラーになったものは下へ
         });
         const firstImage = Array.isArray(gallery.image_urls) && gallery.image_urls.length > 0 ? gallery.image_urls[0] : '';
         if (firstImage) {
@@ -139,6 +137,11 @@
                 originalImg.onload = () => {
                     img.src = originalImg.src;
                 };
+            }
+
+            // 既にキャッシュにある場合は最上位(order: 0)へ
+            if (img.complete && img.naturalWidth > 0) {
+                card.style.order = '0';
             }
         }
         thumbnail.appendChild(img);

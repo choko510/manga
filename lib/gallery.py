@@ -1,4 +1,4 @@
-"""Gallery helpers for the Hitomi.la Python port."""
+"""Hitomi.la Pythonポート用のギャラリーヘルパー。"""
 from __future__ import annotations
 
 import hashlib

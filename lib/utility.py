@@ -1,4 +1,4 @@
-"""Utility helpers used by the Python implementation."""
+"""Python実装で使用されるユーティリティヘルパー。"""
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +14,7 @@ from .types import IdSet, Node
 
 
 class HitomiError(Exception):
-    """Custom error matching the behaviour of the original library."""
+    """オリジナルライブラリの振る舞いに合わせたカスタムエラー。"""
 
     def __init__(self, code: ErrorCode, *values: str) -> None:
         if code is ErrorCode.INVALID_VALUE:
@@ -52,7 +52,7 @@ _sync_client: Optional[httpx.Client] = None
 
 
 async def _get_async_client() -> httpx.AsyncClient:
-    """Get or create httpx async client."""
+    """httpxの非同期クライアントを取得または作成します。"""
     global _async_client
     if _async_client is None or _async_client.is_closed:
         _async_client = httpx.AsyncClient(headers=_DEFAULT_HEADERS, http2=True, timeout=10.0)
@@ -60,7 +60,7 @@ async def _get_async_client() -> httpx.AsyncClient:
 
 
 def _get_sync_client() -> httpx.Client:
-    """Get or create httpx sync client."""
+    """httpxの同期クライアントを取得または作成します。"""
     global _sync_client
     if _sync_client is None or _sync_client.is_closed:
         _sync_client = httpx.Client(headers=_DEFAULT_HEADERS, timeout=10.0)
@@ -68,7 +68,7 @@ def _get_sync_client() -> httpx.Client:
 
 
 async def close_session() -> None:
-    """Close the httpx clients."""
+    """httpxクライアントを閉じます。"""
     global _async_client, _sync_client
     if _async_client is not None and not _async_client.is_closed:
         await _async_client.aclose()
@@ -96,13 +96,13 @@ async def async_fetch(
     max_retries: int = 3,
     retry_delay: float = 1.0,
 ) -> bytes:
-    """Fetch a resource over HTTPS and return the raw body.
+    """HTTPS経由でリソースを取得し、生のボディを返します。
 
     Args:
-        uri: URL to fetch
-        headers: Optional HTTP headers
-        max_retries: Maximum number of retry attempts (default: 3)
-        retry_delay: Initial delay between retries in seconds (default: 1.0)
+        uri: 取得するURL
+        headers: 任意のHTTPヘッダー
+        max_retries: 最大リトライ回数 (デフォルト: 3)
+        retry_delay: リトライ間の初期遅延秒数 (デフォルト: 1.0)
     """
     parsed = urlsplit(f"https://{uri}" if "//" not in uri else uri)
     if not parsed.hostname:
@@ -148,7 +148,7 @@ def fetch(
     max_retries: int = 3,
     retry_delay: float = 1.0,
 ) -> bytes:
-    """Synchronous fetch using httpx.Client."""
+    """httpx.Clientを使用した同期フェッチ。"""
     parsed = urlsplit(f"https://{uri}" if "//" not in uri else uri)
     if not parsed.hostname:
         raise HitomiError(ErrorCode.INVALID_VALUE, "uri", "contain a hostname")
@@ -228,7 +228,7 @@ _node_cache: Dict[tuple[int, str], bytes] = {}
 
 
 async def _async_get_node_bytes(address: int, version: str) -> bytes:
-    """Async version to fetch node bytes with caching."""
+    """ノードのバイトデータをキャッシュ付きで非同期に取得します。"""
     cache_key = (address, version)
     if cache_key in _node_cache:
         return _node_cache[cache_key]

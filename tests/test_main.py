@@ -12,7 +12,7 @@ async def test_read_index(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_search_galleries(client: AsyncClient, test_db):
-    # Setup - add dummy gallery to DB
+    # セットアップ - テスト用ギャラリーをDBに追加
     gallery = Gallery(
         japanese_title="UniqueTitleXYZ",
         tags=json.dumps(["test_tag", "demo"]),
@@ -27,29 +27,29 @@ async def test_search_galleries(client: AsyncClient, test_db):
     await test_db.commit()
     await test_db.refresh(gallery)
 
-    # Verify DB content
+    # DBの内容を検証
     res = await test_db.execute(text("SELECT COUNT(*) FROM galleries"))
     count = res.scalar()
-    assert count == 1, "DB setup failed: galleries table empty"
+    assert count == 1, "DBセットアップ失敗: galleriesテーブルが空です"
     
-    # Test list all galleries (no params)
+    # 全ギャラリーの取得テスト (パラメータなし)
     response = await client.get("/search")
-    assert response.status_code == 200, f"Search all failed: {response.text}"
+    assert response.status_code == 200, f"全件検索失敗: {response.text}"
     data_all = response.json()
-    assert data_all["count"] == 1, f"Expected 1 gallery, got {data_all['count']}"
+    assert data_all["count"] == 1, f"1件のギャラリーを期待していましたが、{data_all['count']}件取得されました"
 
-    # Test basic search by title
+    # タイトルによる基本検索のテスト
     response = await client.get("/search", params={"title": "UniqueTitleXYZ"})
-    assert response.status_code == 200, f"Search by title failed: {response.text}"
+    assert response.status_code == 200, f"タイトル検索失敗: {response.text}"
     data = response.json()
-    assert data["count"] == 1, "Expected 1 gallery match for title"
+    assert data["count"] == 1, "タイトル一致で1件のギャラリーを期待していました"
     assert data["results"][0]["japanese_title"] == "UniqueTitleXYZ"
 
-    # Test tag search (mocking known_tags in main if necessary, or assuming they work)
-    # Note: Tag search relies on gallery_tags table which is populated triggers.
+    # タグ検索のテスト（必要に応じて main の known_tags をモックするか、正常に動作すると想定）
+    # 注: タグ検索はトリガーによってデータが投入される gallery_tags テーブルに依存します。
     response = await client.get("/search", params={"tag": "test_tag"})
     assert response.status_code == 200
     data_tag = response.json()
-    # Tag search logic involves intersection with ranking if sort_by or similar? 
-    # Or just search_galleries_fast.
-    # It should work ideally.
+    # タグ検索のロジックには、sort_by などによるランキングとの交差が含まれるか？
+    # または単に search_galleries_fast。
+    # 本来は正常に動作するはずです。

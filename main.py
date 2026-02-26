@@ -3490,12 +3490,12 @@ async def download_multiple(request: DownloadRequest):
 @app.post("/download-multipart")
 async def download_multipart(request: MultipartDownloadRequest):
     if request.chunk_size <= 0:
-        raise HTTPException(status_code=400, detail="chunk_size must be > 0")
+        raise HTTPException(status_code=400, detail="chunk_size は 0 より大きい必要があります")
     if request.chunk_size > 10 * 1024 * 1024:  # 10MB limit
          request.chunk_size = 10 * 1024 * 1024
 
     if request.max_connections <= 0:
-        raise HTTPException(status_code=400, detail="max_connections must be > 0")
+        raise HTTPException(status_code=400, detail="max_connections は 0 より大きい必要があります")
     if request.max_connections > 16:
         request.max_connections = 16
 
@@ -3754,9 +3754,9 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
             
             # 使用回数があるタグのためのソートロジック
             # 優先度ソート:
-            # 1. Server-side Priority >= 1
-            # 2. Dynamic Score (Count * Usage) if Usage > 0
-            # 3. Else Count * small_factor (Default behavior)
+            # 1. サーバー側の優先度 (Priority) >= 1
+            # 2. 動的スコア (Count * Usage) ※Usage > 0 の場合
+            # 3. それ以外 (Count * 小さな係数) ※デフォルトの動作
             
             # CASE文で usage_count を定義
             # "CASE tag WHEN 't1' THEN c1 WHEN 't2' THEN c2 ... ELSE 0 END"
@@ -3783,18 +3783,17 @@ async def get_tags(limit: int = 100, offset: int = 0, search: Optional[str] = No
                 # ただし、レスポンスに usage_count を含めるため、SELECT句も調整したいが
                 # ここでは簡易的に、Orderingで制御し、usage_countは0のままでもフロントエンドでlocalStorageとマージできる
                 # (フロントエンドは既にlocalStorageの値を使っているため)
-                # しかし、Userは "Backend knows usage" と言っているため、backend dataを返すべきか。
-                # ユーザーの要望「上に優先的に表示」はソートで達成できる。
+                # しかし、ユーザーは「バックエンド側で使用回数を知っている」と言っているため、バックエンドのデータを返すべきかもしれません。
+                # ユーザーの要望「上に優先的に表示」はソートで達成できます。
                 
                 # スコア計算式:
-                # IF priority >= 1 THEN (Priority * 10^9) -- Push to absolute top
+                # IF priority >= 1 THEN (Priority * 10^9) -- 絶対的な上位に押し上げる
                 # ELSE IF usage > 0 THEN (Count * Usage)
-                # ELSE Count * 0.00001 (Unused tags)
+                # ELSE Count * 0.00001 (未使用タグ)
                 
-                # Priority >= 1 logic is handled by first order term.
-                # Here we define the score for the rest.
-                
-                # Note: ts.count is integer.
+                # Priority >= 1 のロジックは、ソートの第1項目で処理されます。
+                # ここでは残りの動的スコアを定義します。
+                # 注: ts.count は整数です。
                 
                 dynamic_score_sql = f"""
                     CASE
@@ -5043,7 +5042,7 @@ async def api_recommendations_personal(
             # メイン枠
             main_results = [r[1] for r in scored_results[:main_count]]
             
-            # Exploration枠（メインに含まれていないものから）
+            # Exploration枠（メイン枠に含まれていないものから選択）
             main_ids = {r["gallery_id"] for r in main_results}
             exploration_candidates = [r for r in exploration_pool if r["gallery_id"] not in main_ids]
             
@@ -5385,11 +5384,11 @@ if __name__ == "__main__":
     import uvicorn
 
     parser = argparse.ArgumentParser(description="Run FastAPI server")
-    parser.add_argument("--host", type=str, default="localhost", help="Server host (default: localhost)")
-    parser.add_argument("--port", type=int, default=8000, help="Server port (default: 8000)")
+    parser.add_argument("--host", type=str, default="localhost", help="サーバーのホスト名 (デフォルト: localhost)")
+    parser.add_argument("--port", type=int, default=8000, help="サーバーのポート番号 (デフォルト: 8000)")
     parser.add_argument("--log", type=str, choices=["critical", "error", "warning", "info", "debug", "trace"],
-                        default="info", help="Logging level (default: info)")
-    parser.add_argument("--disable-personalization", action="store_true", help="Disable personalized recommendations")
+                        default="info", help="ログレベル (デフォルト: info)")
+    parser.add_argument("--disable-personalization", action="store_true", help="パーソナライズされたおすすめ機能を無効にする")
     args = parser.parse_args()
 
     # パーソナライズ設定を反映

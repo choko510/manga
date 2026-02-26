@@ -1,4 +1,4 @@
-"""Type definitions used by the Hitomi.la Python port."""
+"""Hitomi.la Pythonポートで使用される型定義。"""
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -13,7 +13,7 @@ JsonValue = Union[str, int, float, bool, None, "JsonObject", List["JsonValue"]]
 
 
 class IdSet(MutableSet[int]):
-    """Order-preserving set that mirrors JavaScript's ``Set`` behaviour."""
+    """JavaScriptの ``Set`` の振る舞いをミラーリングした、順序を維持するセット。"""
 
     def __init__(self, iterable: Optional[Iterable[int]] = None, *, is_negative: bool = False) -> None:
         self._items: "OrderedDict[int, None]" = OrderedDict()

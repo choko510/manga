@@ -760,13 +760,13 @@
         function sortTagsForGroup(items) {
             if (!Array.isArray(items)) return [];
 
-            // Pre-calculate scores for sorting (Schwartzian transform)
+            // ソートのためのスコアを事前計算（シュワルツ変換）
             const mapped = items.map((item, index) => {
-                // Priority (Server-side)
+                // 優先度（サーバー側）
                 const p = item.priority || 0;
                 const isHigh = p >= 1;
 
-                // Effective Score calculation
+                // 有効スコアの計算
                 const serverUsage = item.usage_count || 0;
                 const localUsage = getUsageScore(item.tag);
                 const usage = Math.max(serverUsage, localUsage);
@@ -776,7 +776,7 @@
                 if (usage > 0) {
                     score = count * usage;
                 } else {
-                    // Unused tags: Scale down significantly
+                    // 未使用のタグ：スコアを大幅に下げる
                     score = count * 0.00001;
                 }
 
@@ -794,24 +794,24 @@
             });
 
             mapped.sort((a, b) => {
-                // 1. High Priority First
+                // 1. 高優先度を優先
                 if (a.isHigh && !b.isHigh) return -1;
                 if (!a.isHigh && b.isHigh) return 1;
 
-                // 2. Descending Priority within High Priority group
+                // 2. 高優先度グループ内での優先度降順
                 if (a.isHigh && b.isHigh) {
                     if (a.priority !== b.priority) {
                         return b.priority - a.priority;
                     }
                 }
 
-                // 3. Effective Score (Descending)
-                // Note: Low priority (negative) has already reduced the score above
+                // 3. 有効スコア（降順）
+                // 注：低優先度（負の値）は上の処理で既にスコアをを減らしている
                 if (a.score !== b.score) {
                     return b.score - a.score;
                 }
 
-                // 4. Tag Name (Ascending)
+                // 4. タグ名（昇順）
                 return (a.value.tag || '').localeCompare(b.value.tag || '');
             });
 

@@ -1,4 +1,4 @@
-"""URI helpers mirroring the behaviour of the original library."""
+"""オリジナルライブラリの振る舞いをミラーリングしたURIヘルパー。"""
 from __future__ import annotations
 
 import asyncio
@@ -39,7 +39,7 @@ def get_nozomi_uri(options: Optional[dict] = None) -> str:
 
 
 async def async_get_nozomi_uri(options: Optional[dict] = None) -> str:
-    """Async version of get_nozomi_uri (currently synchronous operation)."""
+    """get_nozomi_uriの非同期版（現在は同期操作）。"""
     return get_nozomi_uri(options)
 
 
@@ -69,7 +69,7 @@ def get_tag_uri(tag_type: str, starts_with: Optional[StartingCharacter] = None) 
 
 
 async def async_get_tag_uri(tag_type: str, starts_with: Optional[StartingCharacter] = None) -> str:
-    """Async version of get_tag_uri (currently synchronous operation)."""
+    """get_tag_uriの非同期版（現在は同期操作）。"""
     return get_tag_uri(tag_type, starts_with)
 
 
@@ -94,12 +94,12 @@ def get_gallery_uri(gallery: Gallery) -> str:
 
 
 class ImageUriResolver:
-    """Resolves image URIs with optional synchronous/asynchronous priming.
+    """同期/非同期のプライミング（準備）を任意に行える画像URIリゾルバー。
     
-    Uses Stale-While-Revalidate pattern: if data exists but is stale,
-    return immediately and refresh in background.
+    Stale-While-Revalidateパターンを使用：データが存在するが古い場合、
+    すぐにデータを返し、バックグラウンドで更新します。
     
-    Also maintains a local file cache for disaster recovery.
+    また、障害復旧用のローカルファイルキャッシュも維持します。
     """
 
     _lock: Lock = Lock()
@@ -113,7 +113,7 @@ class ImageUriResolver:
 
     @classmethod
     def _save_to_cache(cls, path_code: str, starts_with_a: bool, subdomain_codes: set[int]) -> None:
-        """Save resolver data to local cache file for disaster recovery."""
+        """障害復旧のためにリゾルバーデータをローカルキャッシュファイルに保存します。"""
         try:
             cls._cache_file.parent.mkdir(parents=True, exist_ok=True)
             cache_data = {
@@ -128,10 +128,10 @@ class ImageUriResolver:
 
     @classmethod
     def _load_from_cache(cls) -> bool:
-        """Load resolver data from local cache file.
+        """ローカルキャッシュファイルからリゾルバーデータを読み込みます。
         
         Returns:
-            True if cache was loaded successfully, False otherwise.
+            キャッシュの読み込みに成功した場合はTrue、そうでない場合はFalse。
         """
         try:
             if not cls._cache_file.exists():
@@ -145,8 +145,8 @@ class ImageUriResolver:
             if not path_code or not subdomain_codes:
                 return False
             
-            # Apply cached data without updating _last_synced_at
-            # This ensures a refresh will be attempted on next call
+            # _last_synced_at を更新せずにキャッシュデータを適用。
+            # これにより、次の呼び出しで常にリフレッシュが試行されるが、データは利用可能な状態になる。
             IMAGE_URI_PARTS[0] = path_code
             IMAGE_URI_PARTS[1] = starts_with_a
             subdomain_set = IMAGE_URI_PARTS[2]
@@ -154,7 +154,7 @@ class ImageUriResolver:
             subdomain_set.clear()
             subdomain_set.update(subdomain_codes)
             cls._signature = (path_code, starts_with_a, tuple(sorted(subdomain_codes)))
-            # Set _last_synced_at to 0 so it will try to refresh, but data is available
+            # _last_synced_at を0に設定してリフレッシュを促すが、データは利用可能。
             cls._last_synced_at = 0.0
             
             saved_at = cache_data.get("saved_at", 0)
@@ -167,7 +167,7 @@ class ImageUriResolver:
 
     @classmethod
     def _should_refresh(cls, force: bool) -> bool:
-        """Return whether resolver metadata must be refreshed."""
+        """リゾルバーのメタデータをリフレッシュすべきかどうかを返します。"""
 
         if force:
             return True
@@ -179,9 +179,9 @@ class ImageUriResolver:
 
     @classmethod
     def _is_stale(cls) -> bool:
-        """Return whether current data is stale but still usable."""
+        """現在のデータが古い（が、依然として使用可能）かどうかを返します。"""
         if not cls._is_initialised():
-            return False  # No data to be stale
+            return False  # 古くなるためのデータがない
         if cls._last_synced_at is None:
             return False
         return (time.monotonic() - cls._last_synced_at) >= cls._refresh_interval
@@ -224,7 +224,7 @@ class ImageUriResolver:
         subdomain_set.update(subdomain_codes)
         cls._signature = (path_code, starts_with_a, tuple(sorted(subdomain_codes)))
         cls._last_synced_at = time.monotonic()
-        # Save to local cache for disaster recovery
+        # 障害復旧のためにローカルキャッシュに保存
         cls._save_to_cache(path_code, starts_with_a, subdomain_codes)
 
     @classmethod
@@ -256,12 +256,12 @@ class ImageUriResolver:
 
     @classmethod
     async def async_synchronize(cls, *, force: bool = False) -> None:
-        """Synchronize resolver data asynchronously.
+        """リゾルバーデータを非同期で同期します。
         
-        If data exists and is stale, uses Stale-While-Revalidate pattern:
-        schedules background refresh and returns immediately.
+        データが存在し、かつ古い場合、Stale-While-Revalidateパターンを使用します：
+        バックグラウンドリフレッシュをスケジュールし、すぐに復帰します。
         
-        On failure, attempts to load from local cache.
+        失敗した場合は、ローカルキャッシュからの読み込みを試みます。
         """
         if not cls._should_refresh(force):
             return
@@ -298,7 +298,7 @@ class ImageUriResolver:
 
     @classmethod
     async def _background_refresh(cls) -> None:
-        """Perform background refresh without blocking callers."""
+        """呼び出し元をブロックせずにバックグラウンドでリフレッシュを実行します。"""
         try:
             with cls._lock:
                 if cls._async_lock is None:
@@ -307,21 +307,21 @@ class ImageUriResolver:
 
             assert lock is not None
             async with lock:
-                # Don't check _should_refresh here - we want to force refresh
+                # ここでは _should_refresh をチェックしない - 強制的にリフレッシュしたい
                 response_text = (await async_fetch(f"{RESOURCE_DOMAIN}/gg.js")).decode(
                     "utf-8"
                 )
                 parts = cls._parse_response(response_text)
                 cls._apply_parts(*parts)
         except Exception as e:
-            # Background refresh failed - log but don't raise
+            # バックグラウンド更新が失敗した場合 - ログを記録するが例外は投げない
             print(f"ImageUriResolver バックグラウンド更新失敗: {e}")
         finally:
             cls._background_refresh_in_progress = False
 
     @classmethod
     def clear_cache(cls) -> None:
-        """Reset the resolver state so that the next call re-fetches metadata."""
+        """次の呼び出しでメタデータを再取得するように、リゾルバーの状態をリセットします。"""
 
         with cls._lock:
             cls._signature = None

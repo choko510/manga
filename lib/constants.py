@@ -1,4 +1,4 @@
-"""Constants for the Hitomi.la API wrapper."""
+"""Hitomi.la APIラッパー用の定数"""
 from __future__ import annotations
 
 from enum import Enum, auto
@@ -6,7 +6,7 @@ from typing import Final, Tuple
 
 
 class ErrorCode(Enum):
-    """Enumerates the custom error codes used by the library."""
+    """ライブラリで使用されるカスタムエラーコードを列挙します。"""
 
     INVALID_VALUE = auto()
     INVALID_CALL = auto()
@@ -21,7 +21,7 @@ TAG_TYPES: Final[frozenset[str]] = frozenset(
     RAW_GALLERY_KEYS[1:] + ("type", "language", "series", "male", "female", "tag")
 )
 
-# Preparation for future class-based update.
+# 将来のクラスベースの更新のための準備。
 IMAGE_URI_PARTS: list[object] = ["", False, set()]
 
 BASE_DOMAIN: Final[str] = "gold-usergeneratedcontent.net"
