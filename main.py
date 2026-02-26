@@ -521,7 +521,8 @@ def _normalize_translation_entry(value: Any) -> Dict[str, Any]:
         description = str(value.get("description", "")).strip()
         aliases = _sanitize_alias_list(value.get("aliases", []))
         try:
-            priority = int(value.get("priority", 0))
+            val = int(value.get("priority", 0))
+            priority = max(-3, min(3, val))
         except (ValueError, TypeError):
             priority = 0
     elif isinstance(value, str):
@@ -2051,14 +2052,8 @@ async def search_galleries_fast(
         sql_segments: List[str] = []
         if cte_segment:
             sql_segments.append(cte_segment)
-        # s2キャッシュロード済みなら巨大なfilesカラムを省略してDB I/O削減
-        if _s2_image_cache._loaded:
-            sql_segments.append(
-                "SELECT g.gallery_id, g.japanese_title, g.tags, g.characters, "
-                "g.manga_type, g.created_at, g.page_count, g.created_at_unix"
-            )
-        else:
-            sql_segments.append("SELECT g.*")
+        # filesカラムは常に含める（s2キャッシュにないギャラリーのフォールバックに必要）
+        sql_segments.append("SELECT g.*")
         sql_segments.append("FROM galleries AS g")
         if joins:
             sql_segments.extend(joins)
@@ -2101,30 +2096,18 @@ async def search_galleries(
     offset: int = None,
     exclude_tag: str = None,
 ) -> List[Dict[str, Any]]:
-    # s2キャッシュロード済みならfilesカラムを省略
-    if _s2_image_cache._loaded:
-        stmt = select(
-            Gallery.gallery_id,
-            Gallery.japanese_title,
-            Gallery.tags,
-            Gallery.characters,
-            Gallery.manga_type,
-            Gallery.created_at,
-            Gallery.page_count,
-            Gallery.created_at_unix,
-        ).where(Gallery.manga_type.in_(['doujinshi', 'manga']))
-    else:
-        stmt = select(
-            Gallery.gallery_id,
-            Gallery.japanese_title,
-            Gallery.tags,
-            Gallery.characters,
-            Gallery.files,
-            Gallery.manga_type,
-            Gallery.created_at,
-            Gallery.page_count,
-            Gallery.created_at_unix,
-        ).where(Gallery.manga_type.in_(['doujinshi', 'manga']))
+    # filesカラムは常に含める（s2キャッシュにないギャラリーのフォールバックに必要）
+    stmt = select(
+        Gallery.gallery_id,
+        Gallery.japanese_title,
+        Gallery.tags,
+        Gallery.characters,
+        Gallery.files,
+        Gallery.manga_type,
+        Gallery.created_at,
+        Gallery.page_count,
+        Gallery.created_at_unix,
+    ).where(Gallery.manga_type.in_(['doujinshi', 'manga']))
 
     if title:
         stmt = stmt.where(Gallery.japanese_title.like(f"%{title}%"))
@@ -2951,13 +2934,9 @@ async def search_galleries_get(
                         order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
                         order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
     
-                        # s2キャッシュロード済みならfilesカラムを省略
-                        if _s2_image_cache._loaded:
-                            select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
-                                g.manga_type, g.created_at, g.page_count, g.created_at_unix"""
-                        else:
-                            select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
-                                g.files, g.manga_type, g.created_at, g.page_count, g.created_at_unix"""
+                        # filesカラムは常に含める（s2キャッシュにないギャラリーのフォールバックに必要）
+                        select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
+                            g.files, g.manga_type, g.created_at, g.page_count, g.created_at_unix"""
                         query = f"""
                             SELECT
                                 {select_cols}
@@ -3614,10 +3593,8 @@ async def get_artist_works(
             artist_tag = f"artist:{artist_name}"
             
             # gallery_tagsテーブルを使ってアーティストの作品を検索
-            if _s2_image_cache._loaded:
-                select_cols = "g.gallery_id, g.japanese_title, g.tags, g.characters, g.manga_type, g.created_at, g.page_count"
-            else:
-                select_cols = "g.gallery_id, g.japanese_title, g.tags, g.characters, g.manga_type, g.created_at, g.page_count, g.files"
+            # filesカラムは常に含める（s2キャッシュにないギャラリーのフォールバックに必要）
+            select_cols = "g.gallery_id, g.japanese_title, g.tags, g.characters, g.manga_type, g.created_at, g.page_count, g.files"
             query = f"""
                 SELECT {select_cols}
                 FROM galleries g
@@ -5144,13 +5121,9 @@ async def get_rankings(
                 order_case_parts = [f"WHEN :id_{i} THEN {i}" for i in range(len(paginated_ids))]
                 order_case = "CASE g.gallery_id " + " ".join(order_case_parts) + f" ELSE {len(paginated_ids)} END"
                 
-                # s2キャッシュロード済みならfilesカラムを省略
-                if _s2_image_cache._loaded:
-                    select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
-                        g.page_count, g.created_at, g.created_at_unix"""
-                else:
-                    select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
-                        g.files, g.page_count, g.created_at, g.created_at_unix"""
+                # filesカラムは常に含める（s2キャッシュにないギャラリーのフォールバックに必要）
+                select_cols = """g.gallery_id, g.japanese_title, g.tags, g.characters,
+                    g.files, g.page_count, g.created_at, g.created_at_unix"""
                 query = f"""
                     SELECT
                         {select_cols}

@@ -122,8 +122,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (firstImage) {
             const img = document.createElement('img');
+
+            // 画像の読み込み状態に応じて表示順（order）を変更する
+            card.style.order = '1';
+            img.addEventListener('load', () => {
+                card.style.order = '0';
+            });
+            img.addEventListener('error', () => {
+                card.style.order = '2';
+            });
+
             const baseUrl = (firstImage.startsWith('/proxy/') || firstImage.startsWith('http')) ? firstImage : `/proxy/${firstImage}`;
-            const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+            const isDirect = baseUrl.startsWith('http') && !baseUrl.includes('/proxy/');
+            const thumbUrl = isDirect ? baseUrl : `${baseUrl}?thumbnail=true&small=true`;
 
             if (MangaApp.isMobile()) {
                 img.src = thumbUrl;
@@ -139,6 +150,7 @@ document.addEventListener('DOMContentLoaded', () => {
             img.alt = gallery.japanese_title || 'ギャラリー';
             img.loading = 'lazy';
             img.onload = () => {
+                img.onload = null;
                 const placeholderElement = thumbnail.querySelector('.image-placeholder');
                 if (placeholderElement) {
                     placeholderElement.remove();

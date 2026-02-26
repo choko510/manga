@@ -20,6 +20,9 @@
     const AUTO_SAVE_DELAY = 2000;
     const UPDATE_RETRY_DELAY = 5000;
 
+    let currentRetryDelay = 2000;
+    const MAX_RETRY_DELAY = 30000;
+
     const state = {
         translations: [],
         popularTagsOffset: 0,
@@ -96,6 +99,7 @@
     function markDirty() {
         state.pendingChanges = true;
         setSyncStatus({ tone: 'warning', message: '変更を自動保存します…' });
+        currentRetryDelay = AUTO_SAVE_DELAY; // Reset delay on new input
         scheduleAutoSave();
     }
 
@@ -108,7 +112,7 @@
             if (state.pendingChanges) {
                 saveTranslations({ auto: true });
             }
-        }, AUTO_SAVE_DELAY);
+        }, currentRetryDelay);
     }
 
     function updateTranslationCount() {
@@ -117,9 +121,14 @@
         translationCount.textContent = `${visibleRows} 件表示 / 全 ${state.translations.length} 件`;
     }
 
-    function createTranslationRow(entry = { tag: '', translation: '', description: '', aliases: [] }) {
+    function createTranslationRow(entry = { tag: '', translation: '', description: '', priority: 0, aliases: [] }) {
         const tr = document.createElement('tr');
         tr.dataset.tag = entry.tag || '';
+
+        function markRowDirty() {
+            tr.dataset.dirty = 'true';
+            markDirty();
+        }
 
         const tagCell = document.createElement('td');
         const tagInput = document.createElement('input');
@@ -130,7 +139,7 @@
         tagInput.addEventListener('input', () => {
             tr.dataset.tag = tagInput.value;
             entry.tag = tagInput.value;
-            markDirty();
+            markRowDirty();
         });
         tagCell.appendChild(tagInput);
 
@@ -142,7 +151,7 @@
         translationInput.placeholder = '翻訳 (日本語)';
         translationInput.addEventListener('input', () => {
             entry.translation = translationInput.value;
-            markDirty();
+            markRowDirty();
         });
         translationCell.appendChild(translationInput);
 
@@ -155,7 +164,7 @@
         descriptionInput.placeholder = '説明 (任意)';
         descriptionInput.addEventListener('input', () => {
             entry.description = descriptionInput.value;
-            markDirty();
+            markRowDirty();
         });
         descriptionCell.appendChild(descriptionInput);
 
@@ -163,14 +172,19 @@
         const priorityCell = document.createElement('td');
         const priorityInput = document.createElement('input');
         priorityInput.type = 'number';
+        priorityInput.min = '-3';
+        priorityInput.max = '3';
         priorityInput.className = 'table-input';
         priorityInput.value = typeof entry.priority === 'number' ? entry.priority : 0;
         priorityInput.placeholder = '0';
         priorityInput.style.minWidth = '60px';
         priorityInput.addEventListener('input', () => {
-            const val = parseInt(priorityInput.value, 10);
-            entry.priority = isNaN(val) ? 0 : val;
-            markDirty();
+            let val = parseInt(priorityInput.value, 10);
+            if (isNaN(val)) val = 0;
+            if (val > 3) { val = 3; priorityInput.value = 3; }
+            if (val < -3) { val = -3; priorityInput.value = -3; }
+            entry.priority = val;
+            markRowDirty();
         });
         priorityCell.appendChild(priorityInput);
 
@@ -183,7 +197,7 @@
         aliasesInput.placeholder = '例: 代替タグ, ニックネーム';
         aliasesInput.addEventListener('input', () => {
             entry.aliases = parseAliases(aliasesInput.value);
-            markDirty();
+            markRowDirty();
         });
         aliasesCell.appendChild(aliasesInput);
 
@@ -193,11 +207,13 @@
         deleteButton.className = 'button danger';
         deleteButton.textContent = '削除';
         deleteButton.addEventListener('click', () => {
-            tr.remove();
-            state.translations = state.translations.filter((item) => item !== entry);
+            const tagVal = tr.dataset.serverTag || normaliseTag(tagInput.value);
+            tr.dataset.deleted = 'true';
+            tr.style.display = 'none';
+            state.translations = state.translations.filter((item) => normaliseTag(item.tag) !== tagVal);
             updateEmptyStates();
             updateTranslationCount();
-            markDirty();
+            markRowDirty();
         });
         actionCell.appendChild(deleteButton);
 
@@ -214,21 +230,78 @@
 
     function renderTranslations(translations) {
         if (!translationsTableBody) return;
-        translationsTableBody.innerHTML = '';
-        const sorted = [...translations].sort((a, b) => {
-            const aUntranslated = !(a.translation || '').toString().trim();
-            const bUntranslated = !(b.translation || '').toString().trim();
 
-            if (aUntranslated !== bUntranslated) {
-                return aUntranslated ? -1 : 1;
+        const activeElement = document.activeElement;
+        const rows = Array.from(translationsTableBody.querySelectorAll('tr'));
+        const rowByServerTag = new Map();
+
+        rows.forEach(row => {
+            if (row.dataset.serverTag) {
+                rowByServerTag.set(row.dataset.serverTag, row);
+            }
+        });
+
+        const matchedRows = new Set();
+
+        translations.forEach((entry) => {
+            const serverTagNorm = normaliseTag(entry.tag);
+            if (!serverTagNorm) return;
+
+            let row = rowByServerTag.get(serverTagNorm);
+            if (!row) {
+                // Not found by serverTag, check if there's a local newly created one with matching tag
+                row = rows.find(r => !matchedRows.has(r) && normaliseTag(r._inputs.tagInput.value) === serverTagNorm);
             }
 
-            return a.tag.localeCompare(b.tag);
+            if (row) {
+                matchedRows.add(row);
+                row.dataset.serverTag = serverTagNorm;
+
+                const isDirty = row.dataset.dirty === 'true';
+                const isActive = row.contains(activeElement);
+                const isDeleted = row.dataset.deleted === 'true';
+
+                // Only update inputs from server if user hasn't modified it and isn't focused on it
+                if (!isDirty && !isActive && !isDeleted) {
+                    const inputs = row._inputs;
+                    let changed = false;
+
+                    if (inputs.tagInput.value !== entry.tag) { inputs.tagInput.value = entry.tag || ''; changed = true; }
+                    if (inputs.translationInput.value !== entry.translation) { inputs.translationInput.value = entry.translation || ''; changed = true; }
+                    if (inputs.descriptionInput.value !== entry.description) { inputs.descriptionInput.value = entry.description || ''; changed = true; }
+                    if (parseInt(inputs.priorityInput.value, 10) !== entry.priority && !(isNaN(parseInt(inputs.priorityInput.value, 10)) && entry.priority === 0)) { inputs.priorityInput.value = entry.priority || 0; changed = true; }
+
+                    const serverAliases = Array.isArray(entry.aliases) ? entry.aliases.join(', ') : '';
+                    if (inputs.aliasesInput.value !== serverAliases && !(inputs.aliasesInput.value === '' && serverAliases === '')) { inputs.aliasesInput.value = serverAliases; changed = true; }
+
+                    if (changed) {
+                        row.classList.add('flash-highlight');
+                        setTimeout(() => row.classList.remove('flash-highlight'), 2000);
+                    }
+                }
+            } else {
+                // New tag from server
+                const newRow = createTranslationRow(entry);
+                newRow.dataset.serverTag = serverTagNorm;
+                translationsTableBody.appendChild(newRow);
+                matchedRows.add(newRow);
+            }
         });
-        sorted.forEach((entry) => {
-            const row = createTranslationRow(entry);
-            translationsTableBody.appendChild(row);
+
+        // Remove rows that were deleted on the server, UNLESS they have local modifications
+        rows.forEach(row => {
+            if (!matchedRows.has(row)) {
+                const isDirty = row.dataset.dirty === 'true';
+                const isActive = row.contains(activeElement);
+                if (!isDirty && !isActive) {
+                    row.remove();
+                }
+            }
         });
+
+        // Re-sorting the DOM nodes based on translations array to maintain correct order optionally
+        // (Keeping it simple and fast without DOM node moving to prevent flicker unless requested)
+
         updateEmptyStates();
         updateTranslationCount();
         filterTranslations();
@@ -454,7 +527,9 @@
                 }
             } catch (error) {
                 console.error('update listener error', error);
-                setSyncStatus({ tone: 'warning', message: '変更の監視を再試行しています…' });
+                const isOffline = !navigator.onLine;
+                const msg = isOffline ? 'オフラインのため再接続を待機中…' : '変更の監視を再試行しています…';
+                setSyncStatus({ tone: 'warning', message: msg });
                 await new Promise((resolve) => setTimeout(resolve, UPDATE_RETRY_DELAY));
             }
         }
@@ -550,6 +625,8 @@
         const duplicates = new Map();
         const aliasDuplicates = new Map();
         for (const row of rows) {
+            if (row.dataset.deleted === 'true') continue;
+
             const { tagInput, translationInput, aliasesInput, descriptionInput, priorityInput } = row._inputs || {};
             if (!tagInput || !translationInput) continue;
             const rawTag = tagInput.value.trim();
@@ -610,6 +687,25 @@
         }
 
         state.isSaving = true;
+        const snapshotPending = state.pendingChanges;
+        state.pendingChanges = false;
+
+        const currentInputsSnapshot = new Map();
+        if (translationsTableBody) {
+            translationsTableBody.querySelectorAll('tr[data-dirty="true"]').forEach(tr => {
+                const inputs = tr._inputs;
+                if (!inputs) return;
+                currentInputsSnapshot.set(tr, {
+                    tag: inputs.tagInput.value,
+                    translation: inputs.translationInput.value,
+                    description: inputs.descriptionInput.value,
+                    priority: inputs.priorityInput.value,
+                    aliases: inputs.aliasesInput.value,
+                    deleted: tr.dataset.deleted === 'true'
+                });
+            });
+        }
+
         if (auto) {
             setSyncStatus({ tone: 'warning', message: '自動保存中…' });
         } else {
@@ -632,14 +728,16 @@
 
             if (response.status === 409) {
                 const payload = await response.json().catch(() => ({}));
-                state.pendingChanges = false;
                 state.translations = mapTranslationsPayload(payload.translations || {});
                 renderTranslations(state.translations);
                 state.currentVersion = payload.version || state.currentVersion;
                 updateVersionBadge(state.currentVersion);
                 setSyncStatus({ tone: 'warning', message: '他のユーザーの変更を反映しました' });
-                showStatus('他のユーザーによる変更が検出されたため内容を更新しました', 'error', 6000);
+                // We don't show an error here anymore to avoid panicking the user
+                // The sync happened in the background, now schedule a background save to merge their changes in
+                state.pendingChanges = state.pendingChanges || snapshotPending;
                 await refreshVersions({ silent: true });
+                scheduleAutoSave();
                 return;
             }
 
@@ -650,20 +748,58 @@
             const data = await response.json();
             state.currentVersion = data.version || state.currentVersion;
             updateVersionBadge(state.currentVersion);
-            state.pendingChanges = false;
+
+            // Success, reset the retry delay
+            currentRetryDelay = AUTO_SAVE_DELAY;
+
+            for (const [tr, snapshot] of currentInputsSnapshot.entries()) {
+                const isDeleted = tr.dataset.deleted === 'true';
+                if (isDeleted && snapshot.deleted) {
+                    // It was deleted before fetch, and is still deleted. Safe to actually remove from DOM.
+                    tr.remove();
+                    continue;
+                }
+
+                const inputs = tr._inputs;
+                if (inputs && !isDeleted && !snapshot.deleted &&
+                    inputs.tagInput.value === snapshot.tag &&
+                    inputs.translationInput.value === snapshot.translation &&
+                    inputs.descriptionInput.value === snapshot.description &&
+                    inputs.priorityInput.value === snapshot.priority &&
+                    inputs.aliasesInput.value === snapshot.aliases) {
+                    delete tr.dataset.dirty;
+                    tr.dataset.serverTag = normaliseTag(snapshot.tag);
+                } else {
+                    state.pendingChanges = true;
+                }
+            }
+
             if (auto) {
                 setSyncStatus({ tone: 'success', message: '最新の状態です' });
                 await refreshVersions();
+                if (state.pendingChanges) {
+                    scheduleAutoSave();
+                }
             } else {
                 setSyncStatus({ tone: 'success', message: '保存が完了しました' });
                 showStatus('翻訳を保存しました');
-                await loadData({ withVersions: true });
+                if (state.pendingChanges) {
+                    scheduleAutoSave();
+                }
             }
         } catch (error) {
             console.error(error);
-            state.pendingChanges = true;
-            setSyncStatus({ tone: 'error', message: error.message || '保存に失敗しました' });
-            showStatus(error.message || '翻訳の保存に失敗しました', 'error', 6000);
+            state.pendingChanges = state.pendingChanges || snapshotPending;
+
+            // Exponential backoff
+            currentRetryDelay = Math.min(currentRetryDelay * 2, MAX_RETRY_DELAY);
+            const isOffline = !navigator.onLine;
+            const msg = isOffline ? 'オフラインのため再接続を待機中…' : '保存を再試行します…';
+
+            setSyncStatus({ tone: 'error', message: msg });
+            if (!auto) {
+                showStatus(error.message || '翻訳の保存に失敗しました', 'error', 6000);
+            }
             scheduleAutoSave();
         } finally {
             state.isSaving = false;

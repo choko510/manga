@@ -353,10 +353,12 @@
                     setActive(index);
                 });
 
-                el.addEventListener('mousedown', (ev) => {
+                const handleSelect = (ev) => {
                     ev.preventDefault(); // input blur 防止
                     selectItem(item);
-                });
+                };
+                el.addEventListener('mousedown', handleSelect);
+                el.addEventListener('touchstart', handleSelect, { passive: false });
 
                 target.appendChild(el);
             });
@@ -412,7 +414,16 @@
 
         async function handleInput() {
             const value = input.value;
-            const q = value.trim();
+            // スペースやカンマで区切って最後の単語を検索対象にする
+            const tokens = value.split(/[,\s]+/);
+            // 何も入力されていない、もしくは最後がスペースの場合は空文字
+            let q = value.match(/[,\s]+$/) ? '' : (tokens[tokens.length - 1] || '');
+
+            // マイナス検索の補完時に-を無視して検索
+            if (q.startsWith('-') && q.length > 1) {
+                q = q.substring(1);
+            }
+
             lastQuery = value;
 
             if (!q || q.length < cfg.minLength) {
@@ -422,8 +433,9 @@
 
             try {
                 const items = await search(q, { limit: cfg.limit });
-                // 入力中に別のクエリになっていたら破棄
+                // 検索中に別の値が入力されていたら破棄
                 if (lastQuery !== value) return;
+
                 renderResults(items);
                 // 各DOM要素に逆参照を付与して Enter 選択で拾えるように
                 if (listEl) {

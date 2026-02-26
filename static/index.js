@@ -41,6 +41,7 @@
         const initialSrc = img.dataset.lowRes || img.dataset.src;
         img.src = initialSrc;
         img.onload = () => {
+            img.onload = null;
             img.style.display = 'block';
             const ph = thumbnailEl.querySelector('.image-placeholder');
             if (ph) ph.remove();
@@ -224,6 +225,7 @@
                         img.src = lowRes || finalSrc;
 
                         img.onload = () => {
+                            img.onload = null;
                             img.style.display = 'block';
                             const placeholder = card.querySelector('.image-placeholder');
                             if (placeholder) {
@@ -285,13 +287,35 @@
                 minLength: 1,
                 limit: 12,
                 onSelect(tag, meta) {
-                    // 選択されたタグを検索クエリに追記し、即検索実行
-                    const current = elements.searchInput.value.trim();
-                    const label = meta && (meta.translation || meta.tag)
-                        ? `${meta.translation || ''} (${tag})`
-                        : tag;
-                    const next = current ? `${current} ${label}` : label;
-                    elements.searchInput.value = next;
+                    // 入力中の最後の単語を選択したタグで置き換える
+                    const current = elements.searchInput.value;
+                    let tokens = current.split(/([,\s]+)/); // 区切り文字も保持して分割
+
+                    if (tokens.length > 0) {
+                        const lastToken = tokens[tokens.length - 1];
+                        if (/^[,\s]+$/.test(lastToken) || lastToken === '') {
+                            // 最後がスペースまたは空の場合は追加
+                            tokens.push(tag);
+                        } else {
+                            // 最後が入力中の文字なら置き換え (-も考慮)
+                            if (lastToken.startsWith('-')) {
+                                tokens[tokens.length - 1] = '-' + tag;
+                            } else {
+                                tokens[tokens.length - 1] = tag;
+                            }
+                        }
+
+                        // 文字列を再構築
+                        let nextValue = tokens.join('');
+                        // 念のため末尾にスペースを足して連続入力しやすくする
+                        if (!nextValue.endsWith(' ')) {
+                            nextValue += ' ';
+                        }
+                        elements.searchInput.value = nextValue;
+                    } else {
+                        elements.searchInput.value = tag + ' ';
+                    }
+
                     performSearch(elements, true);
                 },
             });
@@ -647,11 +671,21 @@
         thumbnail.appendChild(placeholder);
         const img = document.createElement('img');
         img.alt = gallery.japanese_title || '';
+
+        // 画像の読み込み状態に応じて表示順（order）を変更する
+        card.style.order = '1'; // デフォルトは中間の順番（ロード中）
+        img.addEventListener('load', () => {
+            card.style.order = '0'; // 読み込めたものは上へ
+        });
+        img.addEventListener('error', () => {
+            card.style.order = '2'; // エラーになったものは下へ
+        });
         const firstImage = resolveFirstImageUrl(gallery);
 
         if (firstImage) {
             const baseUrl = (firstImage.startsWith('/proxy/') || firstImage.startsWith('http')) ? firstImage : `/proxy/${firstImage}`;
-            const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+            const isDirect = baseUrl.startsWith('http') && !baseUrl.includes('/proxy/');
+            const thumbUrl = isDirect ? baseUrl : `${baseUrl}?thumbnail=true&small=true`;
             const fullUrl = baseUrl;
 
             // 最初の数枚は即時読み込み（Lazy Loadを回避）して表示速度を向上
@@ -767,7 +801,8 @@
                 element.style.backgroundImage = `url(${url})`;
             } else {
                 const bUrl = url.split('?')[0];
-                const tUrl = `${bUrl}?thumbnail=true&small=true`;
+                const isDirect = bUrl.startsWith('http') && !bUrl.includes('/proxy/');
+                const tUrl = isDirect ? bUrl : `${bUrl}?thumbnail=true&small=true`;
                 element.style.backgroundImage = `url(${tUrl})`;
                 const originalImg = new Image();
                 originalImg.src = bUrl;
@@ -794,7 +829,8 @@
                     return;
                 }
                 const baseUrl = (fetchedUrl.startsWith('/proxy/') || fetchedUrl.startsWith('http')) ? fetchedUrl : `/proxy/${fetchedUrl}`;
-                const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+                const isDirect = baseUrl.startsWith('http') && !baseUrl.includes('/proxy/');
+                const thumbUrl = isDirect ? baseUrl : `${baseUrl}?thumbnail=true&small=true`;
 
                 if (MangaApp.isMobile()) {
                     element.style.backgroundImage = `url(${thumbUrl})`;
@@ -965,7 +1001,8 @@
 
         if (firstImage) {
             const baseUrl = (firstImage.startsWith('/proxy/') || firstImage.startsWith('http')) ? firstImage : `/proxy/${firstImage}`;
-            const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+            const isDirect = baseUrl.startsWith('http') && !baseUrl.includes('/proxy/');
+            const thumbUrl = isDirect ? baseUrl : `${baseUrl}?thumbnail=true&small=true`;
             const fullUrl = baseUrl;
 
             if (MangaApp.isMobile()) {
@@ -1278,7 +1315,8 @@
 
                 if (imageUrl) {
                     const baseUrl = (imageUrl.startsWith('/proxy/') || imageUrl.startsWith('http')) ? imageUrl : `/proxy/${imageUrl}`;
-                    const resolved = MangaApp.isMobile() ? `${baseUrl}?thumbnail=true&small=true` : baseUrl;
+                    const isDirect = baseUrl.startsWith('http') && !baseUrl.includes('/proxy/');
+                    const resolved = MangaApp.isMobile() && !isDirect ? `${baseUrl}?thumbnail=true&small=true` : baseUrl;
                     thumbnailUrls.push(resolved);
                 }
             });

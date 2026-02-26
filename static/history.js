@@ -43,7 +43,8 @@
             } else {
                 // PCの場合、urlがオリジナルの可能性があるので、サムネイルを生成してプログレッシブに読み込む
                 const baseUrl = url.split('?')[0]; // パラメータを除去
-                const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+                const isDirect = baseUrl.startsWith('http') && !baseUrl.includes('/proxy/');
+                const thumbUrl = isDirect ? baseUrl : `${baseUrl}?thumbnail=true&small=true`;
 
                 element.style.backgroundImage = `url(${thumbUrl})`;
                 const originalImg = new Image();
@@ -71,7 +72,8 @@
                     return;
                 }
                 const baseUrl = (fetchedUrl.startsWith('/proxy/') || fetchedUrl.startsWith('http')) ? fetchedUrl : `/proxy/${fetchedUrl}`;
-                const thumbUrl = `${baseUrl}?thumbnail=true&small=true`;
+                const isDirect = baseUrl.startsWith('http') && !baseUrl.includes('/proxy/');
+                const thumbUrl = isDirect ? baseUrl : `${baseUrl}?thumbnail=true&small=true`;
 
                 if (MangaApp.isMobile()) {
                     element.style.backgroundImage = `url(${thumbUrl})`;

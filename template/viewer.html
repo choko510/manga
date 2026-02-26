@@ -276,43 +276,33 @@
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
-        }
 
-        .tag-group {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
+            .tag-group {
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 6px;
+            }
 
-        /* 日本語タグの縦書きスタイル */
-        .tag-group.vertical {
-            writing-mode: vertical-rl;
-            text-orientation: mixed;
-            height: auto;
-            max-height: 120px;
-            margin-right: 8px;
-        }
+            .tag-label {
+                font-weight: 600;
+                color: var(--text-primary);
+                margin-right: 4px;
+            }
 
-        .tag-group.vertical .tag-label {
-            writing-mode: horizontal-tb;
-            margin-bottom: 4px;
-        }
+            .tag-item {
+                background-color: rgba(148, 163, 184, 0.25);
+                padding: 4px 10px;
+                border-radius: var(--radius-pill);
+                font-size: 0.8rem;
+                white-space: nowrap;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
 
-        .tag-group.vertical .tag-item {
-            writing-mode: horizontal-tb;
-            margin-bottom: 2px;
-        }
-
-        .tag-label {
             font-weight: 600;
             color: var(--text-primary);
-        }
-
-        .tag-item {
-            background-color: rgba(148, 163, 184, 0.25);
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 0.8rem;
         }
 
         .tag-item a {
@@ -2143,7 +2133,15 @@
                 });
 
                 // UIを更新（タイトル・タグ）
-                updateGalleryInfo();
+                if (window.MangaApp && typeof MangaApp.ensureTranslations === 'function') {
+                    MangaApp.ensureTranslations().then(() => {
+                        updateGalleryInfo();
+                    }).catch(() => {
+                        updateGalleryInfo();
+                    });
+                } else {
+                    updateGalleryInfo();
+                }
 
                 // 新トラッキング連携: 漫画閲覧開始を通知
                 if (window.Tracking && window.Tracking.viewer && typeof window.Tracking.viewer.start === 'function' && numericGalleryId) {
@@ -2325,10 +2323,6 @@
             const group = document.createElement('div');
             group.className = 'tag-group';
 
-            if (items.some(item => containsJapanese(item))) {
-                group.classList.add('vertical');
-            }
-
             const labelEl = document.createElement('span');
             labelEl.className = 'tag-label';
             labelEl.textContent = label;
@@ -2345,7 +2339,7 @@
                     link.title = item;
                     itemEl.appendChild(link);
                 } else {
-                    itemEl.textContent = item;
+                    itemEl.textContent = translate ? MangaApp.translateTag(item) : item;
                 }
                 group.appendChild(itemEl);
             });
@@ -2386,12 +2380,12 @@
                     const characterArray = JSON.parse(galleryData.characters);
                     if (Array.isArray(characterArray) && characterArray.length > 0) {
                         mangaTagsInfo.appendChild(
-                            createTagGroup('キャラ:', characterArray)
+                            createTagGroup('キャラ:', characterArray, { asLinks: true, translate: true })
                         );
                     }
                 } catch (e) {
                     mangaTagsInfo.appendChild(
-                        createTagGroup('キャラ:', [galleryData.characters])
+                        createTagGroup('キャラ:', [galleryData.characters], { asLinks: true, translate: true })
                     );
                 }
             }

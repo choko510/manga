@@ -386,8 +386,9 @@
             return '';
         }
         const baseUrl = (raw.startsWith('/proxy/') || raw.startsWith('http')) ? raw : `/proxy/${raw}`;
+        const isDirect = baseUrl.startsWith('http') && !baseUrl.includes('/proxy/');
         // モバイルの場合のみサムネイルを使用
-        return isMobile() ? `${baseUrl}?thumbnail=true&small=true` : baseUrl;
+        return isMobile() && !isDirect ? `${baseUrl}?thumbnail=true&small=true` : baseUrl;
     }
 
     function buildThumbnailStyle(entry) {
